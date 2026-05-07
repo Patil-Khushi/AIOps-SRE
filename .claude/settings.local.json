@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py --version)",
+      "Bash(py *)",
+      "Bash(awk '{ for\\(i=1;i<=NF;i+=20\\) printf \"%s \", $i; print \"\" }' /c/Projects/AIops/.tmp_extract_out/poc_aiops_onboarding_guide_docx.txt)"
+    ]
+  }
+}

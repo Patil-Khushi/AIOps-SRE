@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.uv/
+
+# uv
+uv.lock
+
+# Tests
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local kube/helm artifacts
+kubeconfig
+*.kubeconfig
+.helm/
+
+# Eval / run artifacts
+evals/runs/
+demo/.runs/
+*.log
+
+# Cluster state we never want to commit
+**/charts/*.tgz
+
+# Office lock files
+~$*
+
+# Temporary extraction outputs
+.tmp_*

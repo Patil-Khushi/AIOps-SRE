@@ -1,0 +1,21 @@
+# kind cluster config for the POC.
+# Single control-plane node + 2 workers, with port mappings so we can reach
+# the OTel demo frontend and Grafana from the host without `kubectl port-forward`.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aiops-poc
+
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080      # OTel demo frontend (NodePort)
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 30300      # Grafana (NodePort)
+        hostPort: 3000
+        protocol: TCP
+      - containerPort: 30168      # Jaeger UI (NodePort)
+        hostPort: 16686
+        protocol: TCP
+  - role: worker
+  - role: worker

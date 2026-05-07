@@ -1,0 +1,70 @@
+# Helm values for the OpenTelemetry Demo chart.
+# Chart: https://open-telemetry.github.io/opentelemetry-helm-charts → opentelemetry-demo
+# Installed by infra/bootstrap.ps1 (or .sh).
+#
+# We deliberately keep this lean and rely on the chart's defaults. Override only
+# what we need for the POC: stable resource requests and exposed services so a
+# laptop demo works.
+
+default:
+  envOverrides:
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: deployment.environment=poc
+
+# Lower resource requests so the demo fits on a kind cluster.
+components:
+  frontend:
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  productCatalogService:
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  cartService:
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  paymentService:
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  currencyService:
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+# Use the chart's bundled observability stack (Grafana / Prometheus / Loki / Tempo).
+# Phase 0 stays inside the chart; Phase 1+ may swap in our own.
+observability:
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true
+  jaeger:
+    enabled: true
+  opensearch:
+    enabled: false        # save resources — Loki is enough for Phase 0
+  loki:
+    enabled: true
+  tempo:
+    enabled: true
+
+# The feature-flag service is what the failure injection module talks to.
+flagd:
+  enabled: true
