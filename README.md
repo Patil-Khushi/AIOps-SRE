@@ -2,9 +2,9 @@
 
 Vendor-neutral, multi-agent platform that automates IT operations across four maturity phases (Reactive-Active → Proactive → Predictive → Prescriptive-Adaptive). 30 modular agents, a dedicated **RCA Agent** that produces executable fix steps with rollback, and SRE discipline woven into every phase.
 
-This repository is the **Proof-of-Concept (POC) build** — not production. The goal is a credible end-to-end demo on synthetic / open-source data, anchored on the OpenTelemetry Demo running in a local kind cluster.
+This repository is the **Proof-of-Concept (POC) build** — not production. The goal is a credible end-to-end demo on synthetic / open-source data, anchored on the OpenTelemetry Demo running in a local Rancher Desktop k3s cluster.
 
-> **If you are new here, read [`docs/poc_aiops_onboarding_guide.docx`](docs/poc_aiops_onboarding_guide.docx) first** — it is the canonical onboarding text. [`CLAUDE.md`](CLAUDE.md) summarises the architecture and design principles.
+> **New to the team? Start with [`ONBOARDING.md`](ONBOARDING.md)** — laptop setup, Rancher Desktop walkthrough, free-tier accounts, TODO list. Then read [`docs/poc_aiops_onboarding_guide.docx`](docs/poc_aiops_onboarding_guide.docx) for the deep narrative. [`CLAUDE.md`](CLAUDE.md) summarises the architecture and design principles.
 
 ---
 
@@ -24,29 +24,34 @@ See [`docs/poc_aiops_onboarding_guide.docx`](docs/poc_aiops_onboarding_guide.doc
 
 ## Quick start
 
-**Prerequisites:** Docker Desktop, [`kind`](https://kind.sigs.k8s.io/), `kubectl`, `helm`, Python 3.12+, [`uv`](https://github.com/astral-sh/uv) (or `pip`).
+**Prerequisites:** [Rancher Desktop](https://rancherdesktop.io/) (or any local Kubernetes), real `kubectl` (the winget one, not Rancher's wrapper — see [`ONBOARDING.md`](ONBOARDING.md) §7), `helm`, Python 3.12+, [`uv`](https://github.com/astral-sh/uv).
+
+> First-time setup walkthrough — including admin/IT prerequisites — is in [`ONBOARDING.md`](ONBOARDING.md).
 
 ### Windows / PowerShell (primary)
 
 ```powershell
-# 1. Bring up the local cluster + OpenTelemetry Demo + observability
+# 1. Install Python deps
+uv sync --extra dev
+
+# 2. Bring up the OTel demo (idempotent — safe to re-run)
 .\infra\bootstrap.ps1
 
-# 2. Install Python deps
-uv sync
+# 3. Port-forward the demo (run in a separate window — it holds the foreground)
+kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
 
-# 3. Trigger a failure scenario
+# 4. Trigger a failure scenario, watch it in Grafana, clear it
 uv run python -m demo.failure_injection.inject slow-product-catalog
-
-# 4. Open Grafana
-# http://localhost:8080/grafana/  (forwarded by bootstrap)
+# Grafana → Demo Dashboard at http://localhost:8080/grafana/
+uv run python -m demo.failure_injection.inject --clear
 ```
 
 ### macOS / Linux
 
 ```bash
+uv sync --extra dev
 ./infra/bootstrap.sh
-uv sync
+kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
 uv run python -m demo.failure_injection.inject slow-product-catalog
 ```
 
@@ -55,6 +60,8 @@ uv run python -m demo.failure_injection.inject slow-product-catalog
 ```powershell
 .\infra\teardown.ps1     # or  ./infra/teardown.sh
 ```
+
+Tearing down uninstalls the OTel demo Helm release and deletes the namespace; **Rancher Desktop / k3s itself stays running** (stop it from the Rancher Desktop UI if you want to free RAM).
 
 ---
 
@@ -78,7 +85,7 @@ uv run python -m demo.failure_injection.inject slow-product-catalog
 │   ├── failure_injection/       # One-command failure scenario runner
 │   ├── truth_files/             # Ground-truth per scenario (cause + expected fix)
 │   └── load/                    # k6 load scripts for steady-state traffic
-├── infra/                       # Local cluster bootstrap (kind + Helm)
+├── infra/                       # Bootstrap for the OTel demo on Rancher Desktop k3s
 ├── policies/                    # OPA policies — HITL + guardrails as code
 ├── tests/                       # Repo-level smoke tests
 ├── scripts/                     # Convenience scripts

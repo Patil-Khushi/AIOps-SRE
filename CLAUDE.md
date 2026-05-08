@@ -114,7 +114,7 @@ demo/
 ├── failure_injection/     # one-command failure scenario runner + 3 starter scenarios
 ├── truth_files/           # ground truth per scenario (cause + expected fix)
 └── load/                  # k6 baseline load script
-infra/                     # kind cluster + OTel demo bootstrap (PowerShell + bash)
+infra/                     # OTel demo bootstrap on Rancher Desktop k3s (PowerShell + bash)
 policies/                  # OPA policies (hitl.rego); reference-only in Phase 0
 tests/                     # repo-level smoke tests
 .github/workflows/         # CI: ruff + pytest + eval gate + opa check
@@ -130,8 +130,12 @@ tests/                     # repo-level smoke tests
 # Install deps (one-time)
 uv sync --extra dev
 
-# Bring up the demo cluster (one-time, ~10 min)
+# Bring up the OTel demo on the running Rancher Desktop k3s (idempotent)
 .\infra\bootstrap.ps1                              # bash equivalent: ./infra/bootstrap.sh
+
+# Port-forward to reach the demo (run in a separate window)
+kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
+# http://localhost:8080/ (Webstore), /grafana/, /jaeger/ui/, /loadgen/, /feature/
 
 # Trigger a failure scenario
 uv run python -m demo.failure_injection.inject --list
@@ -157,9 +161,14 @@ uv run python -m evals.harness --ci --min-pass-rate 0.85
 uv run ruff check .
 uv run ruff format .
 
-# Tear down the cluster
+# Uninstall the OTel demo (Rancher Desktop / k3s itself stays running)
 .\infra\teardown.ps1
 ```
+
+### Local-environment quirks worth knowing
+
+- **Rancher Desktop ships a `kuberlr` wrapper at `C:\Program Files\Rancher Desktop\…\kubectl.exe`** that breaks under Python `subprocess` (rejects `-n`, `--client`, etc., though it works from PowerShell directly). `inject.py` auto-resolves a real kubectl; install one with `winget install --scope user --id Kubernetes.kubectl` for ad-hoc use. See `ONBOARDING.md` §7.
+- **`flagd-config` field-manager trap:** failure-injection patches must use `--field-manager=helm` (already wired in `inject.py`); plain `kubectl patch` poisons the configmap so subsequent `helm upgrade` fails with a server-side-apply conflict. Recovery is documented in `ONBOARDING.md` §7.
 
 ### Constraints code review will catch
 

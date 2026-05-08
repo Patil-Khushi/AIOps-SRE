@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -56,11 +57,90 @@ def load_scenarios() -> dict[str, Scenario]:
     return out
 
 
+_KUBECTL_CACHE: str | None = None
+
+
+def _looks_like_real_kubectl(path: str) -> bool:
+    """Probe a candidate binary by running ``version --client=true``.
+
+    Rancher Desktop ships a wrapper at
+    ``C:\\Program Files\\Rancher Desktop\\resources\\resources\\win32\\bin\\kubectl.exe``
+    that intercepts arg parsing and rejects standard kubectl flags like
+    ``-n`` and ``--client`` from subprocess invocations. It still works when
+    invoked from PowerShell directly, but breaks under ``subprocess``. Real
+    kubectl always returns a usage block containing "clientVersion" for the
+    probe below; the wrapper fails with "unknown flag".
+    """
+    try:
+        result = subprocess.run(
+            [path, "version", "--client=true", "--output=json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and "clientVersion" in (result.stdout or "")
+
+
 def _require_kubectl() -> str:
-    path = shutil.which("kubectl")
-    if not path:
-        sys.exit("kubectl not found on PATH. Run infra/bootstrap.ps1 first.")
-    return path
+    """Return a path to a real kubectl binary, probing candidates if needed."""
+    global _KUBECTL_CACHE
+    if _KUBECTL_CACHE:
+        return _KUBECTL_CACHE
+
+    candidates: list[str] = []
+
+    # 1. Explicit override.
+    if (env_path := os.environ.get("KUBECTL")) and os.path.exists(env_path):
+        candidates.append(env_path)
+
+    # 2. winget-installed real kubectl on Windows. The package cache path
+    #    is stable enough that we hard-code it as a high-priority candidate.
+    if (home := os.environ.get("USERPROFILE")):
+        candidates.append(
+            os.path.join(
+                home,
+                "AppData",
+                "Local",
+                "Microsoft",
+                "WinGet",
+                "Packages",
+                "Kubernetes.kubectl_Microsoft.Winget.Source_8wekyb3d8bbwe",
+                "kubectl.exe",
+            )
+        )
+
+    # 3. ``where.exe kubectl`` results, in PATH order. Falls back to PATH
+    #    lookup on non-Windows.
+    if sys.platform == "win32":
+        try:
+            where = subprocess.run(
+                ["where.exe", "kubectl"], capture_output=True, text=True, timeout=5
+            )
+            if where.returncode == 0:
+                candidates.extend(line.strip() for line in where.stdout.splitlines() if line.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if (which_path := shutil.which("kubectl")):
+        candidates.append(which_path)
+
+    # Probe in order; first one that responds like real kubectl wins.
+    seen: set[str] = set()
+    for path in candidates:
+        if path in seen or not os.path.exists(path):
+            continue
+        seen.add(path)
+        if _looks_like_real_kubectl(path):
+            _KUBECTL_CACHE = path
+            return path
+
+    sys.exit(
+        "No working kubectl found. Tried:\n  "
+        + "\n  ".join(sorted(seen))
+        + "\nSet $env:KUBECTL to point to a real kubectl, or install one via "
+        "`winget install --scope user --id Kubernetes.kubectl`."
+    )
 
 
 def _flagd_set(flag_key: str, variant: str, *, namespace: str = DEFAULT_NAMESPACE) -> None:
@@ -71,15 +151,19 @@ def _flagd_set(flag_key: str, variant: str, *, namespace: str = DEFAULT_NAMESPAC
     port-forward and call flagd's HTTP API directly.
     """
     kubectl = _require_kubectl()
-    print(f"[flagd] reading ConfigMap flagd/feature-flag-config in ns={namespace}")
+    print(f"[flagd] reading ConfigMap flagd-config in ns={namespace}")
+    # Put -n BEFORE the subcommand. Some kubectl builds (e.g. the one shipped
+    # by Rancher Desktop) reject `-n` after the subcommand with
+    # "unknown shorthand flag: 'n' in -n" because of how flag interspersion is
+    # configured. Long form also works: --namespace=<ns>.
     raw = subprocess.check_output(
-        [kubectl, "get", "configmap", "flagd-config", "-n", namespace, "-o", "json"]
+        [kubectl, "-n", namespace, "get", "configmap", "flagd-config", "-o", "json"]
     )
     cm = json.loads(raw)
     # The ConfigMap key holding the flag JSON varies between chart versions —
-    # try the two known names.
+    # try the known names.
     data_key = next(
-        (k for k in ("flagd-config.json", "demo.flagd.json") if k in cm.get("data", {})),
+        (k for k in ("demo.flagd.json", "flagd-config.json") if k in cm.get("data", {})),
         None,
     )
     if data_key is None:
@@ -90,13 +174,20 @@ def _flagd_set(flag_key: str, variant: str, *, namespace: str = DEFAULT_NAMESPAC
     flag_doc["flags"][flag_key]["defaultVariant"] = variant
     cm["data"][data_key] = json.dumps(flag_doc)
     payload = json.dumps({"data": cm["data"]})
+    # --field-manager=helm so future helm upgrades / rollbacks don't conflict
+    # with our patches. Without this, kubectl uses field manager
+    # 'kubectl-patch' which Helm's server-side apply refuses to override and
+    # the next bootstrap.ps1 run fails with a managedFields conflict.
     subprocess.check_call(
-        [kubectl, "patch", "configmap", "flagd-config", "-n", namespace, "--patch", payload]
+        [
+            kubectl, "-n", namespace, "patch", "configmap", "flagd-config",
+            "--patch", payload, "--field-manager=helm",
+        ]
     )
     print(f"[flagd] set {flag_key}.defaultVariant = {variant!r}")
     # flagd watches the file but we kick the deployment to be safe.
     subprocess.call(
-        [kubectl, "rollout", "restart", f"deployment/flagd", "-n", namespace],
+        [kubectl, "-n", namespace, "rollout", "restart", "deployment/flagd"],
         stderr=subprocess.DEVNULL,
     )
 
@@ -117,8 +208,9 @@ def _flagd_clear(*, namespace: str = DEFAULT_NAMESPACE) -> None:
 def _kubectl_delete_pod(selector: str, *, namespace: str = DEFAULT_NAMESPACE) -> None:
     kubectl = _require_kubectl()
     print(f"[kubectl] deleting pod with selector {selector!r} in ns={namespace}")
+    # -n before the subcommand for the same flag-interspersion reason as above.
     subprocess.check_call(
-        [kubectl, "delete", "pod", "-n", namespace, "-l", selector, "--grace-period=0", "--force"]
+        [kubectl, "-n", namespace, "delete", "pod", "-l", selector, "--grace-period=0", "--force"]
     )
 
 

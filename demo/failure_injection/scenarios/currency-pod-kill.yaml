@@ -11,7 +11,9 @@ description: |
 mechanism: kubectl
 kubectl:
   namespace: otel-demo
-  selector: app.kubernetes.io/component=currencyservice
+  # Chart 0.40.x dropped the '-service' suffix on component labels.
+  # Verify with: kubectl -n otel-demo get pod -l app.kubernetes.io/component=currency
+  selector: app.kubernetes.io/component=currency
   action: delete-pod
 
 expected_signals:
