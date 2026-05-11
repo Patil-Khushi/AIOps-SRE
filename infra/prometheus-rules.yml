@@ -1,0 +1,95 @@
+# Alert rules for the AIOps demo.
+#
+# These rules fire when flagd-toggled failure scenarios cause measurable
+# anomalies in the OTel-demo's HTTP-client instrumentation metrics.
+# Thresholds are deliberately loose so the demo loop (flip flag → wait ~90 s
+# → alert fires → agent triages) feels responsive.
+#
+# Apply by patching the `prometheus` ConfigMap in namespace `otel-demo`:
+#   kubectl patch cm prometheus -n otel-demo --type merge \
+#     -p (ConvertTo-Json @{data=@{'alerting_rules.yml' = (Get-Content $f -Raw)}} -Depth 5 -Compress)
+
+groups:
+  - name: aiops-demo
+    interval: 30s
+    rules:
+
+      - alert: PaymentErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="payment",http_status_code!~"2.."}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: critical
+          service: payment
+          alert_type: error_rate
+        annotations:
+          summary: Payment service returning HTTP 5xx errors
+          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/payment-cpu
+          flag_hint: 'toggle paymentFailure=on at http://localhost:8080/feature/'
+
+      - alert: CartErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="cart",http_status_code!~"2.."}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: high
+          service: cart
+          alert_type: error_rate
+        annotations:
+          summary: Cart service returning HTTP 5xx errors
+          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/cart
+          flag_hint: 'toggle cartFailure=on at http://localhost:8080/feature/'
+
+      - alert: ProductCatalogErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="product-catalog",http_status_code!~"2.."}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: high
+          service: product-catalog
+          alert_type: error_rate
+        annotations:
+          summary: Product catalog service returning HTTP 5xx errors
+          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/catalog
+          flag_hint: 'toggle productCatalogFailure=on at http://localhost:8080/feature/'
+
+      - alert: RecommendationLatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(http_client_duration_milliseconds_bucket{service_name="recommendation"}[5m])
+          )) > 1000
+        for: 2m
+        labels:
+          severity: high
+          service: recommendation
+          alert_type: latency
+        annotations:
+          summary: Recommendation service p95 latency above 1 s
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
+          runbook_url: https://runbooks.example.com/recommendation
+          flag_hint: 'toggle recommendationCacheFailure=on at http://localhost:8080/feature/'
+
+      - alert: FrontendTrafficSurge
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="frontend"}[2m])
+          ) > 10
+        for: 30s
+        labels:
+          severity: warning
+          service: frontend
+          alert_type: traffic
+        annotations:
+          summary: Frontend request rate above 10 req/s (load surge)
+          description: 'service={{ $labels.service_name }} rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/frontend
+          flag_hint: 'toggle loadgeneratorFloodHomepage=on at http://localhost:8080/feature/'

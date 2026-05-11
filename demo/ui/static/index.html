@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adaptive AIOps — Alert Triage Demo</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Adaptive AIOps — Alert Triage <span class="agent-id">RA-001</span></h1>
+    <div id="status-strip">
+      <span class="status-chip" id="status-llm">LLM: …</span>
+      <span class="status-chip" id="status-prom">Prometheus: …</span>
+      <span class="status-chip" id="status-jaeger">Jaeger: …</span>
+      <span class="status-chip muted" id="status-time">—</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="pane left">
+      <h2>Fixtures</h2>
+      <p class="hint">Hand-crafted alerts (<code>evals/golden.json</code>). Click to triage.</p>
+      <div id="fixtures-list" class="card-list">
+        <div class="empty">loading…</div>
+      </div>
+
+      <h2 class="spaced">Inject failures</h2>
+      <p class="hint">
+        Click <b>Inject</b> to flip the matching flagd flag in the cluster. The
+        Prometheus alert rule fires in ~60–120 s; the UI then auto-polls and
+        triages the resulting alert. Click <b>Reset</b> to flip the flag back.
+      </p>
+      <div id="scenarios-list" class="card-list">
+        <div class="empty">loading…</div>
+      </div>
+
+      <h2 class="spaced">Live alerts</h2>
+      <p class="hint">
+        Pulled from Prometheus <code>/api/v1/alerts</code>. Either inject a
+        scenario above, or toggle a flag directly in the
+        <a href="http://localhost:8080/feature/" target="_blank" rel="noreferrer">flagd UI ↗</a>.
+      </p>
+      <div class="row">
+        <button id="btn-refresh-live" class="primary">Refresh live alerts</button>
+        <button id="btn-triage-all-live">Triage all firing</button>
+      </div>
+      <div id="live-list" class="card-list">
+        <div class="empty">(none — click refresh)</div>
+      </div>
+    </section>
+
+    <section class="pane right">
+      <div class="right-header">
+        <h2>Triage verdict</h2>
+        <button id="btn-clear" class="ghost" title="Clear">clear</button>
+      </div>
+      <div id="verdict-pane" class="verdict-pane">
+        <div class="empty">No verdict yet. Click a fixture on the left, or refresh live alerts.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>frontend: <code>demo/ui/static</code></span>
+    <span>backend: <code>demo/ui/server.py</code></span>
+    <span>agent: <code>agents/alert_triage</code></span>
+    <a href="http://localhost:8080/grafana/" target="_blank" rel="noreferrer">Grafana ↗</a>
+    <a href="http://localhost:8080/jaeger/ui/" target="_blank" rel="noreferrer">Jaeger ↗</a>
+    <a href="http://localhost:8080/feature/" target="_blank" rel="noreferrer">flagd ↗</a>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

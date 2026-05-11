@@ -20,6 +20,15 @@ llm-openai = ["openai>=1.40"]
 llm-ollama = ["ollama>=0.3"]
 all-llm = ["anthropic>=0.39", "openai>=1.40", "ollama>=0.3"]
 
+# Embedding similarity for Alert Triage dedup (workflow step 4).
+# Optional: agents fall back to rule-based dedup when this is not installed.
+# Install with: uv sync --extra embeddings
+embeddings = ["sentence-transformers>=2.7", "numpy>=1.26"]
+
+# Demo UI (FastAPI service + static frontend in demo/ui/).
+# Install with: uv sync --extra ui
+ui = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
+
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

@@ -49,8 +49,13 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "automation.runbook.execute": AutonomyLevel.REQUIRED,
     "notify.send": AutonomyLevel.NONE,
     "observability.metrics.query": AutonomyLevel.NONE,
+    "observability.metrics.alerts": AutonomyLevel.NONE,
     "observability.logs.query": AutonomyLevel.NONE,
     "observability.traces.query": AutonomyLevel.NONE,
+    "observability.traces.search": AutonomyLevel.NONE,
+    "observability.traces.services": AutonomyLevel.NONE,
+    "itsm.cmdb.lookup": AutonomyLevel.NONE,
+    "oncall.schedule.lookup": AutonomyLevel.NONE,
     # Prescriptive-Adaptive phase
     "remediation.recommend": AutonomyLevel.REQUIRED,
     "auto_heal.execute": AutonomyLevel.OPTIONAL,
