@@ -18,7 +18,9 @@
       "PowerShell(helm *)",
       "Bash(git add *)",
       "Bash(git rm *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(uv sync *)",
+      "Bash(uv run *)"
     ]
   }
 }

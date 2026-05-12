@@ -132,6 +132,7 @@ start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-fo
 - **No Docker, no cloud, ~16 GB laptops.** Org policy bans Docker on dev machines; AKS/GKE are post-POC. All cluster work is Rancher Desktop's bundled k3s. Allocate ≥6 GB to its VM (Settings → Virtual Machine); the OTel demo uses ~3.5 GB inside.
 - **Rancher Desktop ships a `kuberlr`-wrapped `kubectl` that rejects standard flags from Python `subprocess` calls.** Install a standalone `kubectl` (`winget install --scope user Kubernetes.kubectl`) — `start.ps1` and `demo/failure_injection/inject.py` prefer it via `$LOCALAPPDATA\Programs\kubectl`.
 - **Two PowerShell windows.** `start.ps1` runs port-forwards as background jobs in the *current* session; closing that shell kills them. Use `stop.ps1` to tear them down cleanly.
+- **`flagd-config` field-manager trap.** Failure-injection patches must use `--field-manager=helm` (already wired in `demo/failure_injection/inject.py`); plain `kubectl patch` poisons the configmap so subsequent `helm upgrade` fails with a server-side-apply conflict. Recovery procedure in `ONBOARDING.md` §7.
 
 ### Common commands
 
@@ -178,12 +179,11 @@ uv run ruff format .
 
 # Tear down the OTel demo (leaves Rancher Desktop's k3s running)
 .\infra\teardown.ps1
+
+# Bulk-create GitHub Issues + add to the project board (idempotent — safe to
+# re-run; see scripts/github_bulk/README.md for the manifest format).
+.\scripts\github_bulk\run.ps1
 ```
-
-### Local-environment quirks worth knowing
-
-- **Rancher Desktop ships a `kuberlr` wrapper at `C:\Program Files\Rancher Desktop\…\kubectl.exe`** that breaks under Python `subprocess` (rejects `-n`, `--client`, etc., though it works from PowerShell directly). `inject.py` auto-resolves a real kubectl; install one with `winget install --scope user --id Kubernetes.kubectl` for ad-hoc use. See `ONBOARDING.md` §7.
-- **`flagd-config` field-manager trap:** failure-injection patches must use `--field-manager=helm` (already wired in `inject.py`); plain `kubectl patch` poisons the configmap so subsequent `helm upgrade` fails with a server-side-apply conflict. Recovery is documented in `ONBOARDING.md` §7.
 
 ### Constraints code review will catch
 

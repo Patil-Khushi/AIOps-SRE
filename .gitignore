@@ -50,6 +50,13 @@ evals/runs/
 demo/.runs/
 *.log
 
+# Persistent state DB (aiops.state default lives under data/)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # Cluster state we never want to commit
 **/charts/*.tgz
 

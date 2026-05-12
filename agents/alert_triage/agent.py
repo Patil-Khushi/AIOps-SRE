@@ -24,33 +24,32 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from aiops.llm import Message
-from aiops.llm import complete as llm_complete
-from aiops.tools import get_registry
+import aiops.tools.mock_providers
 
 # Side-effect imports: register providers with the registry.
 # observability registers live Prometheus + Jaeger; mock_providers contributes
 # only the CMDB + on-call lookups (static tables, no live CMDB/PagerDuty wired).
-import aiops.tools.observability  # noqa: F401, E402
-import aiops.tools.mock_providers  # noqa: F401, E402
-
-from agents.alert_triage.models import (  # noqa: E402
+import aiops.tools.observability  # noqa: F401
+from agents.alert_triage.models import (
     Alert,
     AuditMetadata,
     Severity,
     Status,
     TriageVerdict,
 )
-from agents.alert_triage.prompts import (  # noqa: E402
+from agents.alert_triage.prompts import (
     SEVERITY_PROMPT_USER,
     SUMMARY_PROMPT_USER,
     SYSTEM_PROMPT,
 )
+from aiops.llm import Message
+from aiops.llm import complete as llm_complete
+from aiops.state import repository as state_repo
+from aiops.tools import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +60,6 @@ _CUSTOMER_FACING = {
 }
 _DEDUP_WINDOW = timedelta(minutes=5)
 _EMBEDDING_SIM_THRESHOLD = 0.85
-_DEDUP_HISTORY_MAX = 1000
 
 # ─── embedding model (lazy, optional) ───────────────────────────────────────
 _EMBED_MODEL: Any = None  # None=unloaded, False=unavailable, else model object
@@ -89,87 +87,120 @@ def _alert_text_for_embedding(alert: Alert) -> str:
     return " | ".join(parts)
 
 
-# ─── dedup store (in-memory, process-local) ─────────────────────────────────
+# ─── dedup (persisted clusters + in-memory embedding cache) ────────────────
+#
+# Cluster identity (key, alert list, last_seen) lives in SQLite via
+# aiops.state.repository so dedup survives uvicorn restarts. Embedding vectors
+# stay in-process — they're large (~1.5 KB each), per-cluster, and cheap to
+# regenerate. After a restart, the exact-key path keeps working from the first
+# new alert; the embedding-similarity path is cold for one 5-min window.
 
 
 @dataclass
-class _Cluster:
+class _DedupHit:
     cluster_key: str
-    alerts: list[Alert] = field(default_factory=list)
-    embeddings: list[Any] = field(default_factory=list)  # numpy arrays
-    last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    is_new: bool
+    method: str  # "exact" | "embedding" | "new"
+    alert_count: int
+    source_alerts: list[str]
 
 
-class _DedupStore:
-    """In-memory dedup store, 5-min sliding window. Single-process; not
-    thread-safe. Phase-1 follow-up: swap to Redis with TTL keys (capability
-    ``cache.kv.set`` / ``cache.kv.get`` — not yet defined)."""
+# cluster_key -> latest L2-normalized embedding (numpy array). Bounded by the
+# 5-min eviction sweep below.
+_EMBED_CACHE: dict[str, Any] = {}
 
-    def __init__(self) -> None:
-        self._clusters: dict[str, _Cluster] = {}
-        self._order: deque[str] = deque(maxlen=_DEDUP_HISTORY_MAX)
 
-    def _evict_expired(self, now: datetime) -> None:
-        expired = [k for k, c in self._clusters.items() if now - c.last_seen > _DEDUP_WINDOW]
-        for k in expired:
-            del self._clusters[k]
+def _evict_embed_cache(active_keys: set[str]) -> None:
+    stale = [k for k in _EMBED_CACHE if k not in active_keys]
+    for k in stale:
+        _EMBED_CACHE.pop(k, None)
 
-    def find_or_create(self, alert: Alert) -> tuple[_Cluster, bool, str]:
-        """Returns (cluster, is_new, dedup_method).
 
-        dedup_method is "exact" | "embedding" | "new"."""
-        now = alert.timestamp
-        self._evict_expired(now)
+def _dedup(alert: Alert) -> _DedupHit:
+    """Resolve ``alert`` against the persistent cluster store.
 
-        # Stage 1: exact key match
-        key = alert.cluster_key()
-        if key in self._clusters:
-            c = self._clusters[key]
-            c.alerts.append(alert)
-            c.last_seen = now
-            return c, False, "exact"
+    Stage 1 — exact cluster_key match against an active cluster.
+    Stage 2 — embedding cosine similarity ≥ threshold against any active
+              cluster whose embedding is in the in-memory cache.
+    Stage 3 — new cluster.
+    """
+    state_repo.evict_expired_clusters(_DEDUP_WINDOW)
 
-        # Stage 2: embedding similarity
-        model = _get_embed_model()
-        new_emb_norm = None
-        if model is not None:
-            try:
-                import numpy as np  # noqa: PLC0415 — optional dep, only when embeddings enabled
-
-                emb = model.encode(_alert_text_for_embedding(alert), convert_to_numpy=True)
-                new_emb_norm = emb / (float(np.linalg.norm(emb)) + 1e-9)
-                for c in self._clusters.values():
-                    if not c.embeddings:
-                        continue
-                    sim = float(np.dot(new_emb_norm, c.embeddings[-1]))
-                    if sim >= _EMBEDDING_SIM_THRESHOLD:
-                        c.alerts.append(alert)
-                        c.embeddings.append(new_emb_norm)
-                        c.last_seen = now
-                        return c, False, "embedding"
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("embedding similarity skipped: %s", exc)
-
-        # New cluster
-        c = _Cluster(
+    key = alert.cluster_key()
+    existing = state_repo.find_active_cluster(key, window=_DEDUP_WINDOW)
+    if existing is not None:
+        updated = state_repo.upsert_cluster(
             cluster_key=key,
-            alerts=[alert],
-            embeddings=[new_emb_norm] if new_emb_norm is not None else [],
-            last_seen=now,
+            service=alert.service,
+            metric=alert.metric,
+            alert_id=alert.alert_id,
+            seen_at=alert.timestamp,
         )
-        self._clusters[key] = c
-        self._order.append(key)
-        return c, True, "new"
+        return _DedupHit(
+            cluster_key=key,
+            is_new=False,
+            method="exact",
+            alert_count=updated["alert_count"],
+            source_alerts=updated["source_alerts"],
+        )
 
+    # Embedding-similarity path
+    model = _get_embed_model()
+    new_emb_norm = None
+    if model is not None:
+        try:
+            import numpy as np
 
-# Module-level singleton. Resettable by tests via ``reset_dedup_store()``.
-_DEDUP = _DedupStore()
+            emb = model.encode(_alert_text_for_embedding(alert), convert_to_numpy=True)
+            new_emb_norm = emb / (float(np.linalg.norm(emb)) + 1e-9)
+            active = state_repo.list_active_clusters(_DEDUP_WINDOW)
+            _evict_embed_cache({c["cluster_key"] for c in active})
+            for cluster in active:
+                cached = _EMBED_CACHE.get(cluster["cluster_key"])
+                if cached is None:
+                    continue
+                sim = float(np.dot(new_emb_norm, cached))
+                if sim >= _EMBEDDING_SIM_THRESHOLD:
+                    updated = state_repo.upsert_cluster(
+                        cluster_key=cluster["cluster_key"],
+                        service=alert.service,
+                        metric=alert.metric,
+                        alert_id=alert.alert_id,
+                        seen_at=alert.timestamp,
+                    )
+                    _EMBED_CACHE[cluster["cluster_key"]] = new_emb_norm
+                    return _DedupHit(
+                        cluster_key=cluster["cluster_key"],
+                        is_new=False,
+                        method="embedding",
+                        alert_count=updated["alert_count"],
+                        source_alerts=updated["source_alerts"],
+                    )
+        except Exception as exc:
+            logger.warning("embedding similarity skipped: %s", exc)
+
+    created = state_repo.upsert_cluster(
+        cluster_key=key,
+        service=alert.service,
+        metric=alert.metric,
+        alert_id=alert.alert_id,
+        seen_at=alert.timestamp,
+    )
+    if new_emb_norm is not None:
+        _EMBED_CACHE[key] = new_emb_norm
+    return _DedupHit(
+        cluster_key=key,
+        is_new=True,
+        method="new",
+        alert_count=created["alert_count"],
+        source_alerts=created["source_alerts"],
+    )
 
 
 def reset_dedup_store() -> None:
-    """Wipe the dedup memory. For tests/evals that need a clean slate."""
-    global _DEDUP
-    _DEDUP = _DedupStore()
+    """Wipe the in-memory embedding cache. Persistent cluster rows are
+    untouched — call ``aiops.state`` directly if a test needs a clean DB."""
+    _EMBED_CACHE.clear()
 
 
 # ─── stage 5: severity classification ───────────────────────────────────────
@@ -248,7 +279,7 @@ def _classify_severity_llm(alert: Alert) -> tuple[Severity, float]:
             sev: Severity = f"Sev-{sev_m.group(1)}"  # type: ignore[assignment]
             conf = float(conf_m.group(1)) if conf_m else 0.6
             return sev, min(max(conf, 0.0), 1.0)
-    except Exception as exc:  # noqa: BLE001 — boundary
+    except Exception as exc:
         logger.warning("LLM severity classify failed: %s", exc)
     return "Sev-3", 0.4
 
@@ -315,7 +346,7 @@ def _fetch_metric_context(alert: Alert, trace: list[str]) -> dict[str, Any] | No
         except KeyError:
             trace.append("metrics_ctx: capability observability.metrics.query not registered")
             return None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             trace.append(f"metrics_ctx[{name}]: error ({type(exc).__name__})")
             continue
         if not res.ok:
@@ -352,7 +383,7 @@ def _fetch_trace_context(alert: Alert, trace: list[str]) -> dict[str, Any] | Non
         except KeyError:
             trace.append("trace_ctx: capability observability.traces.search not registered")
             return None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             trace.append(f"trace_ctx: error ({type(exc).__name__})")
             return None
         if res.ok and (res.data or {}).get("trace_count", 0) > 0:
@@ -411,7 +442,7 @@ def _generate_summary(
         # Take first non-empty line, cap length
         first = next((ln for ln in text.split("\n") if ln.strip()), "")
         return first[:200]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("LLM summary failed: %s", exc)
         return _template_summary(alert)
 
@@ -431,15 +462,15 @@ def triage(alert: Alert) -> TriageVerdict:
         f"received alert_id={alert.alert_id} service={alert.service} source={alert.source}"
     )
 
-    # Stage 3: deduplicate
-    cluster, is_new, dedup_method = _DEDUP.find_or_create(alert)
-    duplicate_count = len(cluster.alerts)
-    if is_new:
+    # Stage 3: deduplicate (persisted via aiops.state)
+    hit = _dedup(alert)
+    duplicate_count = hit.alert_count
+    if hit.is_new:
         decision_trace.append("new alert cluster")
         status: Status = "Active"
     else:
         decision_trace.append(
-            f"matched duplicate alert cluster via {dedup_method} match (size={duplicate_count})"
+            f"matched duplicate alert cluster via {hit.method} match (size={duplicate_count})"
         )
         status = "Suppressed"
 
@@ -499,14 +530,14 @@ def triage(alert: Alert) -> TriageVerdict:
     summary = _generate_summary(alert, metrics_ctx, traces_ctx)
     decision_trace.append("generated incident summary")
 
-    # Stage 8: assemble
+    # Stage 8: assemble + persist
     audit = AuditMetadata(
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         created_by="RA-001",
-        source_alerts=[a.alert_id for a in cluster.alerts],
+        source_alerts=list(hit.source_alerts),
         decision_trace=decision_trace,
     )
-    return TriageVerdict(
+    verdict = TriageVerdict(
         affected_service=alert.service,
         severity=sev,
         confidence_score=conf,
@@ -518,3 +549,8 @@ def triage(alert: Alert) -> TriageVerdict:
         status=status,
         audit_metadata=audit,
     )
+    try:
+        state_repo.save_verdict(verdict, cluster_key=hit.cluster_key)
+    except Exception as exc:
+        logger.warning("verdict persistence failed: %s", exc)
+    return verdict

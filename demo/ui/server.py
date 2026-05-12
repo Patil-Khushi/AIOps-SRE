@@ -31,7 +31,7 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +72,8 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
 from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
+from aiops.state import init_db  # noqa: E402
+from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import get_registry  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,11 @@ FIXTURES_PATH = (
 )
 
 app = FastAPI(title="Adaptive AIOps — Alert Triage demo", version="0.1.0")
+
+
+@app.on_event("startup")
+def _bootstrap_state() -> None:
+    init_db()
 
 
 # ─── routes ─────────────────────────────────────────────────────────────────
@@ -103,12 +110,12 @@ def health() -> dict[str, Any]:
     try:
         res = registry.call("observability.metrics.query", promql="up")
         prom_ok = bool(res.ok)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         res = registry.call("observability.traces.services")
         jaeger_ok = bool(res.ok)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return {
@@ -117,7 +124,7 @@ def health() -> dict[str, Any]:
         "registered_capabilities": caps,
         "prometheus_reachable": prom_ok,
         "jaeger_reachable": jaeger_ok,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -139,7 +146,7 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     """Triage a single alert. Body: ``{"alert": {<Alert payload>}}``."""
     try:
         alert_obj = Alert(**req.alert)
-    except Exception as exc:  # noqa: BLE001 — boundary validation
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
     verdict: TriageVerdict = triage(alert_obj)
     return verdict.model_dump(mode="json")
@@ -199,6 +206,19 @@ async def triage_live() -> dict[str, Any]:
     return {"count": len(verdicts), "verdicts": verdicts}
 
 
+@app.get("/api/verdicts")
+def list_verdicts_endpoint(
+    limit: int = 50,
+    service: str | None = None,
+    severity: str | None = None,
+) -> dict[str, Any]:
+    """Newest-first list of persisted verdicts for the dashboard history view."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+    verdicts = state_repo.list_verdicts(limit=limit, service=service, severity=severity)
+    return {"count": len(verdicts), "verdicts": verdicts}
+
+
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 
@@ -235,7 +255,7 @@ def _prometheus_alert_to_candidate(alert: dict[str, Any]) -> dict[str, Any]:
         "service": service,
         "metric": metric,
         "value": value,
-        "timestamp": alert.get("activeAt") or datetime.now(timezone.utc).isoformat(),
+        "timestamp": alert.get("activeAt") or datetime.now(UTC).isoformat(),
         "source": "Prometheus",
         "severity_hint": labels.get("severity"),
         "labels": {k: str(v) for k, v in labels.items()},
@@ -467,7 +487,7 @@ def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
     return {
         "flag": flag_name,
         "variant": variant,
-        "applied_at": datetime.now(timezone.utc).isoformat(),
+        "applied_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -537,7 +557,7 @@ def reset_all_scenarios() -> dict[str, Any]:
     cfg["flags"] = flags
 
     if not touched:
-        return {"reset_count": 0, "touched": [], "applied_at": datetime.now(timezone.utc).isoformat()}
+        return {"reset_count": 0, "touched": [], "applied_at": datetime.now(UTC).isoformat()}
 
     patch_body = json.dumps({"data": {"demo.flagd.json": json.dumps(cfg)}})
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
@@ -555,7 +575,7 @@ def reset_all_scenarios() -> dict[str, Any]:
     return {
         "reset_count": len(touched),
         "touched": touched,
-        "applied_at": datetime.now(timezone.utc).isoformat(),
+        "applied_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -590,7 +610,7 @@ def get_topology() -> dict[str, Any]:
                 if name and "jaeger" not in name.lower():
                     nodes.append({"id": name, "label": name})
 
-            end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            end_ms = int(datetime.now(UTC).timestamp() * 1000)
             try:
                 deps = client.get(
                     f"{_JAEGER_URL}{_JAEGER_PREFIX}/api/dependencies",
@@ -698,7 +718,7 @@ class _AlertHub:
             for ws in clients:
                 try:
                     await ws.send_json(payload)
-                except Exception:  # noqa: BLE001 — client gone mid-send
+                except Exception:
                     stale.append(ws)
             if stale:
                 async with self._lock:
@@ -716,7 +736,7 @@ def _collect_alerts_frame() -> dict[str, Any]:
     return {
         "type": "alerts",
         "alerts": data["alerts"],
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": datetime.now(UTC).isoformat(),
     }
 
 
