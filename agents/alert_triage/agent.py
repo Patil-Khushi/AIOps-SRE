@@ -230,13 +230,16 @@ def _classify_severity_llm(alert: Alert) -> tuple[Severity, float]:
         labels=alert.labels,
     )
     try:
+        # GPT-5 and o-series spend tokens on internal reasoning *before* emitting
+        # text; budget needs to cover that or the response is empty. 1000 is a
+        # safe floor (~800 reasoning + 200 output for a short Sev classification).
         resp = llm_complete(
             messages=[
                 Message(role="system", content=SYSTEM_PROMPT),
                 Message(role="user", content=user_prompt),
             ],
             temperature=0.1,
-            max_tokens=200,
+            max_tokens=1000,
         )
         text = resp.text
         sev_m = re.search(r"\bSev-([1-4])\b", text)
@@ -391,13 +394,15 @@ def _generate_summary(
         trace_count=(traces_ctx or {}).get("trace_count", 0) if traces_ctx else 0,
     )
     try:
+        # See note in _classify_severity_llm — GPT-5 burns ~800 tokens on
+        # reasoning before producing output, so the budget has to cover both.
         resp = llm_complete(
             messages=[
                 Message(role="system", content=SYSTEM_PROMPT),
                 Message(role="user", content=user_prompt),
             ],
             temperature=0.3,
-            max_tokens=120,
+            max_tokens=1500,
         )
         text = (resp.text or "").strip()
         # Detect stub-provider echo (it prefixes "[stub] echoing user message:")

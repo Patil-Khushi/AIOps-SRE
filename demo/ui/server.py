@@ -41,8 +41,32 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+
+# Load .env explicitly. ``uv run`` does NOT auto-load .env files, so without
+# this every uvicorn launch sees a bare environment, the AIOPS_LLM_PROVIDER
+# setdefault below sets the provider to "stub", and the dashboard header chip
+# is stuck red. Done here (not via python-dotenv) to avoid an extra dep.
+def _load_dotenv() -> None:
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        # Strip inline comments and surrounding whitespace/quotes.
+        val = val.split("#", 1)[0].strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
+_load_dotenv()
+
 # Default to the stub LLM so the demo runs without an API key. Override by
-# setting AIOPS_LLM_PROVIDER=anthropic before launching uvicorn.
+# setting AIOPS_LLM_PROVIDER=anthropic before launching uvicorn (or by
+# editing .env, which _load_dotenv above picks up).
 os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 
 # Importing the agent triggers @tool registration for prometheus, jaeger,
@@ -154,15 +178,24 @@ def live_alerts() -> dict[str, Any]:
 
 
 @app.post("/api/triage/live", response_model=None)
-def triage_live() -> dict[str, Any]:
-    """Fetch firing Prometheus alerts and triage every one."""
+async def triage_live() -> dict[str, Any]:
+    """Fetch firing Prometheus alerts and triage every one in parallel.
+
+    Each call to ``triage()`` is synchronous (it makes blocking LLM + HTTP
+    calls), so we wrap each in ``asyncio.to_thread`` and gather them. With
+    N firing alerts, total latency is ~max-per-alert instead of ~sum.
+    """
     payload = live_alerts()
-    verdicts: list[dict[str, Any]] = []
-    for candidate in payload["alerts"]:
+    candidates = payload["alerts"]
+
+    def _triage_one(candidate: dict[str, Any]) -> dict[str, Any]:
         try:
-            verdicts.append(triage_alert(TriageRequest(alert=candidate)))
+            return triage_alert(TriageRequest(alert=candidate))
         except HTTPException as exc:
-            verdicts.append({"error": exc.detail, "alert": candidate})
+            return {"error": exc.detail, "alert": candidate}
+
+    tasks = [asyncio.to_thread(_triage_one, c) for c in candidates]
+    verdicts = list(await asyncio.gather(*tasks)) if tasks else []
     return {"count": len(verdicts), "verdicts": verdicts}
 
 

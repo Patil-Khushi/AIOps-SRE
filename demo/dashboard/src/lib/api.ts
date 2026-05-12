@@ -10,9 +10,13 @@ import type {
 } from '@/types/api';
 
 // Axios instance — uses Vite proxy in dev, same-origin in prod (served from /dashboard).
+// Default timeout is generous (90 s) because /api/triage/live runs the agent's
+// 8-stage pipeline (including LLM calls) for every firing alert. Even with the
+// backend parallelizing per-alert triage via asyncio.gather, a worst-case
+// Azure OpenAI cold-start can still take 10–20 s.
 export const http = axios.create({
   baseURL: '',
-  timeout: 30_000,
+  timeout: 90_000,
   headers: { 'Content-Type': 'application/json' },
 });
 
