@@ -24,26 +24,27 @@ See [`docs/poc_aiops_onboarding_guide.docx`](docs/poc_aiops_onboarding_guide.doc
 
 ## Quick start
 
-**Prerequisites:** [Rancher Desktop](https://rancherdesktop.io/) (or any local Kubernetes), real `kubectl` (the winget one, not Rancher's wrapper — see [`ONBOARDING.md`](ONBOARDING.md) §7), `helm`, Python 3.12+, [`uv`](https://github.com/astral-sh/uv).
-
-> First-time setup walkthrough — including admin/IT prerequisites — is in [`ONBOARDING.md`](ONBOARDING.md).
+**Prerequisites:** [Rancher Desktop](https://rancherdesktop.io/) (k3s enabled), `kubectl`, `helm`, Python 3.12+, [`uv`](https://github.com/astral-sh/uv) (or `pip`). See [`infra/README.md`](infra/README.md) for install commands and why we use Rancher Desktop instead of Docker / kind.
 
 ### Windows / PowerShell (primary)
 
 ```powershell
-# 1. Install Python deps
-uv sync --extra dev
+# 1. Make sure Rancher Desktop is running (tray icon shows 'Kubernetes: running').
 
-# 2. Bring up the OTel demo (idempotent — safe to re-run)
+# 2. Install the OTel demo into the local k3s cluster
 .\infra\bootstrap.ps1
 
-# 3. Port-forward the demo (run in a separate window — it holds the foreground)
+# 3. Install Python deps
+uv sync
+
+# 4. Port-forward the demo's reverse proxy (leave this running in its own window)
 kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
 
-# 4. Trigger a failure scenario, watch it in Grafana, clear it
+# 5. Trigger a failure scenario
 uv run python -m demo.failure_injection.inject slow-product-catalog
-# Grafana → Demo Dashboard at http://localhost:8080/grafana/
-uv run python -m demo.failure_injection.inject --clear
+
+# 6. Open Grafana
+# http://localhost:8080/grafana/
 ```
 
 ### macOS / Linux
@@ -85,7 +86,7 @@ Tearing down uninstalls the OTel demo Helm release and deletes the namespace; **
 │   ├── failure_injection/       # One-command failure scenario runner
 │   ├── truth_files/             # Ground-truth per scenario (cause + expected fix)
 │   └── load/                    # k6 load scripts for steady-state traffic
-├── infra/                       # Bootstrap for the OTel demo on Rancher Desktop k3s
+├── infra/                       # Local cluster bootstrap (Rancher Desktop k3s + Helm)
 ├── policies/                    # OPA policies — HITL + guardrails as code
 ├── tests/                       # Repo-level smoke tests
 ├── scripts/                     # Convenience scripts

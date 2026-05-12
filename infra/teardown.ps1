@@ -1,6 +1,5 @@
-# infra/teardown.ps1
-# Uninstalls the OTel demo and namespace. Leaves Rancher Desktop / k3s alone —
-# stopping the cluster itself is done from the Rancher Desktop UI.
+# infra/teardown.ps1 — uninstall the OTel demo from Rancher Desktop k3s.
+# Leaves the Rancher Desktop cluster itself running (we don't own it).
 
 [CmdletBinding()]
 param(
@@ -10,23 +9,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Get-Command helm -ErrorAction SilentlyContinue)) {
-    Write-Error "helm not on PATH."
-}
+Write-Host "==> Stopping any port-forward jobs started by infra/port-forward.ps1"
+Get-Job -Name 'pf-*' -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job | Out-Null
 
-$release = helm -n $Namespace ls -q 2>$null
+$release = helm list -n $Namespace -q 2>$null
 if ($release -split "`n" -contains 'otel-demo') {
-    Write-Host "Uninstalling otel-demo Helm release..."
-    helm -n $Namespace uninstall otel-demo
+    Write-Host "==> Uninstalling helm release 'otel-demo' from namespace '$Namespace'"
+    helm uninstall otel-demo -n $Namespace
 } else {
-    Write-Host "No otel-demo release in namespace '$Namespace' to uninstall."
+    Write-Host "    no helm release 'otel-demo' to uninstall"
 }
 
 if (-not $KeepNamespace) {
-    Write-Host "Deleting namespace '$Namespace'..."
-    kubectl delete namespace $Namespace --ignore-not-found=true
+    $nsExists = $null
+    $nsExists = kubectl get ns $Namespace -o name 2>$null
+    if ($nsExists) {
+        Write-Host "==> Deleting namespace '$Namespace'"
+        kubectl delete ns $Namespace --wait=false
+    }
 }
 
-Write-Host ""
-Write-Host "Done. Rancher Desktop / k3s itself is still running — stop it from"
-Write-Host "the Rancher Desktop UI if you want to free the RAM."
+Write-Host "Done."

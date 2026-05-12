@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # infra/bootstrap.sh — POSIX equivalent of bootstrap.ps1.
-#
-# Assumes Rancher Desktop (or any k3s/k8s) already running with the
-# 'rancher-desktop' kubectl context. See ONBOARDING.md for setup details.
+# Targets Rancher Desktop (k3s) by default. Set CONTEXT='' to use the current kube context.
 set -euo pipefail
 
-CONTEXT="${CONTEXT:-rancher-desktop}"
 NAMESPACE="${NAMESPACE:-otel-demo}"
 CHART_VERSION="${CHART_VERSION:-}"
+CONTEXT="${CONTEXT:-rancher-desktop}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -19,19 +17,25 @@ echo "==> Checking prerequisites"
 require kubectl
 require helm
 
-echo "==> Verifying kubectl context '$CONTEXT'"
-if ! kubectl config get-contexts -o name | grep -qx "$CONTEXT"; then
-  echo "kubectl context '$CONTEXT' not found. Is Rancher Desktop running?" >&2
-  exit 1
+if [ -n "$CONTEXT" ]; then
+  current="$(kubectl config current-context 2>/dev/null || true)"
+  if [ "$current" != "$CONTEXT" ]; then
+    echo "    switching kube context: $current -> $CONTEXT"
+    kubectl config use-context "$CONTEXT" >/dev/null
+  fi
 fi
-kubectl config use-context "$CONTEXT" >/dev/null
 
-echo "==> Verifying cluster is reachable"
-kubectl cluster-info --request-timeout=10s >/dev/null
+echo "==> Verifying Rancher Desktop k3s is reachable"
+if ! kubectl version --request-timeout=5s >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+Cannot reach the Kubernetes API.
 
-node_status=$(kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}')
-if [ "$node_status" != "True" ]; then
-  echo "k3s node is not Ready (status=$node_status). Wait a minute and re-run." >&2
+  Start Rancher Desktop and wait for the tray icon to show 'Kubernetes: running'
+  (usually 30-60 seconds). Then re-run this script.
+
+  If Rancher Desktop is already running, check `kubectl config current-context`
+  matches 'rancher-desktop' and that k3s is enabled (Settings -> Kubernetes).
+EOF
   exit 1
 fi
 
@@ -70,26 +74,21 @@ else
   [ -n "$CHART_VERSION" ] && helm_args+=(--version "$CHART_VERSION")
   helm "${helm_args[@]}"
 
-  echo "==> Waiting for frontend-proxy pod to be Ready"
-  kubectl -n "$NAMESPACE" wait --for=condition=Ready pod \
-    -l app.kubernetes.io/component=frontend-proxy --timeout=300s
-fi
+echo "==> Waiting for frontend pod to be Ready"
+kubectl -n "$NAMESPACE" wait --for=condition=Ready pod \
+  -l app.kubernetes.io/component=frontend --timeout=300s
 
 cat <<EOF
 
 ==> Done.
 
-The OTel demo exposes everything through one port-forward. Run this in a
-separate window (it will hold the foreground):
+Open a separate shell and run:
+    kubectl -n $NAMESPACE port-forward svc/frontend-proxy 8080:8080
 
-  kubectl -n $NAMESPACE port-forward svc/frontend-proxy 8080:8080
-
-Then open in your browser:
-  Webstore:        http://localhost:8080/
-  Grafana:         http://localhost:8080/grafana/    (admin / admin)
-  Jaeger UI:       http://localhost:8080/jaeger/ui/
-  Load generator:  http://localhost:8080/loadgen/
-  Feature flags:   http://localhost:8080/feature/
+Then browse:
+    Frontend:  http://localhost:8080/
+    Grafana:   http://localhost:8080/grafana/   (admin / admin by default)
+    Jaeger:    http://localhost:8080/jaeger/ui/
 
 Trigger a failure:
   uv run python -m demo.failure_injection.inject --list

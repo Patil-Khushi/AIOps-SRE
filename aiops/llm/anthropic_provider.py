@@ -1,8 +1,21 @@
-"""Anthropic provider.
+"""Anthropic provider — supports both anthropic.com API and Azure AI Foundry.
 
-Activated by ``AIOPS_LLM_PROVIDER=anthropic`` (default). Requires:
+Activated by ``AIOPS_LLM_PROVIDER=anthropic`` (default). Requires::
+
     uv sync --extra llm-anthropic
-    export ANTHROPIC_API_KEY=...
+
+Endpoint selection by env var:
+
+- If ``ANTHROPIC_BASE_URL`` is set AND contains ``.azure.com``, the provider
+  uses ``anthropic.AnthropicFoundry`` (Azure AI Foundry deployment of Claude).
+  The ``AIOPS_LLM_MODEL`` value must match the Azure **deployment name**
+  (e.g., ``claude-sonnet-4-6``), not the upstream model id.
+
+- Otherwise the standard ``anthropic.Anthropic`` client is used against
+  ``api.anthropic.com``. ``ANTHROPIC_BASE_URL`` may still be set to point at
+  any other Anthropic-compatible endpoint (e.g., a self-hosted proxy).
+
+In both cases ``ANTHROPIC_API_KEY`` carries the credential.
 """
 
 from __future__ import annotations
@@ -21,8 +34,25 @@ class AnthropicProvider(LLMProvider):
             raise RuntimeError(
                 "anthropic SDK not installed. Run `uv sync --extra llm-anthropic`."
             ) from exc
-        self._sync = anthropic.Anthropic()
-        self._async = anthropic.AsyncAnthropic()
+
+        base_url = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip() or None
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+        if base_url and ".azure.com" in base_url:
+            # Azure AI Foundry — use the Foundry client class.
+            self._sync = anthropic.AnthropicFoundry(api_key=api_key, base_url=base_url)
+            self._async = anthropic.AsyncAnthropicFoundry(api_key=api_key, base_url=base_url)
+            self._flavor = "anthropic-foundry"
+        else:
+            kwargs: dict = {}
+            if api_key:
+                kwargs["api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = base_url
+            self._sync = anthropic.Anthropic(**kwargs)
+            self._async = anthropic.AsyncAnthropic(**kwargs)
+            self._flavor = "anthropic"
+
         self._default_model = os.environ.get("AIOPS_LLM_MODEL", "claude-sonnet-4-6")
 
     def _split(self, req: LLMRequest) -> tuple[str | None, list[dict]]:
@@ -49,7 +79,7 @@ class AnthropicProvider(LLMProvider):
         return LLMResponse(
             text=text,
             model=resp.model,
-            provider="anthropic",
+            provider=self._flavor,
             input_tokens=resp.usage.input_tokens,
             output_tokens=resp.usage.output_tokens,
             stop_reason=resp.stop_reason or "",
@@ -71,7 +101,7 @@ class AnthropicProvider(LLMProvider):
         return LLMResponse(
             text=text,
             model=resp.model,
-            provider="anthropic",
+            provider=self._flavor,
             input_tokens=resp.usage.input_tokens,
             output_tokens=resp.usage.output_tokens,
             stop_reason=resp.stop_reason or "",

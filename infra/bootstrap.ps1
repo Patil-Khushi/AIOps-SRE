@@ -1,31 +1,18 @@
 # infra/bootstrap.ps1
 # One-shot Phase-0 bootstrap for Rancher Desktop. Idempotent — re-run any time.
 #
-# Prerequisites (one-time, see ONBOARDING.md sections 1 and 2):
-#   - WSL2 enabled
-#   - Rancher Desktop installed and running with Kubernetes enabled (k3s)
-#   - kubectl context 'rancher-desktop' present and Ready
-#   - helm on PATH (Rancher Desktop ships it)
-#
-# What this script does:
-#   1. Verifies prerequisites and the running cluster.
+# What it does:
+#   1. Verifies prerequisites (kubectl, helm) and that Rancher Desktop's k3s is reachable.
 #   2. Adds the OpenTelemetry Helm repo.
-#   3. Installs (or upgrades) the OTel demo into the otel-demo namespace
-#      using demo/otel-demo/values.yaml.
-#   4. Prints the single port-forward command + the URL list.
-#
-# Common gotcha: Rancher Desktop ships a kubectl wrapper (kuberlr) that
-# breaks under Python subprocess. The failure-injection script auto-detects
-# a real kubectl, so this is mostly a problem for ad-hoc Python scripts.
-# `winget install --scope user --id Kubernetes.kubectl` puts a real kubectl
-# on user PATH alongside the wrapper.
+#   3. Installs the OTel demo into the otel-demo namespace using demo/otel-demo/values.yaml.
+#   4. Waits for the frontend pod to be Ready.
+#   5. Prints the single port-forward command that exposes frontend / grafana / jaeger.
 
 [CmdletBinding()]
 param(
-    [string]$Context      = 'rancher-desktop',
-    [string]$Namespace    = 'otel-demo',
-    [string]$ChartVersion = '',   # empty = latest
-    [switch]$Force                # re-run helm upgrade even if already healthy
+    [string]$Namespace = 'otel-demo',
+    [string]$ChartVersion = '',                # empty = latest
+    [string]$Context     = 'rancher-desktop'   # set to '' to use current context
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,21 +28,37 @@ Write-Host "==> Checking prerequisites" -ForegroundColor Cyan
 Require-Tool kubectl
 Require-Tool helm
 
-Write-Host "==> Verifying kubectl context '$Context'"
-$contexts = kubectl config get-contexts -o name 2>$null
-if (-not ($contexts -split "`n" -contains $Context)) {
-    Write-Error "kubectl context '$Context' not found. Is Rancher Desktop running with Kubernetes enabled?"
+# Pin the kube context so we don't accidentally install into a stray cluster.
+if ($Context) {
+    $current = (kubectl config current-context 2>$null).Trim()
+    if ($current -ne $Context) {
+        Write-Host "    switching kube context: $current -> $Context"
+        kubectl config use-context $Context | Out-Null
+    }
 }
-kubectl config use-context $Context | Out-Null
 
-Write-Host "==> Verifying cluster is reachable"
-kubectl cluster-info --request-timeout=10s | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Cannot reach the cluster. Open Rancher Desktop and wait for the green status indicator."
-}
-$nodeStatus = (kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type==\"Ready\")].status}')
-if ($nodeStatus -ne 'True') {
-    Write-Error "k3s node is not Ready (status=$nodeStatus). Wait a minute and re-run."
+Write-Host "==> Verifying Rancher Desktop k3s is reachable"
+# Probe the API with a short timeout. We intentionally swap ErrorActionPreference around the call
+# because PowerShell 5.1 turns a native exe's stderr into a NativeCommandError under 'Stop',
+# which would terminate before our friendly message below.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$null = & kubectl version --request-timeout=5s 2>&1
+$probeExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+
+if ($probeExit -ne 0) {
+    Write-Host ""
+    Write-Host "Cannot reach the Kubernetes API." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Start Rancher Desktop from the Start menu and wait for the tray icon"
+    Write-Host "  to show 'Kubernetes: running' (usually 30-60 seconds). Then re-run"
+    Write-Host "  this script."
+    Write-Host ""
+    Write-Host "  If Rancher Desktop is already running, check that"
+    Write-Host "  'kubectl config current-context' returns 'rancher-desktop' and that"
+    Write-Host "  k3s is enabled (Settings -> Kubernetes)."
+    exit 1
 }
 
 Write-Host "==> Adding OpenTelemetry Helm repo"
@@ -98,27 +101,22 @@ if ($alreadyHealthy) {
     helm @helmArgs
     if ($LASTEXITCODE -ne 0) { Write-Error 'helm install failed.' }
 
-    Write-Host "==> Waiting for frontend-proxy pod to be Ready"
-    kubectl -n $Namespace wait --for=condition=Ready pod -l app.kubernetes.io/component=frontend-proxy --timeout=300s
-}
+Write-Host "==> Waiting for frontend pod to be Ready"
+kubectl -n $Namespace wait --for=condition=Ready pod -l app.kubernetes.io/component=frontend --timeout=300s
 
 Write-Host ""
 Write-Host "==> Done." -ForegroundColor Green
 Write-Host ""
-Write-Host "The OTel demo exposes everything through one port-forward. Run this in a"
-Write-Host "separate window (it will hold the foreground):"
+Write-Host "Open a separate PowerShell window and run:"
+Write-Host "    kubectl -n $Namespace port-forward svc/frontend-proxy 8080:8080"
 Write-Host ""
-Write-Host "  kubectl -n $Namespace port-forward svc/frontend-proxy 8080:8080" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "Then open in your browser:"
-Write-Host "  Webstore:        http://localhost:8080/"
-Write-Host "  Grafana:         http://localhost:8080/grafana/    (admin / admin)"
-Write-Host "  Jaeger UI:       http://localhost:8080/jaeger/ui/"
-Write-Host "  Load generator:  http://localhost:8080/loadgen/"
-Write-Host "  Feature flags:   http://localhost:8080/feature/"
+Write-Host "Then browse:"
+Write-Host "    Frontend:  http://localhost:8080/"
+Write-Host "    Grafana:   http://localhost:8080/grafana/   (admin / admin by default)"
+Write-Host "    Jaeger:    http://localhost:8080/jaeger/ui/"
 Write-Host ""
 Write-Host "Trigger a failure:"
 Write-Host "  uv run python -m demo.failure_injection.inject --list"
 Write-Host "  uv run python -m demo.failure_injection.inject slow-product-catalog"
 Write-Host ""
-Write-Host "Tear down:  ./infra/teardown.ps1"
+Write-Host "Tear down:  .\infra\teardown.ps1"
