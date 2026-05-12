@@ -25,9 +25,11 @@ Capabilities use `<domain>.<noun>.<verb>`. Phase 0 ships mock providers for thes
 |---|---|---|
 | `itsm.incident.create` | `mock.itsm.incident.create` | ServiceNow PDI, Jira |
 | `itsm.incident.update` | (Phase 1) | ServiceNow PDI, Jira |
-| `observability.metrics.query` | `mock.observability.metrics.query` | Prometheus, Dynatrace, Datadog |
+| `observability.metrics.query` | **live: Prometheus** (`prometheus.observability.metrics.query`) | Dynatrace, Datadog |
+| `observability.metrics.alerts` | **live: Prometheus** (`prometheus.observability.metrics.alerts`) | Alertmanager |
 | `observability.logs.query` | (Phase 1) | Loki, Splunk, Elastic |
-| `observability.traces.query` | (Phase 1) | Tempo, Jaeger, Dynatrace |
+| `observability.traces.services` | **live: Jaeger** (`jaeger.observability.traces.services`) | Tempo, Dynatrace |
+| `observability.traces.search` | **live: Jaeger** (`jaeger.observability.traces.search`) | Tempo, Dynatrace |
 | `notify.send` | `mock.notify.send` | Slack, Teams, PagerDuty |
 | `automation.runbook.execute` | (Phase 2) | Ansible, Azure Automation |
 | `kb.search` | (Phase 2) | ServiceNow KB, Confluence, AI Search |

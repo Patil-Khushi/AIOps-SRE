@@ -30,20 +30,6 @@ def mock_create_incident(short_description: str, urgency: int = 3) -> ToolResult
 
 
 @tool(
-    name="mock.observability.metrics.query",
-    capability="observability.metrics.query",
-    provider="mock",
-    description="Pretend to query Prometheus; returns a constant series.",
-)
-def mock_query_metrics(promql: str, range_minutes: int = 5) -> ToolResult:
-    return ToolResult(
-        ok=True,
-        data={"query": promql, "range_minutes": range_minutes, "samples": [0.1, 0.2, 0.3]},
-        metadata={"provider": "mock"},
-    )
-
-
-@tool(
     name="mock.notify.send",
     capability="notify.send",
     provider="mock",

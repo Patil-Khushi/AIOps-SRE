@@ -34,10 +34,8 @@ from aiops.llm import complete as llm_complete
 from aiops.tools import get_registry
 
 # Side-effect imports: register providers with the registry.
-# Order matters — observability is imported first so prometheus claims the
-# observability.metrics.query capability before mock_providers also registers
-# its mock implementation. (ToolRegistry.register uses setdefault on _active,
-# so first-to-register wins for that capability.)
+# observability registers live Prometheus + Jaeger; mock_providers contributes
+# only the CMDB + on-call lookups (static tables, no live CMDB/PagerDuty wired).
 import aiops.tools.observability  # noqa: F401, E402
 import aiops.tools.mock_providers  # noqa: F401, E402
 

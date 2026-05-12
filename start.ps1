@@ -73,6 +73,35 @@ foreach ($fwd in $forwards) {
 }
 Start-Sleep -Seconds 3   # let pf jobs bind their ports
 
+# --- 2.5 ensure dashboard build exists ---
+$dashDir  = Join-Path $RepoRoot 'demo\dashboard'
+$dashDist = Join-Path $dashDir 'dist\index.html'
+if (Test-Path $dashDir) {
+    if (-not (Test-Path $dashDist)) {
+        Write-Step '2b' "building React dashboard (first run, ~30 s)..."
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            Write-Warning "npm not found; skipping dashboard build. /dashboard will 503."
+        } else {
+            Push-Location $dashDir
+            try {
+                if (-not (Test-Path 'node_modules')) {
+                    Write-Host "    npm install ..." -ForegroundColor DarkGray
+                    npm install --no-audit --no-fund --silent 2>&1 | Out-Null
+                }
+                Write-Host "    npm run build ..." -ForegroundColor DarkGray
+                npm run build --silent 2>&1 | Out-Null
+                if (Test-Path $dashDist) {
+                    Write-Host "    dashboard built -> demo/dashboard/dist/" -ForegroundColor Green
+                } else {
+                    Write-Warning "dashboard build did not produce dist/index.html"
+                }
+            } finally { Pop-Location }
+        }
+    } else {
+        Write-Host "    dashboard already built" -ForegroundColor DarkGray
+    }
+}
+
 # --- 3. ui server ---
 Write-Step 3 "starting demo UI server on http://localhost:$UiPort ..."
 if ($LlmProvider) { $env:AIOPS_LLM_PROVIDER = $LlmProvider }
@@ -100,14 +129,19 @@ while ((Get-Date) -lt $deadline) {
 }
 if ($ready) {
     Write-Host "    UI server is up." -ForegroundColor Green
-    Start-Process "http://localhost:$UiPort/"
+    if (Test-Path $dashDist) {
+        Start-Process "http://localhost:$UiPort/dashboard/"
+    } else {
+        Start-Process "http://localhost:$UiPort/"
+    }
 } else {
     Write-Warning "UI server didn't respond within 45 s. Check: Receive-Job -Name pf-ui-server -Keep"
 }
 
 Write-Host ''
 Write-Host '== Up and running ==' -ForegroundColor Green
-Write-Host "  Demo UI:    http://localhost:$UiPort/"
+Write-Host "  Dashboard:  http://localhost:$UiPort/dashboard/   (React)"
+Write-Host "  Demo UI:    http://localhost:$UiPort/             (vanilla)"
 Write-Host "  Grafana:    http://localhost:8080/grafana/"
 Write-Host "  Jaeger UI:  http://localhost:8080/jaeger/ui/"
 Write-Host "  flagd UI:   http://localhost:8080/feature/"

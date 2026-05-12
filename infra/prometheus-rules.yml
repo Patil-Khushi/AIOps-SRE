@@ -92,4 +92,100 @@ groups:
           summary: Frontend request rate above 10 req/s (load surge)
           description: 'service={{ $labels.service_name }} rate={{ $value }}/s'
           runbook_url: https://runbooks.example.com/frontend
-          flag_hint: 'toggle loadgeneratorFloodHomepage=on at http://localhost:8080/feature/'
+          flag_hint: 'toggle loadGeneratorFloodHomepage=on at http://localhost:8080/feature/'
+
+      - alert: AdErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="ad",http_status_code!~"2.."}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: high
+          service: ad
+          alert_type: error_rate
+        annotations:
+          summary: Ad service returning HTTP errors
+          description: 'service={{ $labels.service_name }} non-2xx rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/ad
+          flag_hint: 'toggle adFailure=on at http://localhost:8080/feature/'
+
+      - alert: AdLatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(http_client_duration_milliseconds_bucket{service_name="ad"}[5m])
+          )) > 800
+        for: 2m
+        labels:
+          severity: high
+          service: ad
+          alert_type: latency
+        annotations:
+          summary: Ad service p95 latency above 800 ms
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
+          runbook_url: https://runbooks.example.com/ad
+          flag_hint: 'toggle adManualGc=on at http://localhost:8080/feature/'
+
+      - alert: AdCpuHigh
+        expr: |
+          sum by (service_name) (
+            rate(otelcol_process_cpu_seconds_total{service_name="ad"}[2m])
+          ) > 0.8
+        for: 2m
+        labels:
+          severity: warning
+          service: ad
+          alert_type: saturation
+        annotations:
+          summary: Ad service CPU above 80%
+          description: 'service={{ $labels.service_name }} cpu_seconds_rate={{ $value }}'
+          runbook_url: https://runbooks.example.com/ad
+          flag_hint: 'toggle adHighCpu=on at http://localhost:8080/feature/'
+
+      - alert: FrontendImageLatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(http_client_duration_milliseconds_bucket{service_name="frontend"}[5m])
+          )) > 3000
+        for: 2m
+        labels:
+          severity: high
+          service: frontend
+          alert_type: latency
+        annotations:
+          summary: Frontend p95 latency above 3 s (likely slow image loads)
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
+          runbook_url: https://runbooks.example.com/frontend
+          flag_hint: 'toggle imageSlowLoad=10sec at http://localhost:8080/feature/'
+
+      - alert: CheckoutBackpressureHigh
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="checkout",http_status_code!~"2.."}[2m])
+          ) > 0
+        for: 1m
+        labels:
+          severity: high
+          service: checkout
+          alert_type: backpressure
+        annotations:
+          summary: Checkout pipeline returning errors (likely Kafka backpressure)
+          description: 'service={{ $labels.service_name }} non-2xx rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/checkout
+          flag_hint: 'toggle kafkaQueueProblems=on at http://localhost:8080/feature/'
+
+      - alert: EmailMemoryHigh
+        expr: |
+          avg by (service_name) (
+            otelcol_process_memory_rss_bytes{service_name="email"}
+          ) > 500000000
+        for: 2m
+        labels:
+          severity: high
+          service: email
+          alert_type: memory
+        annotations:
+          summary: Email service RSS memory above 500 MB
+          description: 'service={{ $labels.service_name }} rss_bytes={{ $value }}'
+          runbook_url: https://runbooks.example.com/email
+          flag_hint: 'toggle emailMemoryLeak=100x at http://localhost:8080/feature/'
