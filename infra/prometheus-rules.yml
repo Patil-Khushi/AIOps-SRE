@@ -1,0 +1,228 @@
+# Alert rules for the AIOps demo.
+#
+# These rules fire when flagd-toggled failure scenarios cause measurable
+# anomalies in the OTel-demo's HTTP-client instrumentation metrics.
+# Thresholds are deliberately loose so the demo loop (flip flag → wait ~90 s
+# → alert fires → agent triages) feels responsive.
+#
+# Apply by patching the `prometheus` ConfigMap in namespace `otel-demo`:
+#   kubectl patch cm prometheus -n otel-demo --type merge \
+#     -p (ConvertTo-Json @{data=@{'alerting_rules.yml' = (Get-Content $f -Raw)}} -Depth 5 -Compress)
+
+groups:
+  - name: aiops-demo
+    interval: 30s
+    rules:
+
+      # Threshold > 0.2 errors/s (not > 0) so background 4xx/auth-retry noise
+      # doesn't keep this alert constantly firing. Filter narrowed to true 5xx.
+      - alert: PaymentErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="payment",http_status_code=~"5.."}[2m])
+          ) > 0.2
+        for: 30s
+        labels:
+          severity: critical
+          service: payment
+          alert_type: error_rate
+        annotations:
+          summary: Payment service returning HTTP 5xx errors
+          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/payment-cpu
+          flag_hint: 'toggle paymentFailure=on at http://localhost:8080/feature/'
+
+      # Cart is gRPC/.NET — http_client_* is empty. Use latency as a proxy:
+      # cartFailure adds exception-handling overhead, baseline ~2-5 ms.
+      - alert: CartErrorRateHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="cart"}[2m])
+          )) > 8
+        for: 30s
+        labels:
+          severity: high
+          service: cart
+          alert_type: error_rate
+        annotations:
+          summary: Cart service p95 latency elevated (cartFailure side-effects)
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
+          runbook_url: https://runbooks.example.com/cart
+          flag_hint: 'toggle cartFailure=on at http://localhost:8080/feature/'
+
+      # Product-catalog also gRPC. Use span error rate (productCatalogFailure
+      # throws on specific products → status_code=STATUS_CODE_ERROR spans).
+      - alert: ProductCatalogErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(traces_span_metrics_calls_total{service_name="product-catalog",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: high
+          service: product-catalog
+          alert_type: error_rate
+        annotations:
+          summary: Product catalog producing error spans
+          description: 'service={{ $labels.service_name }} error_rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/catalog
+          flag_hint: 'toggle productCatalogFailure=on at http://localhost:8080/feature/'
+
+      # Demo-calibrated: recommendationCacheFailure adds ~5-15 ms to recommendation's
+      # p95. Baseline ~7 ms, so 10 ms is the demo trigger point. Production threshold
+      # would be 200 ms+.
+      - alert: RecommendationLatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="recommendation"}[2m])
+          )) > 10
+        for: 30s
+        labels:
+          severity: high
+          service: recommendation
+          alert_type: latency
+        annotations:
+          summary: Recommendation service p95 latency above 200 ms
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
+          runbook_url: https://runbooks.example.com/recommendation
+          flag_hint: 'toggle recommendationCacheFailure=on at http://localhost:8080/feature/'
+
+      - alert: RecommendationErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(traces_span_metrics_calls_total{service_name="recommendation",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: high
+          service: recommendation
+          alert_type: error_rate
+        annotations:
+          summary: Recommendation service producing error spans
+          description: 'service={{ $labels.service_name }} error_rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/recommendation
+          flag_hint: 'toggle recommendationCacheFailure=on at http://localhost:8080/feature/'
+
+      - alert: FrontendTrafficSurge
+        expr: |
+          sum by (service_name) (
+            rate(http_client_duration_milliseconds_count{service_name="frontend"}[2m])
+          ) > 10
+        for: 30s
+        labels:
+          severity: warning
+          service: frontend
+          alert_type: traffic
+        annotations:
+          summary: Frontend request rate above 10 req/s (load surge)
+          description: 'service={{ $labels.service_name }} rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/frontend
+          flag_hint: 'toggle loadGeneratorFloodHomepage=on at http://localhost:8080/feature/'
+
+      # Ad is gRPC/Java — adFailure causes spans with STATUS_CODE_ERROR
+      # (we verified ad has SPAN_KIND_CLIENT + STATUS_CODE_ERROR series).
+      - alert: AdErrorRateHigh
+        expr: |
+          sum by (service_name) (
+            rate(traces_span_metrics_calls_total{service_name="ad",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: high
+          service: ad
+          alert_type: error_rate
+        annotations:
+          summary: Ad service producing error spans
+          description: 'service={{ $labels.service_name }} error_rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/ad
+          flag_hint: 'toggle adFailure=on at http://localhost:8080/feature/'
+
+      # Demo-calibrated. Ad p95 baseline ~5 ms; adManualGc spikes it to 10-30 ms.
+      # Drop span_kind filter — SERVER spans on ad have near-zero rate.
+      - alert: AdLatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="ad"}[2m])
+          )) > 10
+        for: 30s
+        labels:
+          severity: high
+          service: ad
+          alert_type: latency
+        annotations:
+          summary: Ad service p95 latency above 200 ms
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
+          runbook_url: https://runbooks.example.com/ad
+          flag_hint: 'toggle adManualGc=on at http://localhost:8080/feature/'
+
+      # container_cpu_usage is 0..1 (fraction of one core). Baseline ad ≈ 0.01,
+      # adHighCpu=on pushes it to 0.5+ easily. Threshold 0.3 gives clear margin.
+      - alert: AdCpuHigh
+        expr: |
+          avg by (service_name) (
+            container_cpu_usage{service_name="ad"}
+          ) > 0.3
+        for: 30s
+        labels:
+          severity: warning
+          service: ad
+          alert_type: saturation
+        annotations:
+          summary: Ad service CPU above 30%
+          description: 'service={{ $labels.service_name }} cpu_usage={{ $value }}'
+          runbook_url: https://runbooks.example.com/ad
+          flag_hint: 'toggle adHighCpu=on at http://localhost:8080/feature/'
+
+      # Demo-calibrated. Frontend p95 baseline ~50 ms; imageSlowLoad=10sec
+      # pushes it well above 200 ms (often >5s for image routes).
+      - alert: FrontendImageLatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="frontend"}[2m])
+          )) > 200
+        for: 30s
+        labels:
+          severity: high
+          service: frontend
+          alert_type: latency
+        annotations:
+          summary: Frontend p95 latency above 1.5 s (likely slow image loads)
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
+          runbook_url: https://runbooks.example.com/frontend
+          flag_hint: 'toggle imageSlowLoad=10sec at http://localhost:8080/feature/'
+
+      # Checkout depends on Kafka — kafkaQueueProblems causes downstream
+      # span errors as the consumer falls behind.
+      - alert: CheckoutBackpressureHigh
+        expr: |
+          sum by (service_name) (
+            rate(traces_span_metrics_calls_total{service_name="checkout",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
+        for: 30s
+        labels:
+          severity: high
+          service: checkout
+          alert_type: backpressure
+        annotations:
+          summary: Checkout pipeline returning errors (likely Kafka backpressure)
+          description: 'service={{ $labels.service_name }} non-2xx rate={{ $value }}/s'
+          runbook_url: https://runbooks.example.com/checkout
+          flag_hint: 'toggle kafkaQueueProblems=on at http://localhost:8080/feature/'
+
+      # Baseline email RSS ≈ 48 MB. emailMemoryLeak=100x grows it fast — by
+      # the time we hit 100 MB the leak is clearly underway.
+      - alert: EmailMemoryHigh
+        expr: |
+          avg by (service_name) (
+            container_memory_rss_bytes{service_name="email"}
+          ) > 100000000
+        for: 30s
+        labels:
+          severity: high
+          service: email
+          alert_type: memory
+        annotations:
+          summary: Email service RSS memory above 100 MB
+          description: 'service={{ $labels.service_name }} rss_bytes={{ $value }}'
+          runbook_url: https://runbooks.example.com/email
+          flag_hint: 'toggle emailMemoryLeak=100x at http://localhost:8080/feature/'

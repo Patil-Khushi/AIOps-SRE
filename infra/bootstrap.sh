@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # infra/bootstrap.sh — POSIX equivalent of bootstrap.ps1.
+# Targets Rancher Desktop (k3s) by default. Set CONTEXT='' to use the current kube context.
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-aiops-poc}"
 NAMESPACE="${NAMESPACE:-otel-demo}"
 CHART_VERSION="${CHART_VERSION:-}"
+CONTEXT="${CONTEXT:-rancher-desktop}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -13,22 +14,30 @@ require() {
 }
 
 echo "==> Checking prerequisites"
-require docker
-require kind
 require kubectl
 require helm
 
-echo "==> Verifying Docker is running"
-docker info --format '{{.ServerVersion}}' >/dev/null
-
-echo "==> Ensuring kind cluster '$CLUSTER_NAME'"
-if kind get clusters | grep -qx "$CLUSTER_NAME"; then
-  echo "    cluster already exists; skipping create"
-else
-  kind create cluster --name "$CLUSTER_NAME" --config "$repo_root/infra/kind-config.yaml"
+if [ -n "$CONTEXT" ]; then
+  current="$(kubectl config current-context 2>/dev/null || true)"
+  if [ "$current" != "$CONTEXT" ]; then
+    echo "    switching kube context: $current -> $CONTEXT"
+    kubectl config use-context "$CONTEXT" >/dev/null
+  fi
 fi
 
-kubectl cluster-info --context "kind-$CLUSTER_NAME" >/dev/null
+echo "==> Verifying Rancher Desktop k3s is reachable"
+if ! kubectl version --request-timeout=5s >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+Cannot reach the Kubernetes API.
+
+  Start Rancher Desktop and wait for the tray icon to show 'Kubernetes: running'
+  (usually 30-60 seconds). Then re-run this script.
+
+  If Rancher Desktop is already running, check `kubectl config current-context`
+  matches 'rancher-desktop' and that k3s is enabled (Settings -> Kubernetes).
+EOF
+  exit 1
+fi
 
 echo "==> Adding OpenTelemetry Helm repo"
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null 2>&1 || true
@@ -48,26 +57,17 @@ echo "==> Waiting for frontend pod to be Ready"
 kubectl -n "$NAMESPACE" wait --for=condition=Ready pod \
   -l app.kubernetes.io/component=frontend --timeout=300s
 
-set_nodeport() {
-  local svc="$1" node_port="$2" target_port="$3"
-  echo "==> Exposing $svc as NodePort $node_port"
-  kubectl -n "$NAMESPACE" patch service "$svc" --type='json' -p "[
-    {\"op\":\"replace\",\"path\":\"/spec/type\",\"value\":\"NodePort\"},
-    {\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$node_port},
-    {\"op\":\"replace\",\"path\":\"/spec/ports/0/targetPort\",\"value\":$target_port}
-  ]" 2>/dev/null || true
-}
-
-set_nodeport otel-demo-frontendproxy 30080 8080
-set_nodeport otel-demo-grafana       30300 3000
-set_nodeport otel-demo-jaeger-query  30168 16686
-
 cat <<EOF
 
 ==> Done.
-    Frontend:  http://localhost:8080
-    Grafana:   http://localhost:3000   (admin / admin by default)
-    Jaeger:    http://localhost:16686
+
+Open a separate shell and run:
+    kubectl -n $NAMESPACE port-forward svc/frontend-proxy 8080:8080
+
+Then browse:
+    Frontend:  http://localhost:8080/
+    Grafana:   http://localhost:8080/grafana/   (admin / admin by default)
+    Jaeger:    http://localhost:8080/jaeger/ui/
 
 Trigger a failure:
     uv run python -m demo.failure_injection.inject --list

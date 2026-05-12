@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-As of 2026-05-06 the repo contains **only design documents** under `docs/`. There is no source code, build system, or test suite yet. The owner is starting from these designs and will scaffold a Proof-of-Concept (POC) implementation over time.
+As of 2026-05-12 the repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness skeleton, the OPA policy starter, smoke tests, and CI in place. Phase 1 has started: `agents/alert_triage/` is the first agent in flight, and the demo UIs (`demo/ui/` FastAPI + `demo/dashboard/` React/Vite) are wired up. The `docs/` design files remain the authoritative source for agent contracts and architecture.
 
 Source-of-truth documents (binary Office files):
 
@@ -50,7 +50,7 @@ The owner is at POC stage and the explicit guidance is:
 
 - **Do not build all 30 agents.** A reasonable POC scope is **6–10 agents end-to-end** on one full Reactive→Prescriptive flow (typical: Alert Triage → Incident Classifier → Auto-Ticketing → Log Correlation → RCA Agent → Remediation Recommender, plus one or two SRE agents and one Predictive agent for the "wow" moment). The rest may be stubbed for narrative continuity.
 - **End-to-end ugly first, refactor second.** Get one full path working with tape-and-glue before designing shared abstractions. Working demo first; the architecture is for the production phase.
-- **Demo on synthetic / open-source / demo-app data**, not real customer data. Default demo target: the **OpenTelemetry Demo (Astronomy Shop)** on Kubernetes (kind/k3d locally, AKS/GKE for hosted). Failure injection via OTel demo feature flags + Chaos Mesh; load via k6.
+- **Demo on synthetic / open-source / demo-app data**, not real customer data. Default demo target: the **OpenTelemetry Demo (Astronomy Shop)** on Kubernetes (Rancher Desktop's bundled k3s locally; AKS/GKE deferred until post-POC). Failure injection via OTel demo feature flags + Chaos Mesh; load via k6.
 - **Scope creep is the silent killer.** "While we're at it" lands on the post-POC backlog, not the current sprint.
 
 ## Reference POC stack (defaults from the onboarding guide)
@@ -60,7 +60,7 @@ When picking a tool for a new component, default to the choice in this table unl
 | Concern | Default | Notes |
 |---|---|---|
 | Demo app | OpenTelemetry Demo | Already instrumented; has feature flags for failures. |
-| Cluster | k3d/kind locally; Azure AKS / GKE hosted | Local for dev; cloud for the recorded demo. |
+| Cluster | **Rancher Desktop's bundled k3s** (Windows/macOS) | Org policy bans Docker on dev machines, so kind/k3d/Docker Desktop are out. Cloud (AKS/GKE) deferred. |
 | Metrics / Logs / Traces | Prometheus / Loki / Tempo + Grafana | All FOSS, all integrate. |
 | Instrumentation | OpenTelemetry SDKs + Collector | Vendor-neutral. |
 | Tickets | ServiceNow PDI (primary) + Jira free tier (secondary) | Two integrations prove vendor-neutrality. |
@@ -107,16 +107,19 @@ aiops/                     # platform seams — never call vendor SDKs outside t
 ├── llm/                   # provider-agnostic LLM gateway (anthropic / openai / ollama / stub)
 ├── tools/                 # tool registry — every external integration registers here
 └── policy/                # platform-enforced HITL gate (None / Optional / Required)
-agents/                    # one directory per agent — empty in Phase 0 by design
+agents/                    # one directory per agent (alert_triage in flight; more land in Phase 1)
 evals/                     # hand-rolled JSON test harness; CI gates pass-rate
 demo/
 ├── otel-demo/             # Helm values for the upstream OpenTelemetry Demo chart
-├── failure_injection/     # one-command failure scenario runner + 3 starter scenarios
+├── failure_injection/     # one-command failure scenario runner + starter scenarios
 ├── truth_files/           # ground truth per scenario (cause + expected fix)
-└── load/                  # k6 baseline load script
-infra/                     # kind cluster + OTel demo bootstrap (PowerShell + bash)
+├── load/                  # k6 baseline load script
+├── ui/                    # FastAPI demo server (uv extra: ui) — served at :8765
+└── dashboard/             # React + Vite + Tailwind dashboard (built into dist/, mounted at /dashboard/)
+infra/                     # Rancher Desktop k3s bootstrap (PowerShell + bash) + Prometheus rules
 policies/                  # OPA policies (hitl.rego); reference-only in Phase 0
 tests/                     # repo-level smoke tests
+start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-forwards + UI
 .github/workflows/         # CI: ruff + pytest + eval gate + opa check
 ```
 
@@ -124,14 +127,30 @@ tests/                     # repo-level smoke tests
 
 ## When you write code
 
+### Local environment constraints
+
+- **No Docker, no cloud, ~16 GB laptops.** Org policy bans Docker on dev machines; AKS/GKE are post-POC. All cluster work is Rancher Desktop's bundled k3s. Allocate ≥6 GB to its VM (Settings → Virtual Machine); the OTel demo uses ~3.5 GB inside.
+- **Rancher Desktop ships a `kuberlr`-wrapped `kubectl` that rejects standard flags from Python `subprocess` calls.** Install a standalone `kubectl` (`winget install --scope user Kubernetes.kubectl`) — `start.ps1` and `demo/failure_injection/inject.py` prefer it via `$LOCALAPPDATA\Programs\kubectl`.
+- **Two PowerShell windows.** `start.ps1` runs port-forwards as background jobs in the *current* session; closing that shell kills them. Use `stop.ps1` to tear them down cleanly.
+
 ### Common commands
 
 ```powershell
 # Install deps (one-time)
 uv sync --extra dev
+uv sync --extra ui          # FastAPI demo server (demo/ui/) — required by start.ps1
+uv sync --extra embeddings  # sentence-transformers for Alert Triage dedup (optional)
 
-# Bring up the demo cluster (one-time, ~10 min)
+# Bring up the OTel demo into Rancher Desktop k3s (one-time, ~10 min)
 .\infra\bootstrap.ps1                              # bash equivalent: ./infra/bootstrap.sh
+
+# Then either: leave a single port-forward open for the OTel demo proxy...
+kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
+
+# ...or: one-command bring-up — checks the cluster, port-forwards
+# Prometheus :9090 / Jaeger :16686 / frontend-proxy :8080, builds the
+# React dashboard if needed, starts the FastAPI UI on :8765, opens the browser.
+.\start.ps1                                        # tear down with: .\stop.ps1
 
 # Trigger a failure scenario
 uv run python -m demo.failure_injection.inject --list
@@ -148,7 +167,7 @@ uv run pytest tests/test_smoke.py::test_hitl_gate_blocks_required_without_approv
 uv run python -m evals.harness
 
 # Run the eval harness for one agent
-uv run python -m evals.harness --agent ra-001-alert-triage
+uv run python -m evals.harness --agent alert_triage
 
 # CI gate — fails if pass rate drops below threshold
 uv run python -m evals.harness --ci --min-pass-rate 0.85
@@ -157,7 +176,7 @@ uv run python -m evals.harness --ci --min-pass-rate 0.85
 uv run ruff check .
 uv run ruff format .
 
-# Tear down the cluster
+# Tear down the OTel demo (leaves Rancher Desktop's k3s running)
 .\infra\teardown.ps1
 ```
 

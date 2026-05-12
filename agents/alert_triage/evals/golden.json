@@ -1,0 +1,93 @@
+{
+  "agent": "RA-001",
+  "version": "v1",
+  "description": "Golden fixtures for Alert Triage. Each case has an input alert + expected verdict patterns. The harness checks patterns, not exact strings (LLM output is non-deterministic for non-stub providers).",
+  "cases": [
+    {
+      "id": "payment_cpu_spike",
+      "description": "Payment service CPU at 96% (above 80% threshold). Customer-facing.",
+      "scenario": "payment-cpu-spike",
+      "input": {
+        "alert_id": "ALT-1001",
+        "service": "payment",
+        "metric": "CPU Usage",
+        "value": 96,
+        "threshold": 80,
+        "timestamp": "2026-05-06T10:20:00Z",
+        "source": "Prometheus",
+        "labels": {"namespace": "otel-demo", "pod": "payment-7956b8bb6c-xyz"}
+      },
+      "expected": {
+        "severity_in": ["Sev-1", "Sev-2"],
+        "assigned_team": "Payments Team",
+        "assigned_engineer_contains": "oncall@payments",
+        "min_confidence": 0.7,
+        "status": "Active",
+        "recommended_runbook_contains": "payment"
+      }
+    },
+    {
+      "id": "checkout_latency_p95_high",
+      "description": "Checkout p95 latency 5500ms above 2000ms threshold. Customer-facing.",
+      "scenario": "checkout-latency-high",
+      "input": {
+        "alert_id": "ALT-1002",
+        "service": "checkout",
+        "metric": "Latency p95",
+        "value": 5500,
+        "threshold": 2000,
+        "timestamp": "2026-05-06T10:21:00Z",
+        "source": "Prometheus",
+        "labels": {"namespace": "otel-demo"}
+      },
+      "expected": {
+        "severity_in": ["Sev-1", "Sev-2"],
+        "assigned_team": "Order Experience",
+        "assigned_engineer_contains": "oncall@order-experience",
+        "min_confidence": 0.7,
+        "status": "Active"
+      }
+    },
+    {
+      "id": "ad_low_traffic_early_warning",
+      "description": "Ad service traffic dipped; severity_hint says warning. Should be Sev-3/4.",
+      "scenario": "ad-low-traffic",
+      "input": {
+        "alert_id": "ALT-1003",
+        "service": "ad",
+        "metric": "Request Rate",
+        "value": 5,
+        "threshold": 10,
+        "severity_hint": "warning",
+        "timestamp": "2026-05-06T10:22:00Z",
+        "source": "Prometheus"
+      },
+      "expected": {
+        "severity_in": ["Sev-3", "Sev-4"],
+        "assigned_team": "Ads Team",
+        "assigned_engineer_contains": "oncall@ads",
+        "min_confidence": 0.7,
+        "status": "Active"
+      }
+    },
+    {
+      "id": "accounting_memory_high",
+      "description": "Non-customer-facing service memory at 92%. Should be Sev-3.",
+      "scenario": "accounting-memory-high",
+      "input": {
+        "alert_id": "ALT-1004",
+        "service": "accounting",
+        "metric": "Memory Usage",
+        "value": 92,
+        "threshold": 80,
+        "timestamp": "2026-05-06T10:23:00Z",
+        "source": "Prometheus"
+      },
+      "expected": {
+        "severity_in": ["Sev-2", "Sev-3"],
+        "assigned_team": "Finance Systems",
+        "status": "Active"
+      }
+    }
+  ]
+}

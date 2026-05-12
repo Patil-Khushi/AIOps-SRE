@@ -2,7 +2,7 @@
 
 Vendor-neutral, multi-agent platform that automates IT operations across four maturity phases (Reactive-Active → Proactive → Predictive → Prescriptive-Adaptive). 30 modular agents, a dedicated **RCA Agent** that produces executable fix steps with rollback, and SRE discipline woven into every phase.
 
-This repository is the **Proof-of-Concept (POC) build** — not production. The goal is a credible end-to-end demo on synthetic / open-source data, anchored on the OpenTelemetry Demo running in a local kind cluster.
+This repository is the **Proof-of-Concept (POC) build** — not production. The goal is a credible end-to-end demo on synthetic / open-source data, anchored on the OpenTelemetry Demo running in a local Rancher Desktop k3s cluster.
 
 > **If you are new here, read [`docs/poc_aiops_onboarding_guide.docx`](docs/poc_aiops_onboarding_guide.docx) first** — it is the canonical onboarding text. [`CLAUDE.md`](CLAUDE.md) summarises the architecture and design principles.
 
@@ -24,22 +24,27 @@ See [`docs/poc_aiops_onboarding_guide.docx`](docs/poc_aiops_onboarding_guide.doc
 
 ## Quick start
 
-**Prerequisites:** Docker Desktop, [`kind`](https://kind.sigs.k8s.io/), `kubectl`, `helm`, Python 3.12+, [`uv`](https://github.com/astral-sh/uv) (or `pip`).
+**Prerequisites:** [Rancher Desktop](https://rancherdesktop.io/) (k3s enabled), `kubectl`, `helm`, Python 3.12+, [`uv`](https://github.com/astral-sh/uv) (or `pip`). See [`infra/README.md`](infra/README.md) for install commands and why we use Rancher Desktop instead of Docker / kind.
 
 ### Windows / PowerShell (primary)
 
 ```powershell
-# 1. Bring up the local cluster + OpenTelemetry Demo + observability
+# 1. Make sure Rancher Desktop is running (tray icon shows 'Kubernetes: running').
+
+# 2. Install the OTel demo into the local k3s cluster
 .\infra\bootstrap.ps1
 
-# 2. Install Python deps
+# 3. Install Python deps
 uv sync
 
-# 3. Trigger a failure scenario
+# 4. Port-forward the demo's reverse proxy (leave this running in its own window)
+kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
+
+# 5. Trigger a failure scenario
 uv run python -m demo.failure_injection.inject slow-product-catalog
 
-# 4. Open Grafana
-# http://localhost:8080/grafana/  (forwarded by bootstrap)
+# 6. Open Grafana
+# http://localhost:8080/grafana/
 ```
 
 ### macOS / Linux
@@ -78,7 +83,7 @@ uv run python -m demo.failure_injection.inject slow-product-catalog
 │   ├── failure_injection/       # One-command failure scenario runner
 │   ├── truth_files/             # Ground-truth per scenario (cause + expected fix)
 │   └── load/                    # k6 load scripts for steady-state traffic
-├── infra/                       # Local cluster bootstrap (kind + Helm)
+├── infra/                       # Local cluster bootstrap (Rancher Desktop k3s + Helm)
 ├── policies/                    # OPA policies — HITL + guardrails as code
 ├── tests/                       # Repo-level smoke tests
 ├── scripts/                     # Convenience scripts
