@@ -32,46 +32,50 @@ groups:
           runbook_url: https://runbooks.example.com/payment-cpu
           flag_hint: 'toggle paymentFailure=on at http://localhost:8080/feature/'
 
+      # Cart is gRPC/.NET — http_client_* is empty. Use latency as a proxy:
+      # cartFailure adds exception-handling overhead, baseline ~2-5 ms.
       - alert: CartErrorRateHigh
         expr: |
-          sum by (service_name) (
-            rate(http_client_duration_milliseconds_count{service_name="cart",http_status_code=~"5.."}[2m])
-          ) > 0.2
+          histogram_quantile(0.95, sum by (le, service_name) (
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="cart"}[2m])
+          )) > 8
         for: 30s
         labels:
           severity: high
           service: cart
           alert_type: error_rate
         annotations:
-          summary: Cart service returning HTTP 5xx errors
-          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          summary: Cart service p95 latency elevated (cartFailure side-effects)
+          description: 'service={{ $labels.service_name }} p95={{ $value }}ms'
           runbook_url: https://runbooks.example.com/cart
           flag_hint: 'toggle cartFailure=on at http://localhost:8080/feature/'
 
+      # Product-catalog also gRPC. Use span error rate (productCatalogFailure
+      # throws on specific products → status_code=STATUS_CODE_ERROR spans).
       - alert: ProductCatalogErrorRateHigh
         expr: |
           sum by (service_name) (
-            rate(http_client_duration_milliseconds_count{service_name="product-catalog",http_status_code=~"5.."}[2m])
-          ) > 0.2
+            rate(traces_span_metrics_calls_total{service_name="product-catalog",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
         for: 30s
         labels:
           severity: high
           service: product-catalog
           alert_type: error_rate
         annotations:
-          summary: Product catalog service returning HTTP 5xx errors
-          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          summary: Product catalog producing error spans
+          description: 'service={{ $labels.service_name }} error_rate={{ $value }}/s'
           runbook_url: https://runbooks.example.com/catalog
           flag_hint: 'toggle productCatalogFailure=on at http://localhost:8080/feature/'
 
-      # Use span-metrics (works for gRPC services too — recommendation is gRPC,
-      # so http_client_duration_* is empty for it). 200 ms threshold matches what
-      # recommendationCacheFailure produces against the demo's normal traffic.
+      # Demo-calibrated: recommendationCacheFailure adds ~5-15 ms to recommendation's
+      # p95. Baseline ~7 ms, so 10 ms is the demo trigger point. Production threshold
+      # would be 200 ms+.
       - alert: RecommendationLatencyP95High
         expr: |
           histogram_quantile(0.95, sum by (le, service_name) (
-            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="recommendation",span_kind="SPAN_KIND_SERVER"}[1m])
-          )) > 200
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="recommendation"}[2m])
+          )) > 10
         for: 30s
         labels:
           severity: high
@@ -115,28 +119,31 @@ groups:
           runbook_url: https://runbooks.example.com/frontend
           flag_hint: 'toggle loadGeneratorFloodHomepage=on at http://localhost:8080/feature/'
 
+      # Ad is gRPC/Java — adFailure causes spans with STATUS_CODE_ERROR
+      # (we verified ad has SPAN_KIND_CLIENT + STATUS_CODE_ERROR series).
       - alert: AdErrorRateHigh
         expr: |
           sum by (service_name) (
-            rate(http_client_duration_milliseconds_count{service_name="ad",http_status_code=~"5.."}[2m])
-          ) > 0.2
+            rate(traces_span_metrics_calls_total{service_name="ad",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
         for: 30s
         labels:
           severity: high
           service: ad
           alert_type: error_rate
         annotations:
-          summary: Ad service returning HTTP 5xx errors
-          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          summary: Ad service producing error spans
+          description: 'service={{ $labels.service_name }} error_rate={{ $value }}/s'
           runbook_url: https://runbooks.example.com/ad
           flag_hint: 'toggle adFailure=on at http://localhost:8080/feature/'
 
-      # Span-metrics; ad is gRPC so http_client_* is empty.
+      # Demo-calibrated. Ad p95 baseline ~5 ms; adManualGc spikes it to 10-30 ms.
+      # Drop span_kind filter — SERVER spans on ad have near-zero rate.
       - alert: AdLatencyP95High
         expr: |
           histogram_quantile(0.95, sum by (le, service_name) (
-            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="ad",span_kind="SPAN_KIND_SERVER"}[1m])
-          )) > 200
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="ad"}[2m])
+          )) > 10
         for: 30s
         labels:
           severity: high
@@ -166,11 +173,13 @@ groups:
           runbook_url: https://runbooks.example.com/ad
           flag_hint: 'toggle adHighCpu=on at http://localhost:8080/feature/'
 
+      # Demo-calibrated. Frontend p95 baseline ~50 ms; imageSlowLoad=10sec
+      # pushes it well above 200 ms (often >5s for image routes).
       - alert: FrontendImageLatencyHigh
         expr: |
           histogram_quantile(0.95, sum by (le, service_name) (
-            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="frontend",span_kind="SPAN_KIND_SERVER"}[1m])
-          )) > 1500
+            rate(traces_span_metrics_duration_milliseconds_bucket{service_name="frontend"}[2m])
+          )) > 200
         for: 30s
         labels:
           severity: high
@@ -182,11 +191,13 @@ groups:
           runbook_url: https://runbooks.example.com/frontend
           flag_hint: 'toggle imageSlowLoad=10sec at http://localhost:8080/feature/'
 
+      # Checkout depends on Kafka — kafkaQueueProblems causes downstream
+      # span errors as the consumer falls behind.
       - alert: CheckoutBackpressureHigh
         expr: |
           sum by (service_name) (
-            rate(http_client_duration_milliseconds_count{service_name="checkout",http_status_code=~"5.."}[2m])
-          ) > 0.2
+            rate(traces_span_metrics_calls_total{service_name="checkout",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
         for: 30s
         labels:
           severity: high
