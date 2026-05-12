@@ -3,7 +3,22 @@
     "allow": [
       "Bash(py --version)",
       "Bash(py *)",
-      "Bash(awk '{ for\\(i=1;i<=NF;i+=20\\) printf \"%s \", $i; print \"\" }' /c/Projects/AIops/.tmp_extract_out/poc_aiops_onboarding_guide_docx.txt)"
+      "Bash(awk '{ for\\(i=1;i<=NF;i+=20\\) printf \"%s \", $i; print \"\" }' /c/Projects/AIops/.tmp_extract_out/poc_aiops_onboarding_guide_docx.txt)",
+      "PowerShell(Write-Host \"=== wsl --status ===\" -ForegroundColor Cyan; wsl --status; Write-Host \"\"; Write-Host \"=== wsl --list --verbose ===\" -ForegroundColor Cyan; wsl --list --verbose)",
+      "PowerShell(winget list *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(Write-Host \"=== kubectl config get-contexts ===\" -ForegroundColor Cyan; kubectl config get-contexts; Write-Host \"\"; Write-Host \"=== kubectl get nodes ===\" -ForegroundColor Cyan; kubectl get nodes --request-timeout=10s)",
+      "PowerShell(Test-Path *)",
+      "PowerShell($uv = \"C:\\\\Users\\\\CK115382\\\\AppData\\\\Local\\\\Microsoft\\\\WinGet\\\\Packages\\\\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\\\\uv.exe\"; Write-Host \"=== uv version ===\" -ForegroundColor Cyan; & $uv --version; Write-Host \"\"; Write-Host \"=== uv self-check ===\" -ForegroundColor Cyan; & $uv python list --only-installed | Select-Object -First 3)",
+      "PowerShell(Write-Host \"=== flagd ConfigMap keys ===\" -ForegroundColor Cyan; kubectl -n otel-demo get configmap flagd-config -o jsonpath='{.data}' | ConvertFrom-Json | Get-Member -MemberType NoteProperty | Select-Object Name; Write-Host \"\"; Write-Host \"=== flag names from the ConfigMap JSON ===\" -ForegroundColor Cyan; $cm = kubectl -n otel-demo get configmap flagd-config -o json | ConvertFrom-Json; $keys = $cm.data | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name; foreach \\($k in $keys\\) { $doc = $cm.data.$k | ConvertFrom-Json -ErrorAction SilentlyContinue; if \\($doc -and $doc.flags\\) { Write-Host \"data key: $k\"; $doc.flags | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name | ForEach-Object { \"  $_\" } } })",
+      "PowerShell(Write-Host \"=== currency pod labels ===\" -ForegroundColor Cyan; kubectl -n otel-demo get pod -l app.kubernetes.io/name=currency -o jsonpath='{.items[0].metadata.labels}' | ConvertFrom-Json | Format-List; Write-Host \"\"; Write-Host \"=== Try old selector \\(will be empty if renamed\\) ===\" -ForegroundColor Cyan; kubectl -n otel-demo get pod -l app.kubernetes.io/component=currencyservice; Write-Host \"\"; Write-Host \"=== Try new selector ===\" -ForegroundColor Cyan; kubectl -n otel-demo get pod -l app.kubernetes.io/name=currency)",
+      "PowerShell(uv run *)",
+      "PowerShell(.\\\\infra\\\\bootstrap.ps1 2>&1 | Select-Object -Last 30)",
+      "PowerShell(.\\\\infra\\\\bootstrap.ps1 2>&1 | Select-Object -Last 25)",
+      "PowerShell(helm *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)"
     ]
   }
 }

@@ -1,5 +1,6 @@
 # Tear down the demo's background jobs (port-forwards + UI server).
-# Leaves the k3d cluster running. To stop the cluster too: k3d cluster stop aiops
+# Leaves Rancher Desktop's k3s running. To stop the cluster too, quit Rancher Desktop
+# (or System tray -> Rancher Desktop -> Quit).
 
 $jobs = Get-Job -Name 'pf-*' -ErrorAction SilentlyContinue
 if (-not $jobs) {
@@ -10,4 +11,4 @@ if (-not $jobs) {
     Write-Host "stopped." -ForegroundColor Green
 }
 Write-Host ''
-Write-Host 'Cluster is still running. To stop it too:  k3d cluster stop aiops'
+Write-Host 'Cluster is still running. To stop k3s, quit Rancher Desktop from the tray.'

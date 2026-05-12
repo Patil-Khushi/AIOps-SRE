@@ -13,7 +13,8 @@ param(
     [string]$Namespace = 'otel-demo',
     [int]$UiPort = 8765,
     [string]$LlmProvider = '',   # leave empty to let .env drive AIOPS_LLM_PROVIDER
-    [string]$LlmModel = ''       # leave empty to let .env drive AIOPS_LLM_MODEL
+    [string]$LlmModel = '',      # leave empty to let .env drive AIOPS_LLM_MODEL
+    [string]$Context = 'rancher-desktop'  # set to '' to use current kube context
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,23 +35,32 @@ if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {
 }
 
 # --- 1. cluster ---
-Write-Step 1 "checking k3d cluster 'aiops'..."
-$clusterListing = (k3d cluster list 2>&1 | Out-String)
-if ($clusterListing -notmatch '\baiops\b') {
-    throw "k3d cluster 'aiops' does not exist. Create it first with: k3d cluster create aiops --servers 1 --agents 2 --wait"
+Write-Step 1 "checking Rancher Desktop k3s..."
+if ($Context) {
+    $current = (kubectl config current-context 2>$null)
+    if ($current) { $current = $current.Trim() }
+    if ($current -ne $Context) {
+        Write-Host "    switching kube context: $current -> $Context"
+        kubectl config use-context $Context | Out-Null
+    }
 }
-$wsl = (wsl --list --verbose 2>&1 | Out-String)
-if ($wsl -notmatch 'r.a.n.c.h.e.r.-.d.e.s.k.t.o.p') {
-    Write-Warning "WSL distro 'rancher-desktop' not visible -- make sure Rancher Desktop is running."
+# Probe the API with a short timeout. Swap ErrorActionPreference because PS 5.1
+# turns a native exe's stderr into a NativeCommandError under 'Stop'.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$null = & kubectl version --request-timeout=5s 2>&1
+$probeExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+if ($probeExit -ne 0) {
+    Write-Host ''
+    Write-Host "Cannot reach the Kubernetes API." -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host "  Start Rancher Desktop from the Start menu and wait for the tray icon"
+    Write-Host "  to show 'Kubernetes: running' (usually 30-60 seconds). Then re-run"
+    Write-Host "  this script."
+    throw "Rancher Desktop k3s API unreachable on context '$Context'."
 }
-try {
-    kubectl get nodes --request-timeout=5s | Out-Null
-    Write-Host "    cluster API reachable" -ForegroundColor Green
-} catch {
-    Write-Host "    cluster API unreachable; attempting 'k3d cluster start aiops'..." -ForegroundColor Yellow
-    k3d cluster start aiops | Out-Null
-    Start-Sleep -Seconds 10
-}
+Write-Host "    cluster API reachable" -ForegroundColor Green
 
 # --- 2. port-forwards ---
 Write-Step 2 "starting port-forwards..."
@@ -84,12 +94,14 @@ if (Test-Path $dashDir) {
         } else {
             Push-Location $dashDir
             try {
+                # Run npm via cmd.exe so its stderr chatter doesn't get wrapped as a
+                # PS 5.1 NativeCommandError and tripped by $ErrorActionPreference = 'Stop'.
                 if (-not (Test-Path 'node_modules')) {
                     Write-Host "    npm install ..." -ForegroundColor DarkGray
-                    npm install --no-audit --no-fund --silent 2>&1 | Out-Null
+                    cmd /c "npm install --no-audit --no-fund --silent >NUL 2>&1"
                 }
                 Write-Host "    npm run build ..." -ForegroundColor DarkGray
-                npm run build --silent 2>&1 | Out-Null
+                cmd /c "npm run build --silent >NUL 2>&1"
                 if (Test-Path $dashDist) {
                     Write-Host "    dashboard built -> demo/dashboard/dist/" -ForegroundColor Green
                 } else {
@@ -101,6 +113,21 @@ if (Test-Path $dashDir) {
         Write-Host "    dashboard already built" -ForegroundColor DarkGray
     }
 }
+
+# --- 2c. ensure the UI extra is synced into .venv ---
+# Without this, `uv run uvicorn` will silently fall back to a uvicorn elsewhere
+# on PATH whose site-packages is missing httpx etc. Idempotent and fast on re-runs.
+Write-Step '2c' "syncing 'ui' extra into .venv..."
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    throw "uv not found on PATH. Install uv: https://docs.astral.sh/uv/getting-started/installation/"
+}
+# Run uv via cmd so its stderr chatter doesn't get wrapped as a PS 5.1
+# NativeCommandError under $ErrorActionPreference = 'Stop'.
+cmd /c "uv sync --extra ui --quiet >NUL 2>&1"
+if ($LASTEXITCODE -ne 0) {
+    throw "uv sync --extra ui failed (exit $LASTEXITCODE). Run it manually to see the error."
+}
+Write-Host "    .venv has uvicorn + fastapi" -ForegroundColor Green
 
 # --- 3. ui server ---
 Write-Step 3 "starting demo UI server on http://localhost:$UiPort ..."
