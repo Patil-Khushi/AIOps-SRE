@@ -30,7 +30,7 @@ Directory naming: `<phase-prefix>-<id>-<slug>` matching the catalog (`RA-001` �
 2. Create the directory above with `agent.py`, `prompts/`, `evals/golden.json`, `README.md`.
 3. Wire LLM calls through `aiops.llm.complete` / `acomplete`. **No direct SDK imports.**
 4. Wire tool calls through `aiops.tools.get_registry().call(...)`. **No direct vendor SDKs.**
-5. For destructive or high-blast-radius actions, set `requires_hitl=True` on the tool and call `aiops.policy.get_gate().enforce(...)` before invocation.
+5. HITL is enforced at the registry boundary. Just call `get_registry().call(capability, ...)` — REQUIRED-level actions return `ok=False` automatically when no approver is wired. Agents don't gate-check themselves.
 6. Build the eval set in the same week. A prompt change is a model change — re-run.
 7. Set the agent's HITL level in `policies/hitl.rego` to match the catalog.
 8. If you introduce a failure scenario for testing, add a truth file under `demo/truth_files/`.

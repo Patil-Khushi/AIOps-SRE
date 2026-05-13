@@ -6,6 +6,12 @@ registered by capability name (``"observability.metrics.query"``,
 ``"itsm.incident.create"``); the active *provider* for that capability is
 selected via configuration. Swapping providers is a config change, not an
 agent rewrite.
+
+HITL is enforced **at the registry boundary**, not inside agent code. Every
+``call()`` consults ``aiops.policy.get_gate()`` for the capability before
+invoking the tool function. REQUIRED-level actions without an approver return
+``ToolResult(ok=False, ...)`` rather than executing — this is the platform
+implementation of CLAUDE.md principle #3.
 """
 
 from __future__ import annotations
@@ -14,6 +20,8 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from aiops.policy import get_gate
 
 
 @dataclass
@@ -31,8 +39,6 @@ class Tool:
     fn: Callable[..., ToolResult]
     capability: str
     provider: str
-    requires_hitl: bool = False
-    """If True, callers must satisfy ``aiops.policy.gate`` before invocation."""
 
 
 class ToolRegistry:
@@ -66,8 +72,25 @@ class ToolRegistry:
             raise KeyError(f"No provider registered for capability {capability!r}")
         return self._tools[name]
 
-    def call(self, capability: str, **kwargs: Any) -> ToolResult:
+    def call(
+        self,
+        capability: str,
+        *,
+        hitl_context: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> ToolResult:
         t = self.by_capability(capability)
+        decision = get_gate().check(capability, hitl_context)
+        if not decision.allowed:
+            return ToolResult(
+                ok=False,
+                error=f"blocked by HITL gate: level={decision.level.value} reason={decision.reason}",
+                metadata={
+                    "blocked_by": "hitl_gate",
+                    "level": decision.level.value,
+                    "capability": capability,
+                },
+            )
         sig = inspect.signature(t.fn)
         accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
         try:
@@ -92,7 +115,6 @@ def tool(
     capability: str,
     provider: str,
     description: str = "",
-    requires_hitl: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator: register a function as a tool.
 
@@ -104,6 +126,10 @@ def tool(
               provider="servicenow")
         def create_incident(short_description: str, urgency: int) -> ToolResult:
             ...
+
+    HITL enforcement is automatic — the registry queries ``aiops.policy.gate``
+    for ``capability`` on every call. You don't set a flag on the tool; you
+    register the capability and let the gate's level mapping decide.
     """
 
     def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -114,7 +140,6 @@ def tool(
                 fn=fn,
                 capability=capability,
                 provider=provider,
-                requires_hitl=requires_hitl,
             )
         )
         return fn

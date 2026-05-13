@@ -41,4 +41,5 @@ Agents pick capabilities, not products. The `Primary Tool Mapping` and `Secondar
 1. Create `aiops/tools/<vendor>_provider.py`.
 2. Decorate each function with `@tool(name=..., capability=..., provider=...)`.
 3. Import the module from a wiring point (the bootstrap in `aiops/tools/__init__.py` or a Phase-1 startup hook) so registration runs.
-4. Set `requires_hitl=True` on anything destructive — `aiops.policy.gate` checks it.
+
+HITL enforcement is automatic — every `get_registry().call(capability, ...)` consults `aiops.policy.get_gate()` for that capability's level before invoking the tool function. REQUIRED-level actions without an approver return `ToolResult(ok=False, ...)` with `metadata["blocked_by"] == "hitl_gate"`. You don't set a flag on the tool; the gate's level mapping (Python dict in Phase 0, OPA query in Phase 2) is the source of truth.

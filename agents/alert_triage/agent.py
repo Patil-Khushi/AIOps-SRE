@@ -203,6 +203,13 @@ def reset_dedup_store() -> None:
     _EMBED_CACHE.clear()
 
 
+def reset_state() -> None:
+    """Eval-harness hook (A11). Wipe persistent cluster rows + the in-memory
+    embedding cache so each golden case starts from a clean dedup state."""
+    state_repo.delete_all_clusters()
+    reset_dedup_store()
+
+
 # ─── stage 5: severity classification ───────────────────────────────────────
 
 
@@ -292,12 +299,8 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
 
     Targets the OpenTelemetry demo's HTTP client instrumentation metrics
     (every service exports ``http_client_duration_milliseconds_*`` for its
-    outbound calls). 5-minute rate window because the demo's scrape interval
-    is ~30 s, so 1 m is too narrow to compute a rate reliably.
-
-    Note: this chart does NOT enable the spanmetrics processor, so
-    ``traces_span_metrics_*`` series are absent. If you turn it on via Helm
-    values, switch these queries to that family — they're more accurate.
+    outbound calls). 5-minute rate window leaves enough samples even when
+    a service's traffic is sparse.
     """
     svc = alert.service.lower().strip()
     metric = alert.metric.lower()
@@ -448,6 +451,11 @@ def _generate_summary(
 
 
 # ─── entry point ────────────────────────────────────────────────────────────
+
+
+def run(input: dict[str, Any]) -> dict[str, Any]:
+    """Eval-harness contract: dict-in, dict-out shim around ``triage``."""
+    return triage(Alert(**input)).model_dump(mode="json")
 
 
 def triage(alert: Alert) -> TriageVerdict:

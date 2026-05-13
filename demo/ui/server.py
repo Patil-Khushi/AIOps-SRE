@@ -43,26 +43,11 @@ from pydantic import BaseModel, Field
 
 
 # Load .env explicitly. ``uv run`` does NOT auto-load .env files, so without
-# this every uvicorn launch sees a bare environment, the AIOPS_LLM_PROVIDER
-# setdefault below sets the provider to "stub", and the dashboard header chip
-# is stuck red. Done here (not via python-dotenv) to avoid an extra dep.
-def _load_dotenv() -> None:
-    env_path = Path(__file__).resolve().parents[2] / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        # Strip inline comments and surrounding whitespace/quotes.
-        val = val.split("#", 1)[0].strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = val
+# this every uvicorn launch sees a bare environment and the dashboard header
+# chip is stuck red.
+from aiops._dotenv import load_dotenv  # noqa: E402
 
-
-_load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # Default to the stub LLM so the demo runs without an API key. Override by
 # setting AIOPS_LLM_PROVIDER=anthropic before launching uvicorn (or by
@@ -75,6 +60,7 @@ from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import get_registry  # noqa: E402
+from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +166,7 @@ def live_alerts() -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"prometheus error: {res.error}")
     alerts = (res.data or {}).get("alerts", [])
     # Render each Prometheus alert as a candidate Alert payload the UI can post back.
-    candidates = [_prometheus_alert_to_candidate(a) for a in alerts]
+    candidates = [to_canonical_alert(a) for a in alerts]
     return {"count": len(candidates), "alerts": candidates, "raw_count": len(alerts)}
 
 
@@ -219,55 +205,12 @@ def list_verdicts_endpoint(
     return {"count": len(verdicts), "verdicts": verdicts}
 
 
-# ─── helpers ────────────────────────────────────────────────────────────────
-
-
-def _prometheus_alert_to_candidate(alert: dict[str, Any]) -> dict[str, Any]:
-    """Translate a Prometheus /api/v1/alerts entry into the canonical Alert shape.
-
-    This is the v0 source-adapter for Prometheus → canonical Alert (the
-    workflow step 3 'Normalize' work that was deferred). Lives here for now;
-    move to ``aiops/tools/alerts/prometheus_adapter.py`` when other sources
-    show up.
-    """
-    labels = alert.get("labels", {}) or {}
-    annotations = alert.get("annotations", {}) or {}
-    service = (
-        labels.get("service")
-        or labels.get("service_name")
-        or labels.get("job")
-        or annotations.get("service")
-        or "unknown"
-    )
-    metric = (
-        labels.get("alertname")
-        or labels.get("__name__")
-        or annotations.get("summary")
-        or "alert"
-    )
-    value_str = alert.get("value") or labels.get("value") or "0"
-    try:
-        value = float(value_str)
-    except (TypeError, ValueError):
-        value = 0.0
-    return {
-        "alert_id": f"PROM-{labels.get('alertname','UNKNOWN')}-{labels.get('instance', 'na')}",
-        "service": service,
-        "metric": metric,
-        "value": value,
-        "timestamp": alert.get("activeAt") or datetime.now(UTC).isoformat(),
-        "source": "Prometheus",
-        "severity_hint": labels.get("severity"),
-        "labels": {k: str(v) for k, v in labels.items()},
-        "annotations": {k: str(v) for k, v in annotations.items()},
-    }
-
-
 # ─── scenarios (flagd flip + matching alert rule) ──────────────────────────
 #
 # Each scenario flips one flagd flag in the otel-demo namespace. The matching
-# Prometheus alert rule (deployed via infra/prometheus-rules.yml) fires when
-# the resulting metric anomaly crosses its threshold.
+# Prometheus alert rule (inlined under prometheus.serverFiles.alerting_rules.yml
+# in demo/otel-demo/values.yaml) fires when the resulting metric anomaly
+# crosses its threshold.
 #
 # This requires `kubectl` on the PATH of the uvicorn process — start.ps1 does
 # that automatically. If running uvicorn directly, prepend
@@ -275,7 +218,7 @@ def _prometheus_alert_to_candidate(alert: dict[str, Any]) -> dict[str, Any]:
 
 # Scenario catalog. Each entry maps a flagd flag to:
 #   - alert       : the matching Prometheus alert rule name (rule lives in
-#                   infra/prometheus-rules.yml)
+#                   demo/otel-demo/values.yaml under prometheus.serverFiles)
 #   - service     : OTel demo service whose telemetry the alert reads
 #   - variant_on  : variant name to set when the user clicks "Inject". Some flags
 #                   have intensity variants (paymentFailure: 100%/90%/.../off,

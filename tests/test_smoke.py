@@ -7,6 +7,7 @@ agent exists.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -126,13 +127,34 @@ def test_truth_template_is_valid_yaml():
 
 # --- eval harness handles empty agents/ ------------------------------------
 
-def test_eval_harness_phase0_passes_with_no_agents(capsys):
-    from evals.harness import main as eval_main
+def test_eval_harness_phase0_passes_with_no_agents(capsys, monkeypatch):
+    from evals import harness
 
-    rc = eval_main(["--ci", "--min-pass-rate", "0.85"])
+    monkeypatch.setattr(harness, "discover_agents", lambda: [])
+    rc = harness.main(["--ci", "--min-pass-rate", "0.85"])
     assert rc == 0
     out = capsys.readouterr().out
     assert '"phase0": true' in out
+
+
+def test_load_cases_accepts_both_shapes_and_drops_unknown_keys(tmp_path):
+    from evals.harness import _load_cases
+
+    flat = tmp_path / "flat.json"
+    flat.write_text(json.dumps([
+        {"id": "a", "description": "d", "input": {}, "expected": {}}
+    ]), encoding="utf-8")
+    wrapped = tmp_path / "wrapped.json"
+    wrapped.write_text(json.dumps({
+        "agent": "X", "version": "v1",
+        "cases": [
+            {"id": "b", "description": "d", "scenario": "extra-key-dropped",
+             "input": {}, "expected": {}}
+        ]
+    }), encoding="utf-8")
+
+    assert [c.id for c in _load_cases(flat)] == ["a"]
+    assert [c.id for c in _load_cases(wrapped)] == ["b"]
 
 
 # --- repo invariant: no direct vendor SDK imports outside aiops/llm ------
@@ -149,7 +171,7 @@ def test_no_direct_llm_sdk_imports_outside_aiops_llm():
         rel = path.relative_to(REPO_ROOT).as_posix()
         if rel.startswith(("aiops/llm/", "tests/", ".tmp_", "build/", "dist/")):
             continue
-        if rel.startswith(".venv/"):
+        if rel.startswith((".venv/", ".claude/")):
             continue
         text = path.read_text(encoding="utf-8")
         for needle in forbidden:

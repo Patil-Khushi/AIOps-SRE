@@ -22,13 +22,16 @@ import json
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
+
+from aiops._dotenv import load_dotenv
 
 from .scoring import score_case
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(REPO_ROOT / ".env")
 
 
 @dataclass
@@ -62,8 +65,15 @@ class AgentRun:
 
 
 def _load_cases(path: Path) -> list[Case]:
+    """Accept a flat list or a ``{"cases": [...]}`` wrapper (the wrapped form
+    lets goldens carry top-level metadata like agent/version/description).
+    Per-case keys not on ``Case`` are dropped so goldens can hold extra
+    metadata (e.g. a ``scenario`` cross-ref) without coupling the schema."""
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return [Case(**c) for c in raw]
+    if isinstance(raw, dict):
+        raw = raw.get("cases", [])
+    case_fields = {f.name for f in fields(Case)}
+    return [Case(**{k: v for k, v in c.items() if k in case_fields}) for c in raw]
 
 
 def _resolve_runner(agent_dir: Path) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -79,14 +89,27 @@ def _resolve_runner(agent_dir: Path) -> Callable[[dict[str, Any]], dict[str, Any
     return mod.run  # type: ignore[no-any-return]
 
 
+def _resolve_reset_state(agent_dir: Path) -> Callable[[], None] | None:
+    """Optional ``reset_state()`` hook so agents with persistent state can
+    expose a clean-slate between cases. Returns None when the agent doesn't
+    define one (stateless agents need no hook)."""
+    rel = agent_dir.relative_to(REPO_ROOT).as_posix().replace("/", ".")
+    mod = importlib.import_module(f"{rel}.agent")
+    fn = getattr(mod, "reset_state", None)
+    return fn if callable(fn) else None
+
+
 def run_agent(agent_dir: Path) -> AgentRun:
     cases_path = agent_dir / "evals" / "golden.json"
     if not cases_path.exists():
         return AgentRun(agent=agent_dir.name, results=[])
     cases = _load_cases(cases_path)
     runner = _resolve_runner(agent_dir)
+    reset_state = _resolve_reset_state(agent_dir)
     results: list[CaseResult] = []
     for c in cases:
+        if reset_state is not None:
+            reset_state()
         t0 = time.perf_counter()
         try:
             actual = runner(c.input)

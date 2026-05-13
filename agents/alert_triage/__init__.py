@@ -15,10 +15,10 @@ Steps 9-12 belong to downstream agents in the same phase:
 
 Public surface::
 
-    from agents.alert_triage import Alert, TriageVerdict, AuditMetadata, triage
+    from agents.alert_triage import Alert, TriageVerdict, AuditMetadata, triage, run
 """
 
-from agents.alert_triage.agent import triage
+from agents.alert_triage.agent import reset_state, run, triage
 from agents.alert_triage.models import Alert, AuditMetadata, TriageVerdict
 
-__all__ = ["Alert", "AuditMetadata", "TriageVerdict", "triage"]
+__all__ = ["Alert", "AuditMetadata", "TriageVerdict", "reset_state", "run", "triage"]
