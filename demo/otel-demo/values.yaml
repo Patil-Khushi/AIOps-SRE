@@ -29,17 +29,23 @@ prometheus:
       - name: aiops-demo
         interval: 30s
         rules:
+        # Payment uses gRPC and the OTel collector doesn't enrich http_status_code,
+        # so HTTP-based detection silently never fires. Span-metric error rate
+        # is the same pattern ProductCatalogErrorRateHigh below uses. The [2m]
+        # window (vs [1m] elsewhere) is intentional: span-metrics for payment
+        # arrive every ~16s, so [1m] frequently has <2 samples and rate() returns
+        # empty — verified live against this cluster.
         - alert: PaymentErrorRateHigh
-          expr: "sum by (service_name) (\n  rate(http_client_duration_milliseconds_count{service_name=\"payment\",http_status_code=~\"\
-            5..\"}[1m])\n) > 0.2\n"
+          expr: "sum by (service_name) (\n  rate(traces_span_metrics_calls_total{service_name=\"\
+            payment\",status_code=\"STATUS_CODE_ERROR\"}[2m])\n) > 0\n"
           for: 15s
           labels:
             severity: critical
             service: payment
             alert_type: error_rate
           annotations:
-            summary: Payment service returning HTTP 5xx errors
-            description: service={{ $labels.service_name }} 5xx-rate={{ $value }}/s
+            summary: Payment service producing error spans
+            description: service={{ $labels.service_name }} error_rate={{ $value }}/s
             runbook_url: https://runbooks.example.com/payment-cpu
             flag_hint: toggle paymentFailure=on at http://localhost:8080/feature/
         - alert: CartErrorRateHigh
