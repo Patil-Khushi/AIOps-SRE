@@ -75,6 +75,7 @@ from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import get_registry  # noqa: E402
+from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ def live_alerts() -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"prometheus error: {res.error}")
     alerts = (res.data or {}).get("alerts", [])
     # Render each Prometheus alert as a candidate Alert payload the UI can post back.
-    candidates = [_prometheus_alert_to_candidate(a) for a in alerts]
+    candidates = [to_canonical_alert(a) for a in alerts]
     return {"count": len(candidates), "alerts": candidates, "raw_count": len(alerts)}
 
 
@@ -217,50 +218,6 @@ def list_verdicts_endpoint(
         raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
     verdicts = state_repo.list_verdicts(limit=limit, service=service, severity=severity)
     return {"count": len(verdicts), "verdicts": verdicts}
-
-
-# ─── helpers ────────────────────────────────────────────────────────────────
-
-
-def _prometheus_alert_to_candidate(alert: dict[str, Any]) -> dict[str, Any]:
-    """Translate a Prometheus /api/v1/alerts entry into the canonical Alert shape.
-
-    This is the v0 source-adapter for Prometheus → canonical Alert (the
-    workflow step 3 'Normalize' work that was deferred). Lives here for now;
-    move to ``aiops/tools/alerts/prometheus_adapter.py`` when other sources
-    show up.
-    """
-    labels = alert.get("labels", {}) or {}
-    annotations = alert.get("annotations", {}) or {}
-    service = (
-        labels.get("service")
-        or labels.get("service_name")
-        or labels.get("job")
-        or annotations.get("service")
-        or "unknown"
-    )
-    metric = (
-        labels.get("alertname")
-        or labels.get("__name__")
-        or annotations.get("summary")
-        or "alert"
-    )
-    value_str = alert.get("value") or labels.get("value") or "0"
-    try:
-        value = float(value_str)
-    except (TypeError, ValueError):
-        value = 0.0
-    return {
-        "alert_id": f"PROM-{labels.get('alertname','UNKNOWN')}-{labels.get('instance', 'na')}",
-        "service": service,
-        "metric": metric,
-        "value": value,
-        "timestamp": alert.get("activeAt") or datetime.now(UTC).isoformat(),
-        "source": "Prometheus",
-        "severity_hint": labels.get("severity"),
-        "labels": {k: str(v) for k, v in labels.items()},
-        "annotations": {k: str(v) for k, v in annotations.items()},
-    }
 
 
 # ─── scenarios (flagd flip + matching alert rule) ──────────────────────────
