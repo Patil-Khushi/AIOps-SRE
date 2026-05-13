@@ -28,11 +28,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import aiops.tools.mock_providers
-
 # Side-effect imports: register providers with the registry.
 # observability registers live Prometheus + Jaeger; mock_providers contributes
-# only the CMDB + on-call lookups (static tables, no live CMDB/PagerDuty wired).
+# the on-call lookup and (gated on AIOPS_USE_MOCK_ITSM) the static CMDB table;
+# itsm registers the live ServiceNow client, which takes over itsm.cmdb.lookup
+# once the mock is suppressed via AIOPS_USE_MOCK_ITSM=false.
+import aiops.tools.itsm
+import aiops.tools.mock_providers
 import aiops.tools.observability  # noqa: F401
 from agents.alert_triage.models import (
     Alert,
