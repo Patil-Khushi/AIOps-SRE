@@ -20,7 +20,29 @@
       "Bash(git rm *)",
       "Bash(git commit *)",
       "Bash(uv sync *)",
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "Bash(kubectl --request-timeout=5s -n otel-demo get pods --no-headers)",
+      "Bash(kubectl -n otel-demo get pods -l app.kubernetes.io/name=prometheus -o name)",
+      "Bash(kubectl -n otel-demo get svc)",
+      "Bash(kubectl -n otel-demo get cm prometheus -o jsonpath='{.data}')",
+      "Bash(python -c \"import sys,json; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\('keys:', list\\(d.keys\\(\\)\\)\\); cfg=d.get\\('prometheus.yml',''\\); import re; m=re.search\\(r'rule_files:\\\\s*\\\\n\\(\\(?:\\\\s+-.+\\\\n?\\)+\\)', cfg\\); print\\('rule_files block:'\\); print\\(m.group\\(0\\) if m else '\\(none\\)'\\)\")",
+      "Bash(kubectl -n otel-demo get cm prometheus -o jsonpath='{.data.prometheus\\\\.yml}')",
+      "Bash(kubectl -n otel-demo get cm prometheus -o jsonpath='{.data.alerting_rules\\\\.yml}')",
+      "Bash(kubectl -n otel-demo get deploy prometheus -o jsonpath='{.spec.template.spec.containers[0].args}')",
+      "Bash(kubectl -n otel-demo get deploy prometheus -o jsonpath='{.spec.template.spec.containers[0].volumeMounts}')",
+      "PowerShell(.\\\\infra\\\\apply-prometheus-rules.ps1 2>&1 | Select-Object -Last 40)",
+      "PowerShell(Set-Content *)",
+      "PowerShell(.\\\\infra\\\\apply-prometheus-rules.ps1 2>&1 | Select-Object -Last 30)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(.\\\\infra\\\\apply-prometheus-rules.ps1 2>&1)",
+      "Bash(kubectl -n otel-demo get pods -l app.kubernetes.io/name=prometheus --no-headers)",
+      "Bash(kubectl *)",
+      "Bash(helm get *)",
+      "Bash(python3 -c ' *)",
+      "Read(//tmp/**)",
+      "Bash(python -c ' *)",
+      "PowerShell(kubectl apply -f \"$env:TEMP\\\\prom-cm-original.yaml\" 2>&1; Write-Host \"exit=$LASTEXITCODE\"; Write-Host '---'; kubectl -n otel-demo rollout restart deployment/prometheus 2>&1)",
+      "Bash(helm show *)"
     ]
   }
 }

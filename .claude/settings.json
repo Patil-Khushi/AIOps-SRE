@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import json,sys; d=json.loads\\(sys.stdin.read\\(\\)\\); groups=d.get\\('data',{}\\).get\\('groups',[]\\); print\\(f'rule groups loaded: {len\\(groups\\)}'\\); [print\\(f'  - {g[\\\\\"name\\\\\"]} \\({len\\(g[\\\\\"rules\\\\\"]\\)} rules\\)'\\) for g in groups]\")"
+    ]
+  }
+}

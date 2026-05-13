@@ -22,7 +22,7 @@ import json
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -62,8 +62,15 @@ class AgentRun:
 
 
 def _load_cases(path: Path) -> list[Case]:
+    """Accept a flat list or a ``{"cases": [...]}`` wrapper (the wrapped form
+    lets goldens carry top-level metadata like agent/version/description).
+    Per-case keys not on ``Case`` are dropped so goldens can hold extra
+    metadata (e.g. a ``scenario`` cross-ref) without coupling the schema."""
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return [Case(**c) for c in raw]
+    if isinstance(raw, dict):
+        raw = raw.get("cases", [])
+    case_fields = {f.name for f in fields(Case)}
+    return [Case(**{k: v for k, v in c.items() if k in case_fields}) for c in raw]
 
 
 def _resolve_runner(agent_dir: Path) -> Callable[[dict[str, Any]], dict[str, Any]]:

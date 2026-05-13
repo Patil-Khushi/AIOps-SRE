@@ -266,8 +266,9 @@ def _prometheus_alert_to_candidate(alert: dict[str, Any]) -> dict[str, Any]:
 # ─── scenarios (flagd flip + matching alert rule) ──────────────────────────
 #
 # Each scenario flips one flagd flag in the otel-demo namespace. The matching
-# Prometheus alert rule (deployed via infra/prometheus-rules.yml) fires when
-# the resulting metric anomaly crosses its threshold.
+# Prometheus alert rule (inlined under prometheus.serverFiles.alerting_rules.yml
+# in demo/otel-demo/values.yaml) fires when the resulting metric anomaly
+# crosses its threshold.
 #
 # This requires `kubectl` on the PATH of the uvicorn process — start.ps1 does
 # that automatically. If running uvicorn directly, prepend
@@ -275,7 +276,7 @@ def _prometheus_alert_to_candidate(alert: dict[str, Any]) -> dict[str, Any]:
 
 # Scenario catalog. Each entry maps a flagd flag to:
 #   - alert       : the matching Prometheus alert rule name (rule lives in
-#                   infra/prometheus-rules.yml)
+#                   demo/otel-demo/values.yaml under prometheus.serverFiles)
 #   - service     : OTel demo service whose telemetry the alert reads
 #   - variant_on  : variant name to set when the user clicks "Inject". Some flags
 #                   have intensity variants (paymentFailure: 100%/90%/.../off,

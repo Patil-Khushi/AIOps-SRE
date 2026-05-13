@@ -292,12 +292,8 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
 
     Targets the OpenTelemetry demo's HTTP client instrumentation metrics
     (every service exports ``http_client_duration_milliseconds_*`` for its
-    outbound calls). 5-minute rate window because the demo's scrape interval
-    is ~30 s, so 1 m is too narrow to compute a rate reliably.
-
-    Note: this chart does NOT enable the spanmetrics processor, so
-    ``traces_span_metrics_*`` series are absent. If you turn it on via Helm
-    values, switch these queries to that family — they're more accurate.
+    outbound calls). 5-minute rate window leaves enough samples even when
+    a service's traffic is sparse.
     """
     svc = alert.service.lower().strip()
     metric = alert.metric.lower()
