@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
   BellRing,
+  Bell,
   Brain,
   Network,
   HeartPulse,
@@ -10,11 +11,12 @@ import {
 import { clsx } from '@/lib/format';
 
 const NAV = [
-  { to: '/',          label: 'Overview',     icon: LayoutDashboard, end: true },
-  { to: '/alerts',    label: 'Alert Stream', icon: BellRing,        end: false },
-  { to: '/reasoning', label: 'AI Reasoning', icon: Brain,           end: false },
-  { to: '/topology',  label: 'Topology',     icon: Network,         end: false },
-  { to: '/health',    label: 'System Health',icon: HeartPulse,      end: false },
+  { to: '/',              label: 'Overview',      icon: LayoutDashboard, end: true },
+  { to: '/alerts',        label: 'Alert Stream',  icon: BellRing,        end: false },
+  { to: '/notifications', label: 'Notifications', icon: Bell,            end: false },
+  { to: '/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
+  { to: '/topology',      label: 'Topology',      icon: Network,         end: false },
+  { to: '/health',        label: 'System Health', icon: HeartPulse,      end: false },
 ];
 
 export default function Sidebar() {

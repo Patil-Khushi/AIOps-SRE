@@ -21,7 +21,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install deps
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra ui
 
       - name: ruff check
         run: uv run ruff check .

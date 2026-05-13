@@ -1,0 +1,8 @@
+id: cart_failure
+category: errors
+flag: cartFailure
+alert: CartErrorRateHigh
+service: cart
+title: Cart failure (HTTP 500s)
+description: Cart service errors out on every request.
+eta_seconds: 90

@@ -13,6 +13,7 @@ Endpoints:
 - ``GET  /api/topology``           — service nodes + dependency edges from Jaeger
 - ``GET  /api/system/pods``        — kubectl-derived pod status for otel-demo
 - ``WS   /ws/alerts``              — push live Prometheus alerts to the dashboard
+- ``WS   /ws/chatops``             — push chatops notifications (RA-005 sink) to the dashboard
 
 The agent runs in-process (single uvicorn worker = single dedup store) so the
 embedding dedup memory persists across triage calls within one server lifetime.
@@ -37,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -58,10 +60,14 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 # and the mock CMDB / on-call providers.
 from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
+from agents.notification_router import route as route_notification  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import get_registry  # noqa: E402
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
+from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
+from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
+from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +82,18 @@ app = FastAPI(title="Adaptive AIOps — Alert Triage demo", version="0.1.0")
 @app.on_event("startup")
 def _bootstrap_state() -> None:
     init_db()
+
+
+@app.on_event("startup")
+def _register_chatops_adapters() -> None:
+    """JSON audit log (D3). The WebSocket sink (D2) registers itself via
+    ``_register_chatops_ws_routes`` below."""
+    audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
+    get_chatops_client().register(JsonFileChatOpsAdapter(audit_path))
+    logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
+
+
+_register_chatops_ws_routes(app)
 
 
 # ─── routes ─────────────────────────────────────────────────────────────────
@@ -130,10 +148,12 @@ class TriageRequest(BaseModel):
 
 @app.post("/api/triage", response_model=None)
 def triage_alert(req: TriageRequest) -> dict[str, Any]:
-    """Triage a single alert + auto-file a ticket. Body: ``{"alert": {<Alert>}}``.
+    """Triage a single alert, auto-file a ticket (RA-003), notify chatops (RA-005).
 
-    Returns ``{"verdict": TriageVerdict, "ticket": TicketRecord}`` — the RA-001
-    output paired with RA-003's ticket/notification result.
+    Body: ``{"alert": {<Alert payload>}}``. Returns
+    ``{"verdict": TriageVerdict, "ticket": TicketRecord}``. The chatops fan-out
+    is a side effect: a routing error is logged but the response still returns
+    200 with both verdict and ticket populated.
     """
     try:
         alert_obj = Alert(**req.alert)
@@ -141,6 +161,10 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
     verdict: TriageVerdict = triage(alert_obj)
     ticket_record = auto_ticket(verdict)
+    try:
+        route_notification(verdict)
+    except Exception:
+        logger.exception("RA-005: routing failed for verdict on %s", verdict.affected_service)
     return {
         "verdict": verdict.model_dump(mode="json"),
         "ticket": ticket_record.model_dump(mode="json"),
@@ -228,132 +252,35 @@ def list_verdicts_endpoint(
 # that automatically. If running uvicorn directly, prepend
 # %LOCALAPPDATA%\Programs\kubectl to PATH first.
 
-# Scenario catalog. Each entry maps a flagd flag to:
-#   - alert       : the matching Prometheus alert rule name (rule lives in
-#                   demo/otel-demo/values.yaml under prometheus.serverFiles)
-#   - service     : OTel demo service whose telemetry the alert reads
-#   - variant_on  : variant name to set when the user clicks "Inject". Some flags
-#                   have intensity variants (paymentFailure: 100%/90%/.../off,
-#                   imageSlowLoad: 10sec/5sec/off, emailMemoryLeak: 1x/.../10000x).
-#                   When omitted we use "on" (the default for simple toggles).
-#   - category    : grouping for the UI ("errors", "latency", "capacity", "infra")
-SCENARIOS: dict[str, dict[str, Any]] = {
-    # ── HTTP-level failures (5xx rate signals) ──────────────────────────────
-    "payment_failure": {
-        "flag": "paymentFailure",
-        "variant_on": "100%",
-        "alert": "PaymentErrorRateHigh",
-        "service": "payment",
-        "title": "Payment failure (HTTP 500s)",
-        "description": "Payment service rejects every charge with a 5xx error.",
-        "category": "errors",
-        "eta_seconds": 90,
-    },
-    "payment_unreachable": {
-        "flag": "paymentUnreachable",
-        "alert": "PaymentErrorRateHigh",
-        "service": "payment",
-        "title": "Payment unreachable",
-        "description": "Payment endpoint is unreachable — connection refused upstream.",
-        "category": "errors",
-        "eta_seconds": 90,
-    },
-    "cart_failure": {
-        "flag": "cartFailure",
-        "alert": "CartErrorRateHigh",
-        "service": "cart",
-        "title": "Cart failure (HTTP 500s)",
-        "description": "Cart service errors out on every request.",
-        "category": "errors",
-        "eta_seconds": 90,
-    },
-    "product_catalog_failure": {
-        "flag": "productCatalogFailure",
-        "alert": "ProductCatalogErrorRateHigh",
-        "service": "product-catalog",
-        "title": "Product catalog failure",
-        "description": "Product catalog returns errors on a subset of products.",
-        "category": "errors",
-        "eta_seconds": 90,
-    },
-    "ad_failure": {
-        "flag": "adFailure",
-        "alert": "AdErrorRateHigh",
-        "service": "ad",
-        "title": "Ad service failure",
-        "description": "Ad service returns 5xx errors — banners disappear from the homepage.",
-        "category": "errors",
-        "eta_seconds": 90,
-    },
-    # ── Latency / cache failures ────────────────────────────────────────────
-    "recommendation_cache_failure": {
-        "flag": "recommendationCacheFailure",
-        "alert": "RecommendationLatencyP95High",
-        "service": "recommendation",
-        "title": "Recommendation cache miss",
-        "description": "Recommendation service slows down — every request bypasses the cache.",
-        "category": "latency",
-        "eta_seconds": 120,
-    },
-    "ad_manual_gc": {
-        "flag": "adManualGc",
-        "alert": "AdLatencyP95High",
-        "service": "ad",
-        "title": "Ad service GC stall",
-        "description": "Ad service triggers manual GC pauses — p95 latency spikes.",
-        "category": "latency",
-        "eta_seconds": 120,
-    },
-    "image_slow_load_10s": {
-        "flag": "imageSlowLoad",
-        "variant_on": "10sec",
-        "alert": "FrontendImageLatencyHigh",
-        "service": "frontend",
-        "title": "Slow image load (10 s)",
-        "description": "Frontend image responses delayed 10 s — page-load p95 spikes.",
-        "category": "latency",
-        "eta_seconds": 120,
-    },
-    # ── Capacity / queue ────────────────────────────────────────────────────
-    "loadgen_homepage_flood": {
-        "flag": "loadGeneratorFloodHomepage",
-        "alert": "FrontendTrafficSurge",
-        "service": "frontend",
-        "title": "Homepage traffic surge",
-        "description": "Loadgenerator floods the homepage (> 10 req/s).",
-        "category": "capacity",
-        "eta_seconds": 60,
-    },
-    "kafka_backpressure": {
-        "flag": "kafkaQueueProblems",
-        "alert": "CheckoutBackpressureHigh",
-        "service": "checkout",
-        "title": "Kafka queue backpressure",
-        "description": "Kafka consumer falls behind — checkout pipeline starts erroring out.",
-        "category": "capacity",
-        "eta_seconds": 120,
-    },
-    # ── Infra (no HTTP signal; the agent picks them up via secondary metrics) ─
-    "email_memory_leak": {
-        "flag": "emailMemoryLeak",
-        "variant_on": "100x",
-        "alert": "EmailMemoryHigh",
-        "service": "email",
-        "title": "Email service memory leak",
-        "description": "Email service leaks memory (~100x normal growth rate).",
-        "category": "infra",
-        "eta_seconds": 180,
-    },
-    "ad_high_cpu": {
-        "flag": "adHighCpu",
-        "alert": "AdCpuHigh",
-        "service": "ad",
-        "title": "Ad service CPU saturation",
-        "description": "Ad service pegs CPU above 80%.",
-        "category": "infra",
-        "eta_seconds": 120,
-    },
-}
+# Scenario catalog lives in demo/scenarios/*.yaml — one file per scenario.
+# Schema and conventions: demo/scenarios/README.md.
+SCENARIOS_DIR = Path(__file__).resolve().parent.parent / "scenarios"
+
+
+def _load_scenarios() -> dict[str, dict[str, Any]]:
+    """Read every ``demo/scenarios/*.yaml`` into a dict keyed by id.
+
+    The dict key is the scenario id (also the filename stem); the value
+    is the rest of the YAML record. We pop ``id`` from the value because
+    it is already the key — keeping it both places would risk drift.
+    Iteration order is alphabetical by filename; the UI then groups by
+    ``category`` so the on-screen layout is stable regardless of fs order.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise RuntimeError(f"scenario file {path.name} must be a YAML mapping")
+        sid = data.pop("id", None)
+        if sid != path.stem:
+            raise RuntimeError(
+                f"scenario file {path.name}: 'id' must equal filename stem {path.stem!r}, got {sid!r}"
+            )
+        out[sid] = data
+    return out
+
+
+SCENARIOS: dict[str, dict[str, Any]] = _load_scenarios()
 
 
 def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
@@ -759,12 +686,27 @@ def dashboard_root() -> FileResponse:
     return FileResponse(index)
 
 
+@app.get("/dashboard/{path:path}")
+def dashboard_spa(path: str) -> FileResponse:
+    """Serve any /dashboard/* URL.
+
+    - Real assets that exist on disk (``assets/*.js``, ``assets/*.css``,
+      ``index.html``) are returned as-is.
+    - Anything else falls back to ``index.html`` so React Router can take
+      over (e.g. ``/dashboard/notifications`` typed directly into the URL
+      bar still loads the SPA).
+    """
+    if not DASHBOARD_DIST.exists():
+        raise HTTPException(
+            status_code=503,
+            detail="dashboard not built — run `cd demo/dashboard && npm install && npm run build`",
+        )
+    # Block path traversal — resolved file must stay under DASHBOARD_DIST.
+    candidate = (DASHBOARD_DIST / path).resolve()
+    if DASHBOARD_DIST.resolve() in candidate.parents and candidate.is_file():
+        return FileResponse(candidate)
+    return FileResponse(DASHBOARD_DIST / "index.html")
+
+
 # Mount static files AFTER routes so /api/*, /ws/*, and / aren't overshadowed.
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-if DASHBOARD_DIST.exists():
-    # html=True so client-side routes ('/dashboard/anything') fall back to index.html.
-    app.mount(
-        "/dashboard",
-        StaticFiles(directory=str(DASHBOARD_DIST), html=True),
-        name="dashboard",
-    )

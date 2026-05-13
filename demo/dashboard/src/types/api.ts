@@ -70,6 +70,23 @@ export interface LiveAlertsResponse {
   raw_count: number;
 }
 
+// ─── Chatops (RA-005 sink) ─────────────────────────────────────────────────
+// Wire shape produced by aiops/tools/chatops/models.py::to_record and
+// streamed over WS /ws/chatops.
+
+export type ChatSeverity = 'info' | 'p3' | 'p2' | 'p1' | 'p0';
+
+export interface ChatNotification {
+  timestamp: string;
+  channel: string;
+  severity: ChatSeverity;
+  title: string;
+  body: string;
+  incident_id: string | null;
+  service: string | null;
+  mentions: string[];
+}
+
 export type ScenarioCategory = 'errors' | 'latency' | 'capacity' | 'infra';
 
 export interface Scenario {

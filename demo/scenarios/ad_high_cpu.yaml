@@ -1,0 +1,8 @@
+id: ad_high_cpu
+category: infra
+flag: adHighCpu
+alert: AdCpuHigh
+service: ad
+title: Ad service CPU saturation
+description: Ad service pegs CPU above 80%.
+eta_seconds: 120

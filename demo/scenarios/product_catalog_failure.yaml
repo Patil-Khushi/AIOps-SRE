@@ -1,0 +1,8 @@
+id: product_catalog_failure
+category: errors
+flag: productCatalogFailure
+alert: ProductCatalogErrorRateHigh
+service: product-catalog
+title: Product catalog failure
+description: Product catalog returns errors on a subset of products.
+eta_seconds: 90

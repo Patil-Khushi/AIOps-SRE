@@ -48,6 +48,7 @@ kubeconfig
 # Eval / run artifacts
 evals/runs/
 demo/.runs/
+demo/audit/
 *.log
 
 # Persistent state DB (aiops.state default lives under data/)

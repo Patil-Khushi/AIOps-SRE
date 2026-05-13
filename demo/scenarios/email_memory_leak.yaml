@@ -1,0 +1,9 @@
+id: email_memory_leak
+category: infra
+flag: emailMemoryLeak
+variant_on: 100x
+alert: EmailMemoryHigh
+service: email
+title: Email service memory leak
+description: Email service leaks memory (~100× normal growth rate).
+eta_seconds: 180

@@ -1,0 +1,8 @@
+id: payment_unreachable
+category: errors
+flag: paymentUnreachable
+alert: PaymentErrorRateHigh
+service: payment
+title: Payment unreachable
+description: Payment endpoint is unreachable — connection refused upstream.
+eta_seconds: 90

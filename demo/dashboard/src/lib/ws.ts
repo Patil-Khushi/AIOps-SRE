@@ -5,7 +5,9 @@
 //   { type: 'ping' }
 
 import { useEffect, useRef, useState } from 'react';
-import type { PrometheusAlert } from '@/types/api';
+import type { ChatNotification, PrometheusAlert } from '@/types/api';
+
+const CHATOPS_BUFFER_MAX = 200;
 
 export interface AlertsFrame {
   type: 'alerts';
@@ -74,4 +76,58 @@ export function useAlertsSocket(): {
   }, []);
 
   return { alerts, status, lastUpdate };
+}
+
+// ─── Chatops (RA-005 sink) ─────────────────────────────────────────────────
+// /ws/chatops streams one JSON frame per notification produced by any agent
+// that calls the chatops seam. Newest message arrives first in `notes`.
+
+export function useChatopsSocket(): {
+  notes: ChatNotification[];
+  status: WSStatus;
+} {
+  const [notes, setNotes] = useState<ChatNotification[]>([]);
+  const [status, setStatus] = useState<WSStatus>('connecting');
+  const wsRef = useRef<WebSocket | null>(null);
+  const retryRef = useRef(0);
+  const closedByUs = useRef(false);
+
+  useEffect(() => {
+    closedByUs.current = false;
+
+    const connect = () => {
+      setStatus('connecting');
+      const ws = new WebSocket(wsUrl('/ws/chatops'));
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        retryRef.current = 0;
+        setStatus('open');
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const note = JSON.parse(ev.data) as ChatNotification;
+          setNotes((prev) => [note, ...prev].slice(0, CHATOPS_BUFFER_MAX));
+        } catch {
+          // ignore malformed frame
+        }
+      };
+      ws.onerror = () => setStatus('error');
+      ws.onclose = () => {
+        setStatus('closed');
+        if (closedByUs.current) return;
+        const delay = Math.min(1000 * 2 ** retryRef.current, 15_000);
+        retryRef.current += 1;
+        setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+    return () => {
+      closedByUs.current = true;
+      wsRef.current?.close();
+    };
+  }, []);
+
+  return { notes, status };
 }
