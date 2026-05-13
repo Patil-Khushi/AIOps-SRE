@@ -14,21 +14,23 @@ groups:
     interval: 30s
     rules:
 
-      # Threshold > 0.2 errors/s (not > 0) so background 4xx/auth-retry noise
-      # doesn't keep this alert constantly firing. Filter narrowed to true 5xx.
+      # Payment uses gRPC and the OTel collector isn't enriching http_status_code,
+      # so we use span-metric error rate instead (consistent with cart/ad/checkout).
+      # paymentFailure=100% produces ~0.1 STATUS_CODE_ERROR spans/s — threshold > 0
+      # fires as soon as any payment error is observed.
       - alert: PaymentErrorRateHigh
         expr: |
           sum by (service_name) (
-            rate(http_client_duration_milliseconds_count{service_name="payment",http_status_code=~"5.."}[2m])
-          ) > 0.2
+            rate(traces_span_metrics_calls_total{service_name="payment",status_code="STATUS_CODE_ERROR"}[2m])
+          ) > 0
         for: 30s
         labels:
           severity: critical
           service: payment
           alert_type: error_rate
         annotations:
-          summary: Payment service returning HTTP 5xx errors
-          description: 'service={{ $labels.service_name }} 5xx-rate={{ $value }}/s'
+          summary: Payment service producing error spans
+          description: 'service={{ $labels.service_name }} error_rate={{ $value }}/s'
           runbook_url: https://runbooks.example.com/payment-cpu
           flag_hint: 'toggle paymentFailure=on at http://localhost:8080/feature/'
 
