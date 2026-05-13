@@ -1,0 +1,142 @@
+{
+  "agent": "RA-003",
+  "version": "v1",
+  "description": "Golden fixtures for Auto-Ticketing. Each case is a TriageVerdict dict (RA-001's output shape); the harness asserts the resulting TicketRecord matches the expected pattern via the suffix grammar in evals/scoring.py.",
+  "cases": [
+    {
+      "id": "sev_1_payment_critical",
+      "description": "Sev-1 customer-facing verdict -> high-urgency ticket on the oncall channel.",
+      "input": {
+        "affected_service": "payment",
+        "severity": "Sev-1",
+        "confidence_score": 0.95,
+        "alert_summary": "payment 5xx error rate at 1.5/s above 0.2/s threshold",
+        "assigned_team": "Payments Team",
+        "assigned_engineer": "oncall@payments.example.com",
+        "recommended_runbook": "https://runbooks.example.com/payment-cpu",
+        "duplicate_alert_count": 1,
+        "status": "Active",
+        "audit_metadata": {
+          "created_at": "2026-05-13T10:00:00Z",
+          "created_by": "RA-001",
+          "source_alerts": ["ALT-1001"],
+          "decision_trace": ["classified Sev-1"]
+        }
+      },
+      "expected": {
+        "created": true,
+        "urgency": 1,
+        "channel_notified": "oncall",
+        "system_in": ["mock", "servicenow"],
+        "ticket_id_contains": "INC",
+        "notification_sent": true,
+        "short_description_contains": "[Sev-1] payment"
+      }
+    },
+    {
+      "id": "sev_2_customer_facing",
+      "description": "Sev-2 customer-facing verdict -> medium urgency on the noise channel.",
+      "input": {
+        "affected_service": "cart",
+        "severity": "Sev-2",
+        "confidence_score": 0.88,
+        "alert_summary": "cart error rate elevated above threshold",
+        "assigned_team": "Order Experience",
+        "assigned_engineer": "oncall@order-experience.example.com",
+        "recommended_runbook": "https://runbooks.example.com/cart",
+        "duplicate_alert_count": 1,
+        "status": "Active",
+        "audit_metadata": {
+          "created_at": "2026-05-13T10:01:00Z",
+          "created_by": "RA-001",
+          "source_alerts": ["ALT-1002"],
+          "decision_trace": ["classified Sev-2"]
+        }
+      },
+      "expected": {
+        "created": true,
+        "urgency": 2,
+        "channel_notified": "alerts-noise",
+        "ticket_id_contains": "INC",
+        "notification_sent": true
+      }
+    },
+    {
+      "id": "sev_3_non_customer_facing",
+      "description": "Sev-3 internal verdict -> low urgency, noise channel.",
+      "input": {
+        "affected_service": "accounting",
+        "severity": "Sev-3",
+        "confidence_score": 0.80,
+        "alert_summary": "accounting memory usage at 92% above 80% threshold",
+        "assigned_team": "Finance Systems",
+        "duplicate_alert_count": 1,
+        "status": "Active",
+        "audit_metadata": {
+          "created_at": "2026-05-13T10:02:00Z",
+          "created_by": "RA-001",
+          "source_alerts": ["ALT-1004"],
+          "decision_trace": ["classified Sev-3"]
+        }
+      },
+      "expected": {
+        "created": true,
+        "urgency": 3,
+        "channel_notified": "alerts-noise",
+        "ticket_id_contains": "INC",
+        "notification_sent": true
+      }
+    },
+    {
+      "id": "cmdb_miss_unknown_service",
+      "description": "Verdict with the alert_triage CMDB-miss fallback (Platform On-Call) still produces a ticket; channel still routes by severity.",
+      "input": {
+        "affected_service": "weather-forecast-service",
+        "severity": "Sev-3",
+        "confidence_score": 0.75,
+        "alert_summary": "weather-forecast-service p95 latency 800ms above 500ms threshold",
+        "assigned_team": "Platform On-Call",
+        "duplicate_alert_count": 1,
+        "status": "Active",
+        "audit_metadata": {
+          "created_at": "2026-05-13T10:03:00Z",
+          "created_by": "RA-001",
+          "source_alerts": ["ALT-1006"],
+          "decision_trace": ["CMDB lookup returned no match; defaulted to Platform On-Call"]
+        }
+      },
+      "expected": {
+        "created": true,
+        "urgency": 3,
+        "channel_notified": "alerts-noise",
+        "ticket_id_contains": "INC",
+        "notification_sent": true
+      }
+    },
+    {
+      "id": "suppressed_no_ticket",
+      "description": "Suppressed verdict (duplicate alert) -> agent must skip ticket creation and surface the reason in audit_metadata.",
+      "input": {
+        "affected_service": "payment",
+        "severity": "Sev-1",
+        "confidence_score": 0.95,
+        "alert_summary": "duplicate payment 5xx",
+        "assigned_team": "Payments Team",
+        "duplicate_alert_count": 5,
+        "status": "Suppressed",
+        "audit_metadata": {
+          "created_at": "2026-05-13T10:04:00Z",
+          "created_by": "RA-001",
+          "source_alerts": ["ALT-1001", "ALT-1002"],
+          "decision_trace": ["matched dedup via exact match"]
+        }
+      },
+      "expected": {
+        "created": false,
+        "ticket_id": null,
+        "notification_sent": false,
+        "audit_metadata_contains": "skipped: status=Suppressed"
+      }
+    }
+  ]
+}

@@ -57,6 +57,7 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
 from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
+from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import get_registry  # noqa: E402
@@ -129,13 +130,21 @@ class TriageRequest(BaseModel):
 
 @app.post("/api/triage", response_model=None)
 def triage_alert(req: TriageRequest) -> dict[str, Any]:
-    """Triage a single alert. Body: ``{"alert": {<Alert payload>}}``."""
+    """Triage a single alert + auto-file a ticket. Body: ``{"alert": {<Alert>}}``.
+
+    Returns ``{"verdict": TriageVerdict, "ticket": TicketRecord}`` — the RA-001
+    output paired with RA-003's ticket/notification result.
+    """
     try:
         alert_obj = Alert(**req.alert)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
     verdict: TriageVerdict = triage(alert_obj)
-    return verdict.model_dump(mode="json")
+    ticket_record = auto_ticket(verdict)
+    return {
+        "verdict": verdict.model_dump(mode="json"),
+        "ticket": ticket_record.model_dump(mode="json"),
+    }
 
 
 @app.post("/api/triage/fixture/{fixture_id}", response_model=None)
@@ -172,11 +181,14 @@ def live_alerts() -> dict[str, Any]:
 
 @app.post("/api/triage/live", response_model=None)
 async def triage_live() -> dict[str, Any]:
-    """Fetch firing Prometheus alerts and triage every one in parallel.
+    """Fetch firing Prometheus alerts, triage + auto-ticket each in parallel.
 
-    Each call to ``triage()`` is synchronous (it makes blocking LLM + HTTP
-    calls), so we wrap each in ``asyncio.to_thread`` and gather them. With
-    N firing alerts, total latency is ~max-per-alert instead of ~sum.
+    Each ``triage_alert`` call is synchronous (blocking LLM + HTTP), so we wrap
+    each in ``asyncio.to_thread`` and gather them. With N firing alerts, total
+    latency is ~max-per-alert instead of ~sum.
+
+    Returns ``{"count": N, "results": [{"verdict": ..., "ticket": ...}, ...]}``
+    — each entry pairs the RA-001 verdict with RA-003's ticket record.
     """
     payload = live_alerts()
     candidates = payload["alerts"]
@@ -188,8 +200,8 @@ async def triage_live() -> dict[str, Any]:
             return {"error": exc.detail, "alert": candidate}
 
     tasks = [asyncio.to_thread(_triage_one, c) for c in candidates]
-    verdicts = list(await asyncio.gather(*tasks)) if tasks else []
-    return {"count": len(verdicts), "verdicts": verdicts}
+    results = list(await asyncio.gather(*tasks)) if tasks else []
+    return {"count": len(results), "results": results}
 
 
 @app.get("/api/verdicts")

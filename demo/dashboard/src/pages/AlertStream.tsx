@@ -55,8 +55,8 @@ export default function AlertStream() {
     setError(null);
     setTriageBusy(true);
     try {
-      const v = await api.triage(alert);
-      setVerdict(v);
+      const result = await api.triage(alert);
+      setVerdict(result.verdict);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

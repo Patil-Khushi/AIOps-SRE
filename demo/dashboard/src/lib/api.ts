@@ -6,7 +6,7 @@ import type {
   ScenariosResponse,
   SystemPodsResponse,
   TopologyResponse,
-  TriageVerdict,
+  TriageResult,
 } from '@/types/api';
 
 // Axios instance — uses Vite proxy in dev, same-origin in prod (served from /dashboard).
@@ -47,9 +47,9 @@ export const api = {
       http.post('/api/scenarios/reset-all'),
     ),
   triage: (alert: PrometheusAlert) =>
-    unwrap<TriageVerdict>(http.post('/api/triage', { alert })),
+    unwrap<TriageResult>(http.post('/api/triage', { alert })),
   triageLive: () =>
-    unwrap<{ count: number; verdicts: TriageVerdict[] }>(http.post('/api/triage/live')),
+    unwrap<{ count: number; results: TriageResult[] }>(http.post('/api/triage/live')),
   topology:    () => unwrap<TopologyResponse>(http.get('/api/topology')),
   pods:        () => unwrap<SystemPodsResponse>(http.get('/api/system/pods')),
 };
