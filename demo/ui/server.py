@@ -25,6 +25,7 @@ directly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -41,11 +42,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-
 # Load .env explicitly. ``uv run`` does NOT auto-load .env files, so without
 # this every uvicorn launch sees a bare environment and the dashboard header
 # chip is stuck red.
-from aiops._dotenv import load_dotenv  # noqa: E402
+from aiops._dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -273,7 +273,6 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "category": "errors",
         "eta_seconds": 90,
     },
-
     # ── Latency / cache failures ────────────────────────────────────────────
     "recommendation_cache_failure": {
         "flag": "recommendationCacheFailure",
@@ -303,7 +302,6 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "category": "latency",
         "eta_seconds": 120,
     },
-
     # ── Capacity / queue ────────────────────────────────────────────────────
     "loadgen_homepage_flood": {
         "flag": "loadGeneratorFloodHomepage",
@@ -323,7 +321,6 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "category": "capacity",
         "eta_seconds": 120,
     },
-
     # ── Infra (no HTTP signal; the agent picks them up via secondary metrics) ─
     "email_memory_leak": {
         "flag": "emailMemoryLeak",
@@ -331,7 +328,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "alert": "EmailMemoryHigh",
         "service": "email",
         "title": "Email service memory leak",
-        "description": "Email service leaks memory (~100× normal growth rate).",
+        "description": "Email service leaks memory (~100x normal growth rate).",
         "category": "infra",
         "eta_seconds": 180,
     },
@@ -364,7 +361,9 @@ def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
             detail="kubectl not on PATH — start the server via .\\start.ps1 (it prepends the kubectl path).",
         ) from exc
     if r.returncode != 0:
-        raise HTTPException(status_code=502, detail=f"kubectl error: {r.stderr.strip() or r.stdout.strip()}")
+        raise HTTPException(
+            status_code=502, detail=f"kubectl error: {r.stderr.strip() or r.stdout.strip()}"
+        )
     return r.stdout
 
 
@@ -381,11 +380,15 @@ def _load_flagd_config() -> dict[str, Any]:
         ]
     )
     if not raw.strip():
-        raise HTTPException(status_code=500, detail="flagd-config configmap key 'demo.flagd.json' is empty")
+        raise HTTPException(
+            status_code=500, detail="flagd-config configmap key 'demo.flagd.json' is empty"
+        )
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail=f"flagd config is not valid JSON: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"flagd config is not valid JSON: {exc}"
+        ) from exc
 
 
 def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
@@ -407,7 +410,7 @@ def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=400,
             detail=f"variant {variant!r} not valid for flag {flag_name!r}; "
-                   f"choose one of {valid_variants}",
+            f"choose one of {valid_variants}",
         )
     flags[flag_name]["defaultVariant"] = variant
     cfg["flags"] = flags
@@ -419,13 +422,20 @@ def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
         patch_file = f.name
     try:
         _run_kubectl(
-            ["patch", "cm", "flagd-config", "-n", "otel-demo", "--type=merge", "--patch-file", patch_file]
+            [
+                "patch",
+                "cm",
+                "flagd-config",
+                "-n",
+                "otel-demo",
+                "--type=merge",
+                "--patch-file",
+                patch_file,
+            ]
         )
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(patch_file)
-        except OSError:
-            pass
 
     return {
         "flag": flag_name,
@@ -446,11 +456,13 @@ def list_scenarios() -> dict[str, Any]:
     except HTTPException:
         pass  # fall back to assuming all 'off'
     for sid, s in SCENARIOS.items():
-        out.append({
-            **s,
-            "scenario_id": sid,
-            "current_variant": current.get(s["flag"], "off"),
-        })
+        out.append(
+            {
+                **s,
+                "scenario_id": sid,
+                "current_variant": current.get(s["flag"], "off"),
+            }
+        )
     return {"scenarios": out}
 
 
@@ -464,7 +476,9 @@ def inject_scenario(scenario_id: str) -> dict[str, Any]:
     name + ETA so the UI can poll ``/api/live-alerts`` until it fires."""
     s = SCENARIOS.get(scenario_id)
     if not s:
-        raise HTTPException(status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}")
+        raise HTTPException(
+            status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
+        )
     result = _toggle_flagd_flag(s["flag"], _variant_on(s))
     return {**s, "scenario_id": scenario_id, **result, "expected_alert": s["alert"]}
 
@@ -474,7 +488,9 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
     """Flip the scenario's flag back to ``off``."""
     s = SCENARIOS.get(scenario_id)
     if not s:
-        raise HTTPException(status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}")
+        raise HTTPException(
+            status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
+        )
     result = _toggle_flagd_flag(s["flag"], "off")
     return {**s, "scenario_id": scenario_id, **result}
 
@@ -508,13 +524,20 @@ def reset_all_scenarios() -> dict[str, Any]:
         patch_file = f.name
     try:
         _run_kubectl(
-            ["patch", "cm", "flagd-config", "-n", "otel-demo", "--type=merge", "--patch-file", patch_file]
+            [
+                "patch",
+                "cm",
+                "flagd-config",
+                "-n",
+                "otel-demo",
+                "--type=merge",
+                "--patch-file",
+                patch_file,
+            ]
         )
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(patch_file)
-        except OSError:
-            pass
     return {
         "reset_count": len(touched),
         "touched": touched,
@@ -549,7 +572,7 @@ def get_topology() -> dict[str, Any]:
         with httpx.Client(timeout=8.0) as client:
             svcs = client.get(f"{_JAEGER_URL}{_JAEGER_PREFIX}/api/services")
             svcs.raise_for_status()
-            for name in (svcs.json().get("data") or []):
+            for name in svcs.json().get("data") or []:
                 if name and "jaeger" not in name.lower():
                     nodes.append({"id": name, "label": name})
 
@@ -562,11 +585,13 @@ def get_topology() -> dict[str, Any]:
                 deps.raise_for_status()
                 for d in deps.json().get("data") or []:
                     if d.get("parent") and d.get("child"):
-                        edges.append({
-                            "source": d["parent"],
-                            "target": d["child"],
-                            "call_count": int(d.get("callCount") or 0),
-                        })
+                        edges.append(
+                            {
+                                "source": d["parent"],
+                                "target": d["child"],
+                                "call_count": int(d.get("callCount") or 0),
+                            }
+                        )
             except httpx.HTTPError:
                 pass  # dependencies job may not have run yet
     except httpx.HTTPError as exc:
@@ -610,13 +635,15 @@ def get_pods(namespace: str = "otel-demo") -> dict[str, Any]:
             restarts_int = int(restarts)
         except (ValueError, TypeError):
             restarts_int = 0
-        rows.append({
-            "name": name,
-            "ready": ready,
-            "status": status,
-            "restarts": restarts_int,
-            "age": age,
-        })
+        rows.append(
+            {
+                "name": name,
+                "ready": ready,
+                "status": status,
+                "restarts": restarts_int,
+                "age": age,
+            }
+        )
     return {
         "namespace": namespace,
         "pods": rows,

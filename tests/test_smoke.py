@@ -8,7 +8,6 @@ agent exists.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -18,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # --- aiops.llm ----------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _stub_provider(monkeypatch):
@@ -47,10 +47,13 @@ def test_llm_caps_clamp_max_tokens(monkeypatch):
 
 # --- aiops.tools --------------------------------------------------------
 
+
 def test_tool_registry_dispatches_by_capability():
     # importing the mock_providers module triggers @tool registration.
-    from aiops.tools import get_registry
-    from aiops.tools import mock_providers  # noqa: F401
+    from aiops.tools import (
+        get_registry,
+        mock_providers,  # noqa: F401
+    )
 
     reg = get_registry()
     result = reg.call(
@@ -71,6 +74,7 @@ def test_tool_registry_unknown_capability():
 
 
 # --- aiops.policy -------------------------------------------------------
+
 
 def test_hitl_gate_allows_none_level():
     from aiops.policy import AutonomyLevel, get_gate
@@ -105,12 +109,12 @@ def test_hitl_gate_optional_respects_tenant_flag():
 
 # --- truth files match scenarios ------------------------------------------
 
+
 def test_every_scenario_has_a_truth_file():
     scenarios_dir = REPO_ROOT / "demo" / "failure_injection" / "scenarios"
     truth_dir = REPO_ROOT / "demo" / "truth_files"
     scenario_ids = {
-        yaml.safe_load(p.read_text(encoding="utf-8"))["id"]
-        for p in scenarios_dir.glob("*.yaml")
+        yaml.safe_load(p.read_text(encoding="utf-8"))["id"] for p in scenarios_dir.glob("*.yaml")
     }
     truth_ids = {p.stem for p in truth_dir.glob("*.yaml") if p.stem != "template"}
     missing = scenario_ids - truth_ids
@@ -127,6 +131,7 @@ def test_truth_template_is_valid_yaml():
 
 # --- eval harness handles empty agents/ ------------------------------------
 
+
 def test_eval_harness_phase0_passes_with_no_agents(capsys, monkeypatch):
     from evals import harness
 
@@ -141,23 +146,35 @@ def test_load_cases_accepts_both_shapes_and_drops_unknown_keys(tmp_path):
     from evals.harness import _load_cases
 
     flat = tmp_path / "flat.json"
-    flat.write_text(json.dumps([
-        {"id": "a", "description": "d", "input": {}, "expected": {}}
-    ]), encoding="utf-8")
+    flat.write_text(
+        json.dumps([{"id": "a", "description": "d", "input": {}, "expected": {}}]), encoding="utf-8"
+    )
     wrapped = tmp_path / "wrapped.json"
-    wrapped.write_text(json.dumps({
-        "agent": "X", "version": "v1",
-        "cases": [
-            {"id": "b", "description": "d", "scenario": "extra-key-dropped",
-             "input": {}, "expected": {}}
-        ]
-    }), encoding="utf-8")
+    wrapped.write_text(
+        json.dumps(
+            {
+                "agent": "X",
+                "version": "v1",
+                "cases": [
+                    {
+                        "id": "b",
+                        "description": "d",
+                        "scenario": "extra-key-dropped",
+                        "input": {},
+                        "expected": {},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     assert [c.id for c in _load_cases(flat)] == ["a"]
     assert [c.id for c in _load_cases(wrapped)] == ["b"]
 
 
 # --- repo invariant: no direct vendor SDK imports outside aiops/llm ------
+
 
 def test_no_direct_llm_sdk_imports_outside_aiops_llm():
     """Solution Design §2 / POC guide §9.6 — vendor-neutrality wrapper.

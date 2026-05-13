@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class AutonomyLevel(str, enum.Enum):
+class AutonomyLevel(enum.StrEnum):
     NONE = "none"
     OPTIONAL = "optional"
     REQUIRED = "required"

@@ -97,7 +97,7 @@ def _require_kubectl() -> str:
 
     # 2. winget-installed real kubectl on Windows. The package cache path
     #    is stable enough that we hard-code it as a high-priority candidate.
-    if (home := os.environ.get("USERPROFILE")):
+    if home := os.environ.get("USERPROFILE"):
         candidates.append(
             os.path.join(
                 home,
@@ -119,10 +119,12 @@ def _require_kubectl() -> str:
                 ["where.exe", "kubectl"], capture_output=True, text=True, timeout=5
             )
             if where.returncode == 0:
-                candidates.extend(line.strip() for line in where.stdout.splitlines() if line.strip())
+                candidates.extend(
+                    line.strip() for line in where.stdout.splitlines() if line.strip()
+                )
         except (OSError, subprocess.SubprocessError):
             pass
-    if (which_path := shutil.which("kubectl")):
+    if which_path := shutil.which("kubectl"):
         candidates.append(which_path)
 
     # Probe in order; first one that responds like real kubectl wins.
@@ -180,8 +182,15 @@ def _flagd_set(flag_key: str, variant: str, *, namespace: str = DEFAULT_NAMESPAC
     # the next bootstrap.ps1 run fails with a managedFields conflict.
     subprocess.check_call(
         [
-            kubectl, "-n", namespace, "patch", "configmap", "flagd-config",
-            "--patch", payload, "--field-manager=helm",
+            kubectl,
+            "-n",
+            namespace,
+            "patch",
+            "configmap",
+            "flagd-config",
+            "--patch",
+            payload,
+            "--field-manager=helm",
         ]
     )
     print(f"[flagd] set {flag_key}.defaultVariant = {variant!r}")

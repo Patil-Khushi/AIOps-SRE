@@ -136,6 +136,7 @@ def _request(
 # itsm.incident.create
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @_register_if_real(
     name="snow.itsm.incident.create",
     capability="itsm.incident.create",
@@ -188,6 +189,7 @@ def create_incident(
 # ─────────────────────────────────────────────────────────────────────────────
 # itsm.incident.update
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @_register_if_real(
     name="snow.itsm.incident.update",

@@ -50,7 +50,11 @@ level := "required" if input.action == "rca.fix_step.execute"
 
 # Convenience: a boolean for the gate code path that just wants "must I block?".
 must_block_unattended if level == "required"
-must_block_unattended if level == "optional"; input.tenant.requires_hitl == true
+
+must_block_unattended if {
+	level == "optional"
+	input.tenant.requires_hitl == true
+}
 
 # Convenience: surface the reason text the gate puts in audit logs.
 reason := sprintf("action=%s level=%s tenant=%v", [input.action, level, input.tenant.id])

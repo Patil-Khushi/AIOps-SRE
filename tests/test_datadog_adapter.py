@@ -5,7 +5,6 @@ from __future__ import annotations
 from agents.alert_triage.models import Alert
 from aiops.tools.alerts.datadog_adapter import to_canonical_alert
 
-
 _SAMPLE = {
     "id": "5234829",
     "title": "[Triggered] High error rate on payment",

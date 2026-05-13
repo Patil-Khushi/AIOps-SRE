@@ -95,7 +95,7 @@ class ToolRegistry:
         accepted = {k: v for k, v in kwargs.items() if k in sig.parameters}
         try:
             result = t.fn(**accepted)
-        except Exception as exc:  # noqa: BLE001 — boundary
+        except Exception as exc:
             return ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
         if not isinstance(result, ToolResult):
             return ToolResult(ok=True, data=result)

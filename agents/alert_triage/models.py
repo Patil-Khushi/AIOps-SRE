@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -51,7 +51,7 @@ class Alert(BaseModel):
     def _coerce_timestamp(cls, v: Any) -> datetime:
         """Accept ISO 8601 strings (incl. trailing ``Z``) and datetimes."""
         if isinstance(v, datetime):
-            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+            return v if v.tzinfo else v.replace(tzinfo=UTC)
         if isinstance(v, str):
             normalized = v.replace("Z", "+00:00") if v.endswith("Z") else v
             return datetime.fromisoformat(normalized)

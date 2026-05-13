@@ -15,8 +15,10 @@ import json
 import typer
 from rich import print as rprint
 
-from aiops.tools import get_registry
-from aiops.tools import observability  # noqa: F401 — registers providers
+from aiops.tools import (
+    get_registry,
+    observability,  # noqa: F401 — registers providers
+)
 from aiops.tools.registry import ToolResult
 
 app = typer.Typer(add_completion=False, help=__doc__)

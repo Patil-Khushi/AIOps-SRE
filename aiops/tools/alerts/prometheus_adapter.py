@@ -32,10 +32,7 @@ def to_canonical_alert(prom_alert: dict[str, Any]) -> dict[str, Any]:
         or "unknown"
     )
     metric = (
-        labels.get("alertname")
-        or labels.get("__name__")
-        or annotations.get("summary")
-        or "alert"
+        labels.get("alertname") or labels.get("__name__") or annotations.get("summary") or "alert"
     )
     value_str = prom_alert.get("value") or labels.get("value") or "0"
     try:
@@ -43,7 +40,7 @@ def to_canonical_alert(prom_alert: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         value = 0.0
     return {
-        "alert_id": f"PROM-{labels.get('alertname','UNKNOWN')}-{labels.get('instance', 'na')}",
+        "alert_id": f"PROM-{labels.get('alertname', 'UNKNOWN')}-{labels.get('instance', 'na')}",
         "service": service,
         "metric": metric,
         "value": value,

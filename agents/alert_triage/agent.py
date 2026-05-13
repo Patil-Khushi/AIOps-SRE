@@ -57,8 +57,15 @@ logger = logging.getLogger(__name__)
 
 # ─── tunables ───────────────────────────────────────────────────────────────
 _CUSTOMER_FACING = {
-    "frontend", "frontend-proxy", "checkout", "payment", "cart",
-    "currency", "ad", "recommendation", "shipping",
+    "frontend",
+    "frontend-proxy",
+    "checkout",
+    "payment",
+    "cart",
+    "currency",
+    "ad",
+    "recommendation",
+    "shipping",
 }
 _DEDUP_WINDOW = timedelta(minutes=5)
 _EMBEDDING_SIM_THRESHOLD = 0.85
@@ -309,21 +316,21 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
     queries: dict[str, str] = {
         # Request rate (calls/s) by service
         "request_rate": (
-            f'sum by (service_name) '
+            f"sum by (service_name) "
             f'(rate(http_client_duration_milliseconds_count{{service_name="{svc}"}}[5m]))'
         ),
         # Error rate — http_status_code 5xx
         "error_rate_5xx": (
-            f'sum by (service_name) ('
-            f'rate(http_client_duration_milliseconds_count'
+            f"sum by (service_name) ("
+            f"rate(http_client_duration_milliseconds_count"
             f'{{service_name="{svc}",http_status_code=~"5.."}}[5m])'
-            f')'
+            f")"
         ),
         # p95 duration (ms) — the most common alerting metric
         "latency_p95_ms": (
-            f'histogram_quantile(0.95, sum by (le, service_name) ('
+            f"histogram_quantile(0.95, sum by (le, service_name) ("
             f'rate(http_client_duration_milliseconds_bucket{{service_name="{svc}"}}[5m])'
-            f'))'
+            f"))"
         ),
     }
     # Metric-specific add-on for alerts that name CPU / memory explicitly.
@@ -332,9 +339,7 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
             f'sum(rate(otelcol_process_cpu_seconds_total{{service_name="{svc}"}}[5m]))'
         )
     elif "memory" in metric or "mem" in metric:
-        queries["memory_bytes"] = (
-            f'avg(otelcol_process_memory_rss_bytes{{service_name="{svc}"}})'
-        )
+        queries["memory_bytes"] = f'avg(otelcol_process_memory_rss_bytes{{service_name="{svc}"}})'
     return queries
 
 
@@ -418,8 +423,7 @@ def _generate_summary(
     metric_results = (metrics_ctx or {}).get("results", {}) if metrics_ctx else {}
     # Render the metric bundle as `key=value` pairs so the LLM sees real numbers.
     metric_samples = (
-        ", ".join(f"{k}={v}" for k, v in metric_results.items() if v is not None)
-        or "no series"
+        ", ".join(f"{k}={v}" for k, v in metric_results.items() if v is not None) or "no series"
     )
     user_prompt = SUMMARY_PROMPT_USER.format(
         service=alert.service,
@@ -494,9 +498,7 @@ def triage(alert: Alert) -> TriageVerdict:
                 f"fetched metric bundle: {', '.join(f'{k}={v}' for k, v in non_null.items())}"
             )
         else:
-            decision_trace.append(
-                f"queried {len(results)} metric series but all returned empty"
-            )
+            decision_trace.append(f"queried {len(results)} metric series but all returned empty")
     traces_ctx = _fetch_trace_context(alert, decision_trace)
     if traces_ctx is not None:
         decision_trace.append(

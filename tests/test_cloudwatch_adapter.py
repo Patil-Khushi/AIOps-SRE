@@ -5,7 +5,6 @@ from __future__ import annotations
 from agents.alert_triage.models import Alert
 from aiops.tools.alerts.cloudwatch_adapter import to_canonical_alert
 
-
 _SAMPLE = {
     "AlarmName": "PaymentErrorRateHigh",
     "AlarmDescription": "5xx errors above 5/min for 2 minutes",
@@ -38,26 +37,32 @@ def test_happy_path_full_payload():
 
 def test_service_uses_first_known_dimension_then_falls_back():
     # Unknown dimension name → uses the first non-empty value
-    out_first = to_canonical_alert({
-        "AlarmName": "X",
-        "Trigger": {"MetricName": "m", "Dimensions": [{"name": "Custom", "value": "abc"}]},
-    })
+    out_first = to_canonical_alert(
+        {
+            "AlarmName": "X",
+            "Trigger": {"MetricName": "m", "Dimensions": [{"name": "Custom", "value": "abc"}]},
+        }
+    )
     assert out_first["service"] == "abc"
 
     # No dimensions at all → "unknown"
-    out_missing = to_canonical_alert({
-        "AlarmName": "X",
-        "Trigger": {"MetricName": "m", "Dimensions": []},
-    })
+    out_missing = to_canonical_alert(
+        {
+            "AlarmName": "X",
+            "Trigger": {"MetricName": "m", "Dimensions": []},
+        }
+    )
     assert out_missing["service"] == "unknown"
 
 
 def test_datapoint_extraction_handles_missing_reason():
-    out = to_canonical_alert({
-        "AlarmName": "X",
-        "NewStateReason": "no bracketed number here",
-        "Trigger": {"MetricName": "m", "Dimensions": []},
-    })
+    out = to_canonical_alert(
+        {
+            "AlarmName": "X",
+            "NewStateReason": "no bracketed number here",
+            "Trigger": {"MetricName": "m", "Dimensions": []},
+        }
+    )
     assert out["value"] == 0.0
 
 

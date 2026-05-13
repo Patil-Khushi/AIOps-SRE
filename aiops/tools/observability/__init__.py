@@ -15,6 +15,6 @@ Endpoints default to the local port-forwards (``http://localhost:9090`` and
 
 from __future__ import annotations
 
-from aiops.tools.observability import jaeger, prometheus  # noqa: F401
+from aiops.tools.observability import jaeger, prometheus
 
 __all__ = ["jaeger", "prometheus"]

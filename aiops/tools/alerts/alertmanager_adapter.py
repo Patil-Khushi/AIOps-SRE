@@ -44,7 +44,7 @@ def to_canonical_alert(inner_alert: dict[str, Any]) -> dict[str, Any]:
         value = 0.0
     timestamp = inner_alert.get("startsAt") or datetime.now(UTC).isoformat()
     return {
-        "alert_id": f"AM-{labels.get('alertname','UNKNOWN')}-{labels.get('instance','na')}",
+        "alert_id": f"AM-{labels.get('alertname', 'UNKNOWN')}-{labels.get('instance', 'na')}",
         "service": service,
         "metric": metric,
         "value": value,

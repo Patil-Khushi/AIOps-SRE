@@ -169,9 +169,7 @@ def list_active_clusters(window: timedelta) -> list[dict[str, Any]]:
     embedding dedup path on warm restart to know which cluster_keys to seed."""
     cutoff = datetime.now(UTC) - window
     with _session() as s:
-        rows = s.exec(
-            select(ClusterRow).where(ClusterRow.last_seen >= cutoff)
-        ).all()
+        rows = s.exec(select(ClusterRow).where(ClusterRow.last_seen >= cutoff)).all()
     return [_cluster_row_to_dict(r) for r in rows]
 
 

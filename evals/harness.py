@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from aiops._dotenv import load_dotenv
+from aiops.state import init_db
 
 from .scoring import score_case
 
@@ -114,7 +115,7 @@ def run_agent(agent_dir: Path) -> AgentRun:
         try:
             actual = runner(c.input)
             scored = score_case(actual=actual, expected=c.expected)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             scored = {"passed": False, "score": 0.0, "details": {"error": str(exc)}}
         duration_ms = int((time.perf_counter() - t0) * 1000)
         results.append(
@@ -139,7 +140,9 @@ def discover_agents() -> list[Path]:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run hand-rolled evals across agents")
     p.add_argument("--agent", help="Run a single agent (directory name under agents/)")
-    p.add_argument("--ci", action="store_true", help="Emit JSON summary; exit non-zero on regression")
+    p.add_argument(
+        "--ci", action="store_true", help="Emit JSON summary; exit non-zero on regression"
+    )
     p.add_argument("--min-pass-rate", type=float, default=0.85, help="CI threshold (0..1)")
     args = p.parse_args(argv)
 
@@ -155,6 +158,12 @@ def main(argv: list[str] | None = None) -> int:
         summary = {"agents": [], "overall_pass_rate": 1.0, "phase0": True}
         print(json.dumps(summary, indent=2))
         return 0
+
+    # Agents like alert_triage have persisted dedup state in SQLite — their
+    # reset_state() hook deletes rows, which requires the schema to exist.
+    # CI starts from a fresh checkout with no data/state.db; locally the file
+    # may already exist from a prior UI run. Idempotent either way.
+    init_db()
 
     runs = [run_agent(d) for d in agent_dirs]
     overall = sum(r.pass_rate for r in runs) / len(runs)

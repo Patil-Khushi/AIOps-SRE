@@ -53,10 +53,7 @@ class OpenAIProvider(LLMProvider):
         azure_endpoint = (os.environ.get("AZURE_OPENAI_ENDPOINT") or "").strip() or None
         openai_base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip() or None
         endpoint = azure_endpoint or openai_base_url
-        api_key = (
-            os.environ.get("AZURE_OPENAI_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-        )
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 
         use_azure = bool(endpoint and ".azure.com" in endpoint)
 
@@ -68,9 +65,7 @@ class OpenAIProvider(LLMProvider):
                     "openai>=1.x with Azure support required. Reinstall: "
                     "`uv sync --extra llm-openai`."
                 ) from exc
-            api_version = (
-                os.environ.get("AZURE_OPENAI_API_VERSION") or _DEFAULT_AZURE_API_VERSION
-            )
+            api_version = os.environ.get("AZURE_OPENAI_API_VERSION") or _DEFAULT_AZURE_API_VERSION
             self._sync = AzureOpenAI(
                 api_key=api_key,
                 azure_endpoint=endpoint,

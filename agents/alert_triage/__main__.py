@@ -66,7 +66,7 @@ def main(
     case = cases[fixture]
     rprint(f"[bold]Fixture:[/bold] {fixture}  —  {case.get('description', '')}")
     rprint(f"[bold]LLM provider:[/bold] {provider}")
-    rprint(f"\n[bold]Input alert:[/bold]")
+    rprint("\n[bold]Input alert:[/bold]")
     rprint(json.dumps(case["input"], indent=2))
 
     # Fresh dedup state per CLI invocation so single-fixture runs are reproducible.

@@ -108,16 +108,20 @@ def test_embedding_similarity_match_suppresses_paraphrase(clean_state):
 
     # Same service+metric+value+description -> identical embedding text.
     # Different label sets -> different cluster_keys, forcing the embedding path.
-    v1 = run(_alert_input(
-        alert_id="ALT-E1",
-        labels={"pod": "payment-aaa"},
-        annotations={"description": desc},
-    ))
-    v2 = run(_alert_input(
-        alert_id="ALT-E2",
-        labels={"pod": "payment-bbb"},
-        annotations={"description": desc},
-    ))
+    v1 = run(
+        _alert_input(
+            alert_id="ALT-E1",
+            labels={"pod": "payment-aaa"},
+            annotations={"description": desc},
+        )
+    )
+    v2 = run(
+        _alert_input(
+            alert_id="ALT-E2",
+            labels={"pod": "payment-bbb"},
+            annotations={"description": desc},
+        )
+    )
 
     assert v1["status"] == "Active"
     assert v2["status"] == "Suppressed"

@@ -42,10 +42,12 @@ def test_service_fallback_chain():
     assert out2["service"] == "otel-demo/ad"
 
     # All label paths missing → annotations.service wins
-    out3 = to_canonical_alert({
-        "labels": {"alertname": "X"},
-        "annotations": {"service": "checkout"},
-    })
+    out3 = to_canonical_alert(
+        {
+            "labels": {"alertname": "X"},
+            "annotations": {"service": "checkout"},
+        }
+    )
     assert out3["service"] == "checkout"
 
     # Nothing matches → "unknown" sentinel
@@ -59,10 +61,12 @@ def test_metric_falls_back_when_alertname_missing():
     assert out1["metric"] == "http_requests_total"
 
     # No alertname or __name__ → annotations.summary wins
-    out2 = to_canonical_alert({
-        "labels": {"service": "ad"},
-        "annotations": {"summary": "Ad service latency high"},
-    })
+    out2 = to_canonical_alert(
+        {
+            "labels": {"service": "ad"},
+            "annotations": {"summary": "Ad service latency high"},
+        }
+    )
     assert out2["metric"] == "Ad service latency high"
 
     # Nothing → "alert" sentinel
@@ -87,8 +91,10 @@ def test_value_coercion_handles_string_missing_and_invalid():
 def test_label_values_are_stringified():
     """Some Prometheus labels (e.g. http_status_code) come in as ints. The
     canonical Alert.labels is ``dict[str, str]``, so the adapter must coerce."""
-    out = to_canonical_alert({
-        "labels": {"alertname": "X", "http_status_code": 500, "instance": 1},
-    })
+    out = to_canonical_alert(
+        {
+            "labels": {"alertname": "X", "http_status_code": 500, "instance": 1},
+        }
+    )
     assert out["labels"]["http_status_code"] == "500"
     assert out["labels"]["instance"] == "1"

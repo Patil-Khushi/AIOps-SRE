@@ -62,30 +62,37 @@ def mock_notify(channel: str, message: str) -> ToolResult:
 # the alert's service before lookup. Covers the OTel demo's services and a
 # few generic aliases ("payment-api" matches the canonical example input).
 _CMDB_MAPPING: dict[str, dict[str, str | None]] = {
-    "payment":         {"team": "Payments Team",        "runbook": "https://runbooks.example.com/payment-cpu"},
-    "payment-api":     {"team": "Payments Team",        "runbook": "https://runbooks.example.com/payment-cpu"},
-    "payment-service": {"team": "Payments Team",        "runbook": "https://runbooks.example.com/payment-cpu"},
-    "cart":            {"team": "Order Experience",     "runbook": "https://runbooks.example.com/cart"},
-    "checkout":        {"team": "Order Experience",     "runbook": "https://runbooks.example.com/checkout"},
-    "product-catalog": {"team": "Catalog Team",         "runbook": "https://runbooks.example.com/catalog"},
-    "product-reviews": {"team": "Catalog Team",         "runbook": None},
-    "recommendation":  {"team": "Personalization Team", "runbook": "https://runbooks.example.com/recommendation"},
-    "frontend":        {"team": "Web Experience",       "runbook": "https://runbooks.example.com/frontend"},
-    "frontend-proxy":  {"team": "Web Experience",       "runbook": None},
-    "shipping":        {"team": "Fulfillment Team",     "runbook": "https://runbooks.example.com/shipping"},
-    "ad":              {"team": "Ads Team",             "runbook": None},
-    "quote":           {"team": "Pricing Team",         "runbook": None},
-    "currency":        {"team": "Pricing Team",         "runbook": None},
-    "fraud-detection": {"team": "Trust and Safety",     "runbook": None},
-    "email":           {"team": "Communications",       "runbook": None},
-    "accounting":      {"team": "Finance Systems",      "runbook": None},
-    "image-provider":  {"team": "Assets Team",          "runbook": None},
+    "payment": {"team": "Payments Team", "runbook": "https://runbooks.example.com/payment-cpu"},
+    "payment-api": {"team": "Payments Team", "runbook": "https://runbooks.example.com/payment-cpu"},
+    "payment-service": {
+        "team": "Payments Team",
+        "runbook": "https://runbooks.example.com/payment-cpu",
+    },
+    "cart": {"team": "Order Experience", "runbook": "https://runbooks.example.com/cart"},
+    "checkout": {"team": "Order Experience", "runbook": "https://runbooks.example.com/checkout"},
+    "product-catalog": {"team": "Catalog Team", "runbook": "https://runbooks.example.com/catalog"},
+    "product-reviews": {"team": "Catalog Team", "runbook": None},
+    "recommendation": {
+        "team": "Personalization Team",
+        "runbook": "https://runbooks.example.com/recommendation",
+    },
+    "frontend": {"team": "Web Experience", "runbook": "https://runbooks.example.com/frontend"},
+    "frontend-proxy": {"team": "Web Experience", "runbook": None},
+    "shipping": {"team": "Fulfillment Team", "runbook": "https://runbooks.example.com/shipping"},
+    "ad": {"team": "Ads Team", "runbook": None},
+    "quote": {"team": "Pricing Team", "runbook": None},
+    "currency": {"team": "Pricing Team", "runbook": None},
+    "fraud-detection": {"team": "Trust and Safety", "runbook": None},
+    "email": {"team": "Communications", "runbook": None},
+    "accounting": {"team": "Finance Systems", "runbook": None},
+    "image-provider": {"team": "Assets Team", "runbook": None},
 }
 
 _CMDB_DEFAULT: dict[str, str | None] = {"team": "Platform On-Call", "runbook": None}
 
 
 if _use_mock_itsm():
+
     @tool(
         name="mock.itsm.cmdb.lookup",
         capability="itsm.cmdb.lookup",

@@ -69,10 +69,18 @@ def test_list_verdicts_filters_by_service_and_severity():
 def test_upsert_cluster_appends_alert_ids():
     now = datetime.now(UTC)
     repo.upsert_cluster(
-        cluster_key="ck", service="ad", metric="cpu", alert_id="A1", seen_at=now,
+        cluster_key="ck",
+        service="ad",
+        metric="cpu",
+        alert_id="A1",
+        seen_at=now,
     )
     second = repo.upsert_cluster(
-        cluster_key="ck", service="ad", metric="cpu", alert_id="A2", seen_at=now,
+        cluster_key="ck",
+        service="ad",
+        metric="cpu",
+        alert_id="A2",
+        seen_at=now,
     )
     assert second["alert_count"] == 2
     assert second["source_alerts"] == ["A1", "A2"]
@@ -81,14 +89,22 @@ def test_upsert_cluster_appends_alert_ids():
 def test_find_active_cluster_respects_window():
     long_ago = datetime.now(UTC) - timedelta(hours=1)
     repo.upsert_cluster(
-        cluster_key="old", service="ad", metric="cpu", alert_id="A1", seen_at=long_ago,
+        cluster_key="old",
+        service="ad",
+        metric="cpu",
+        alert_id="A1",
+        seen_at=long_ago,
     )
     hit = repo.find_active_cluster("old", window=timedelta(minutes=5))
     assert hit is None  # outside the window
 
     fresh = datetime.now(UTC)
     repo.upsert_cluster(
-        cluster_key="new", service="ad", metric="cpu", alert_id="A1", seen_at=fresh,
+        cluster_key="new",
+        service="ad",
+        metric="cpu",
+        alert_id="A1",
+        seen_at=fresh,
     )
     assert repo.find_active_cluster("new", window=timedelta(minutes=5)) is not None
 
@@ -96,7 +112,11 @@ def test_find_active_cluster_respects_window():
 def test_evict_expired_clusters_removes_only_stale_rows():
     now = datetime.now(UTC)
     repo.upsert_cluster(
-        cluster_key="fresh", service="ad", metric="cpu", alert_id="A1", seen_at=now,
+        cluster_key="fresh",
+        service="ad",
+        metric="cpu",
+        alert_id="A1",
+        seen_at=now,
     )
     repo.upsert_cluster(
         cluster_key="stale",

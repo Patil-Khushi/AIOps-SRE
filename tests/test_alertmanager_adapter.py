@@ -5,7 +5,6 @@ from __future__ import annotations
 from agents.alert_triage.models import Alert
 from aiops.tools.alerts.alertmanager_adapter import to_canonical_alert
 
-
 _SAMPLE = {
     "status": "firing",
     "labels": {
@@ -36,9 +35,11 @@ def test_happy_path_full_payload():
 
 
 def test_service_fallback_to_job_label():
-    out = to_canonical_alert({
-        "labels": {"alertname": "X", "job": "otel-demo/cart"},
-    })
+    out = to_canonical_alert(
+        {
+            "labels": {"alertname": "X", "job": "otel-demo/cart"},
+        }
+    )
     assert out["service"] == "otel-demo/cart"
 
 
