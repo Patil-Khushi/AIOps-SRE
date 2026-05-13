@@ -446,6 +446,11 @@ def _generate_summary(
 # ─── entry point ────────────────────────────────────────────────────────────
 
 
+def run(input: dict[str, Any]) -> dict[str, Any]:
+    """Eval-harness contract: dict-in, dict-out shim around ``triage``."""
+    return triage(Alert(**input)).model_dump(mode="json")
+
+
 def triage(alert: Alert) -> TriageVerdict:
     """Triage a single alert. Returns a structured verdict.
 
