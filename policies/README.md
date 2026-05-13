@@ -19,7 +19,7 @@ Solution Design §2.4: every action passes through a declarative policy layer be
 1. Add a row in `docs/Adaptive_AIOps_Agent_Catalog.xlsx` (or use the existing one).
 2. Add a `level := "..."` rule in `hitl.rego` keyed by `input.action`.
 3. Mirror it in `aiops/policy/gate.py::DEFAULT_LEVELS` until Phase 2 lands.
-4. If the action is destructive or high-blast-radius, set `requires_hitl=True` on the corresponding tool in `aiops/tools/`.
+4. No flag is needed on the tool itself — `aiops/tools/registry.py::ToolRegistry.call()` consults the gate by capability automatically. Just register the capability via `@tool(..., capability="<your.action>")` and the level mapping does the rest.
 
 ## Testing
 
