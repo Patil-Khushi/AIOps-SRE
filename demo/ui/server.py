@@ -60,6 +60,7 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 # and the mock CMDB / on-call providers.
 from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
+from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
@@ -148,26 +149,43 @@ class TriageRequest(BaseModel):
 
 @app.post("/api/triage", response_model=None)
 def triage_alert(req: TriageRequest) -> dict[str, Any]:
-    """Triage a single alert, auto-file a ticket (RA-003), notify chatops (RA-005).
+    """Triage + auto-ticket + classify + notify chatops for a single alert.
 
-    Body: ``{"alert": {<Alert payload>}}``. Returns
-    ``{"verdict": TriageVerdict, "ticket": TicketRecord}``. The chatops fan-out
-    is a side effect: a routing error is logged but the response still returns
-    200 with both verdict and ticket populated.
+    Body: ``{"alert": {<Alert payload>}}``. Pipeline:
+    parse → RA-001 triage → persist verdict → RA-003 auto-ticket →
+    RA-002 classify → persist classification → RA-005 chatops notify.
+    The chatops fan-out is a side effect: a routing failure is logged but
+    the response still returns 200 with verdict/ticket/classification populated.
+
+    Response: ``{"verdict": TriageVerdict, "ticket": TicketRecord,
+    "classification": Classification, "persisted": {verdict_id, classification_id}}``.
     """
     try:
         alert_obj = Alert(**req.alert)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
+
     verdict: TriageVerdict = triage(alert_obj)
+    verdict_id = state_repo.save_verdict(verdict, cluster_key=alert_obj.cluster_key())
+
     ticket_record = auto_ticket(verdict)
+
+    classification = classify(ClassificationInput(alert=alert_obj, triage_verdict=verdict))
+    classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
+
     try:
         route_notification(verdict)
     except Exception:
         logger.exception("RA-005: routing failed for verdict on %s", verdict.affected_service)
+
     return {
         "verdict": verdict.model_dump(mode="json"),
         "ticket": ticket_record.model_dump(mode="json"),
+        "classification": classification.model_dump(mode="json"),
+        "persisted": {
+            "verdict_id": verdict_id,
+            "classification_id": classification_id,
+        },
     }
 
 
@@ -239,6 +257,149 @@ def list_verdicts_endpoint(
         raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
     verdicts = state_repo.list_verdicts(limit=limit, service=service, severity=severity)
     return {"count": len(verdicts), "verdicts": verdicts}
+
+
+# ─── RA-002 Incident Classifier surface (standalone dashboard) ─────────────
+#
+# Independent endpoints / page so RA-002 reads as its own product. The
+# accuracy metric on the dashboard is the eval-harness pass rate (cached
+# in-memory below). "Misroute" = an eval case whose ``incident_type`` check
+# failed, i.e. the classifier put the incident in the wrong category.
+
+_LAST_EVAL: dict[str, Any] | None = None
+_EVAL_RUNNING: bool = False
+
+
+@app.get("/api/classifier/classifications")
+def list_classifications_endpoint(
+    limit: int = 50,
+    incident_type: str | None = None,
+) -> dict[str, Any]:
+    """Newest-first list of RA-002 classifications for the dashboard table."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+    rows = state_repo.list_classifications(limit=limit, incident_type=incident_type)
+    return {"count": len(rows), "classifications": rows}
+
+
+@app.get("/api/classifier/metrics")
+def classifier_metrics() -> dict[str, Any]:
+    """Aggregate metrics for the RA-002 dashboard.
+
+    ``eval`` is the cached result of the last harness run (accuracy %,
+    misroute rate). ``live`` reflects the persisted-classifications store.
+    Returns ``eval=None`` if no eval has run in this server's lifetime.
+    """
+    avg_conf = state_repo.average_classification_confidence()
+    return {
+        "eval": _LAST_EVAL,
+        "live": {
+            "total_classifications": state_repo.count_classifications(),
+            "avg_confidence": avg_conf,
+        },
+        "running": _EVAL_RUNNING,
+        "llm_provider": os.environ.get("AIOPS_LLM_PROVIDER"),
+        "checked_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.post("/api/classifier/evaluate")
+async def classifier_evaluate() -> dict[str, Any]:
+    """Re-run the eval harness for RA-002 and cache the result. Slow
+    (~1-2 min with a real LLM, ~10 s with the stub). Returns the new
+    metric block so the UI doesn't need a second round-trip."""
+    global _LAST_EVAL, _EVAL_RUNNING
+    if _EVAL_RUNNING:
+        raise HTTPException(status_code=409, detail="eval already running")
+    _EVAL_RUNNING = True
+    try:
+        # Run in a thread so we don't block the event loop while the LLM
+        # is being queried 5x back-to-back.
+        from evals.harness import REPO_ROOT, run_agent
+
+        agent_dir = REPO_ROOT / "agents" / "incident_classifier"
+        run = await asyncio.to_thread(run_agent, agent_dir)
+
+        total = len(run.results)
+        passed = sum(1 for r in run.results if r.passed)
+        misroute = 0
+        per_case: list[dict[str, Any]] = []
+        for r in run.results:
+            type_check = next(
+                (c for c in r.details.get("checks", []) if c["check"] == "incident_type"),
+                None,
+            )
+            type_ok = bool(type_check and type_check["passed"])
+            if not type_ok:
+                misroute += 1
+            per_case.append(
+                {
+                    "case_id": r.case_id,
+                    "passed": r.passed,
+                    "incident_type_ok": type_ok,
+                    "duration_ms": r.duration_ms,
+                    "checks": r.details.get("checks", []),
+                }
+            )
+
+        _LAST_EVAL = {
+            "total_cases": total,
+            "passed_cases": passed,
+            "accuracy_pct": (passed / total * 100) if total else 0.0,
+            "misroute_cases": misroute,
+            "misroute_pct": (misroute / total * 100) if total else 0.0,
+            "ran_at": datetime.now(UTC).isoformat(),
+            "per_case": per_case,
+        }
+        return classifier_metrics()
+    finally:
+        _EVAL_RUNNING = False
+
+
+# ─── RA-002 Classifier UI mount (standalone Vite app under demo/classifier-ui) ─
+
+CLASSIFIER_DIST = Path(__file__).parent.parent / "classifier-ui" / "dist"
+
+
+@app.get("/classifier")
+def classifier_root() -> FileResponse:
+    """Serve the standalone RA-002 Incident Classifier dashboard root."""
+    index = CLASSIFIER_DIST / "index.html"
+    if not index.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "classifier dashboard not built — "
+                "run `cd demo/classifier-ui && npm install && npm run build`"
+            ),
+        )
+    return FileResponse(index)
+
+
+@app.get("/classifier/{path:path}", response_model=None)
+def classifier_spa(path: str) -> FileResponse:
+    """SPA-friendly catch-all for the RA-002 classifier dashboard.
+
+    Serves real files from ``dist/`` when they exist (CSS, JS, images);
+    otherwise falls back to ``index.html`` so the single-page app boots.
+    """
+    if not CLASSIFIER_DIST.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "classifier dashboard not built — "
+                "run `cd demo/classifier-ui && npm install && npm run build`"
+            ),
+        )
+    root = CLASSIFIER_DIST.resolve()
+    target = (CLASSIFIER_DIST / path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid classifier path") from exc
+    if target.is_file():
+        return FileResponse(target)
+    return FileResponse(CLASSIFIER_DIST / "index.html")
 
 
 # ─── scenarios (flagd flip + matching alert rule) ──────────────────────────
@@ -686,15 +847,15 @@ def dashboard_root() -> FileResponse:
     return FileResponse(index)
 
 
-@app.get("/dashboard/{path:path}")
+@app.get("/dashboard/{path:path}", response_model=None)
 def dashboard_spa(path: str) -> FileResponse:
-    """Serve any /dashboard/* URL.
+    """SPA-friendly fallback for React Router deep links.
 
     - Real assets that exist on disk (``assets/*.js``, ``assets/*.css``,
       ``index.html``) are returned as-is.
     - Anything else falls back to ``index.html`` so React Router can take
-      over (e.g. ``/dashboard/notifications`` typed directly into the URL
-      bar still loads the SPA).
+      over (e.g. ``/dashboard/notifications`` or ``/dashboard/classifier``
+      typed directly into the URL bar still load the SPA).
     """
     if not DASHBOARD_DIST.exists():
         raise HTTPException(
@@ -702,9 +863,14 @@ def dashboard_spa(path: str) -> FileResponse:
             detail="dashboard not built — run `cd demo/dashboard && npm install && npm run build`",
         )
     # Block path traversal — resolved file must stay under DASHBOARD_DIST.
-    candidate = (DASHBOARD_DIST / path).resolve()
-    if DASHBOARD_DIST.resolve() in candidate.parents and candidate.is_file():
-        return FileResponse(candidate)
+    root = DASHBOARD_DIST.resolve()
+    target = (DASHBOARD_DIST / path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid dashboard path") from exc
+    if target.is_file():
+        return FileResponse(target)
     return FileResponse(DASHBOARD_DIST / "index.html")
 
 

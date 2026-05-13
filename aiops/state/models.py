@@ -106,4 +106,73 @@ class NotificationRow(SQLModel, table=True):
     detail: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
-__all__ = ["ClusterRow", "NotificationRow", "TicketRow", "VerdictRow"]
+class ClassificationRow(SQLModel, table=True):
+    """Persists RA-002 Incident Classifier output. One row per classification.
+
+    Linked to the originating RA-001 verdict by ``verdict_id``. The FK is
+    nullable so RA-002 can also be run standalone (CLAUDE.md principle #2 —
+    individually sellable agents). Audit fields (decision_trace, similar_
+    incidents snapshot) live under ``audit_metadata`` as a JSON column to
+    keep the row schema flat — same convention as ``VerdictRow``.
+    """
+
+    __tablename__ = "classifications"
+
+    id: int | None = Field(default=None, primary_key=True)
+    verdict_id: int | None = Field(default=None, foreign_key="verdicts.id", index=True)
+    incident_type: str = Field(index=True)
+    confidence: float
+    rationale: str
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    probable_root_cause: str = ""
+    routing_team: str = Field(default="", index=True)
+    on_call_engineer: str | None = None
+    recommended_runbook: str | None = None
+    dependencies: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    similar_incident_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    audit_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+
+
+class HistoricalIncidentRow(SQLModel, table=True):
+    """Past incidents used by RA-002 (Incident Classifier) for similarity-driven
+    classification. Seeded with synthetic incidents on first boot; the store
+    grows over time as the agent classifies new incidents — that's how the
+    agent "learns" without retraining.
+
+    Embedding storage: L2-normalized vector stored as a JSON list of floats.
+    Nearest search is brute-force cosine via dot product — fine for POC scale
+    (a few thousand rows). Swap to pgvector when row count makes scanning slow.
+    """
+
+    __tablename__ = "historical_incidents"
+
+    id: int | None = Field(default=None, primary_key=True)
+    incident_key: str = Field(index=True)  # not unique: same alert may be re-classified
+    incident_type: str = Field(index=True)
+    affected_service: str = Field(index=True)
+    severity: str
+    summary: str
+    probable_root_cause: str
+    recommended_runbook: str | None = None
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    embedding: list[float] = Field(default_factory=list, sa_column=Column(JSON))
+    embedding_text: str
+    source: str = Field(default="live", index=True)  # "seed" | "live"
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+
+
+__all__ = [
+    "ClassificationRow",
+    "ClusterRow",
+    "HistoricalIncidentRow",
+    "NotificationRow",
+    "TicketRow",
+    "VerdictRow",
+]

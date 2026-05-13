@@ -45,6 +45,11 @@ kubeconfig
 *.kubeconfig
 .helm/
 
+# Node / frontend (demo/dashboard + demo/classifier-ui)
+node_modules/
+.npm/
+*.tsbuildinfo
+
 # Eval / run artifacts
 evals/runs/
 demo/.runs/

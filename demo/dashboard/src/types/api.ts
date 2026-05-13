@@ -138,3 +138,4 @@ export interface SystemPodsResponse {
   ready_count: number;
   not_ready_count: number;
 }
+

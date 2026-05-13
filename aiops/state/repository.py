@@ -19,7 +19,9 @@ from sqlmodel import Session, select
 
 from aiops.state import get_engine
 from aiops.state.models import (
+    ClassificationRow,
     ClusterRow,
+    HistoricalIncidentRow,
     NotificationRow,
     TicketRow,
     VerdictRow,
@@ -261,13 +263,250 @@ def save_notification(
         return int(row.id)  # type: ignore[arg-type]
 
 
+# ─── classifications (RA-002 output) ───────────────────────────────────────
+
+
+def save_classification(
+    classification: Any,
+    *,
+    verdict_id: int | None = None,
+) -> int:
+    """Persist an RA-002 ``Classification``. Returns the row id.
+
+    ``verdict_id`` links back to the RA-001 ``VerdictRow`` id from a prior
+    ``save_verdict`` call. Pass ``None`` when RA-002 is used standalone
+    (no upstream triage row in state).
+    """
+    audit = classification.audit_metadata
+    row = ClassificationRow(
+        verdict_id=verdict_id,
+        incident_type=classification.incident_type,
+        confidence=classification.confidence,
+        rationale=classification.rationale,
+        tags=list(classification.tags),
+        probable_root_cause=classification.probable_root_cause,
+        routing_team=classification.routing_team,
+        on_call_engineer=classification.on_call_engineer,
+        recommended_runbook=classification.recommended_runbook,
+        dependencies=list(classification.dependencies),
+        similar_incident_ids=list(classification.similar_incident_ids),
+        created_at=audit.created_at,
+        audit_metadata={
+            "created_by": audit.created_by,
+            "decision_trace": list(audit.decision_trace),
+            "similar_incidents": list(audit.similar_incidents),
+        },
+    )
+    with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return int(row.id)  # type: ignore[arg-type]
+
+
+def get_classification(classification_id: int) -> dict[str, Any] | None:
+    """Read-back counterpart to ``save_classification``. Matches the
+    ``get_verdict`` shape so the dashboard can render both with one helper."""
+    with _session() as s:
+        row = s.get(ClassificationRow, classification_id)
+    return _classification_row_to_dict(row) if row else None
+
+
+def list_classifications(
+    *,
+    limit: int = 50,
+    incident_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Newest-first list of persisted classifications, rendered as plain dicts.
+    Optional filter by ``incident_type``."""
+    stmt = (
+        select(ClassificationRow)
+        .order_by(ClassificationRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(limit)
+    )
+    if incident_type:
+        stmt = stmt.where(ClassificationRow.incident_type == incident_type)
+    with _session() as s:
+        rows = s.exec(stmt).all()
+    return [_classification_row_to_dict(r) for r in rows]
+
+
+def count_classifications() -> int:
+    with _session() as s:
+        rows = s.exec(select(ClassificationRow)).all()
+    return len(rows)
+
+
+def average_classification_confidence() -> float | None:
+    """Mean confidence across all persisted classifications, or None if empty."""
+    with _session() as s:
+        rows = s.exec(select(ClassificationRow.confidence)).all()
+    if not rows:
+        return None
+    return sum(float(r) for r in rows) / len(rows)
+
+
+def _classification_row_to_dict(row: ClassificationRow) -> dict[str, Any]:
+    audit = dict(row.audit_metadata or {})
+    return {
+        "id": row.id,
+        "verdict_id": row.verdict_id,
+        "incident_type": row.incident_type,
+        "confidence": row.confidence,
+        "rationale": row.rationale,
+        "tags": list(row.tags or []),
+        "probable_root_cause": row.probable_root_cause,
+        "routing_team": row.routing_team,
+        "on_call_engineer": row.on_call_engineer,
+        "recommended_runbook": row.recommended_runbook,
+        "dependencies": list(row.dependencies or []),
+        "similar_incident_ids": list(row.similar_incident_ids or []),
+        "audit_metadata": {
+            "created_at": _aware(row.created_at).isoformat() if row.created_at else None,
+            "created_by": audit.get("created_by", "RA-002"),
+            "decision_trace": audit.get("decision_trace", []),
+            "similar_incidents": audit.get("similar_incidents", []),
+        },
+    }
+
+
+# ─── historical incidents (RA-002 similarity store) ────────────────────────
+
+
+def count_historical_incidents() -> int:
+    with _session() as s:
+        rows = s.exec(select(HistoricalIncidentRow)).all()
+    return len(rows)
+
+
+def save_historical_incident(
+    *,
+    incident_key: str,
+    incident_type: str,
+    affected_service: str,
+    severity: str,
+    summary: str,
+    probable_root_cause: str,
+    recommended_runbook: str | None,
+    tags: list[str],
+    embedding: list[float],
+    embedding_text: str,
+    source: str = "live",
+    created_at: datetime | None = None,
+) -> int:
+    """Append a row to the historical store. ``embedding`` should be L2-normalized
+    so nearest_historical_incidents can use a plain dot product."""
+    row = HistoricalIncidentRow(
+        incident_key=incident_key,
+        incident_type=incident_type,
+        affected_service=affected_service,
+        severity=severity,
+        summary=summary,
+        probable_root_cause=probable_root_cause,
+        recommended_runbook=recommended_runbook,
+        tags=list(tags),
+        embedding=list(embedding),
+        embedding_text=embedding_text,
+        source=source,
+        created_at=created_at or datetime.now(UTC),
+    )
+    with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return int(row.id)  # type: ignore[arg-type]
+
+
+def nearest_historical_incidents(
+    *,
+    embedding: list[float],
+    k: int = 5,
+    min_similarity: float = 0.6,
+) -> list[dict[str, Any]]:
+    """Brute-force cosine nearest-K. Requires ``embedding`` to be L2-normalized
+    (so are the stored vectors). Loads the table in memory — fine up to a few
+    thousand rows; the schema is ready to be swapped to pgvector when this
+    stops being fine.
+
+    Returns rows with an added ``similarity`` field, descending by similarity,
+    filtered to ``similarity >= min_similarity``.
+    """
+    if not embedding:
+        return []
+    with _session() as s:
+        rows = s.exec(select(HistoricalIncidentRow)).all()
+    scored: list[tuple[float, HistoricalIncidentRow]] = []
+    for r in rows:
+        v = r.embedding or []
+        if len(v) != len(embedding):
+            continue
+        # L2-normalized vectors → dot product == cosine similarity.
+        sim = 0.0
+        for a, b in zip(embedding, v, strict=False):
+            sim += a * b
+        if sim >= min_similarity:
+            scored.append((sim, r))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    out: list[dict[str, Any]] = []
+    for sim, r in scored[:k]:
+        out.append(
+            {
+                "incident_key": r.incident_key,
+                "incident_type": r.incident_type,
+                "affected_service": r.affected_service,
+                "severity": r.severity,
+                "summary": r.summary,
+                "probable_root_cause": r.probable_root_cause,
+                "recommended_runbook": r.recommended_runbook,
+                "tags": list(r.tags or []),
+                "similarity": sim,
+                "source": r.source,
+            }
+        )
+    return out
+
+
+def delete_all_historical_incidents() -> int:
+    """Eval/test hook. Not a production path."""
+    with _session() as s:
+        rows = s.exec(select(HistoricalIncidentRow)).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
+def delete_live_historical_incidents() -> int:
+    """Eval-harness hook — wipe rows that RA-002 inserted from live
+    classifications (source != 'seed'), keeping the seed baseline intact so
+    each golden case starts from the same retrieval surface."""
+    with _session() as s:
+        rows = s.exec(
+            select(HistoricalIncidentRow).where(HistoricalIncidentRow.source != "seed")
+        ).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
 __all__ = [
+    "average_classification_confidence",
+    "count_classifications",
+    "count_historical_incidents",
     "delete_all_clusters",
+    "delete_all_historical_incidents",
+    "delete_live_historical_incidents",
     "evict_expired_clusters",
     "find_active_cluster",
+    "get_classification",
     "get_verdict",
     "list_active_clusters",
+    "list_classifications",
     "list_verdicts",
+    "nearest_historical_incidents",
+    "save_classification",
+    "save_historical_incident",
     "save_notification",
     "save_ticket",
     "save_verdict",

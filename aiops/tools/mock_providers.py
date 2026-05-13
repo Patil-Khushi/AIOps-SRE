@@ -140,3 +140,54 @@ def mock_oncall_lookup(team: str) -> ToolResult:
         data={"team": team, "engineer_email": f"oncall@{_team_slug(team)}.example.com"},
         metadata={"provider": "mock"},
     )
+
+
+# Service → list of services it depends on. Curated against the OTel demo
+# call graph so RA-002's dependencies field has realistic content.
+_DEPENDENCIES_MAPPING: dict[str, list[str]] = {
+    "frontend": [
+        "cart",
+        "checkout",
+        "product-catalog",
+        "recommendation",
+        "currency",
+        "ad",
+        "shipping",
+    ],
+    "frontend-proxy": ["frontend"],
+    "checkout": ["cart", "payment", "shipping", "email", "currency"],
+    "cart": ["product-catalog"],
+    "payment": ["currency", "fraud-detection"],
+    "recommendation": ["product-catalog"],
+    "shipping": ["quote"],
+    "ad": [],
+    "quote": [],
+    "currency": [],
+    "product-catalog": [],
+    "product-reviews": [],
+    "fraud-detection": [],
+    "email": [],
+    "accounting": [],
+    "image-provider": [],
+}
+
+
+@tool(
+    name="mock.itsm.cmdb.dependencies",
+    capability="itsm.cmdb.dependencies",
+    provider="mock",
+    description="Return the list of downstream services a given service depends on.",
+)
+def mock_cmdb_dependencies(service: str) -> ToolResult:
+    """Return service dependencies from the CMDB.
+
+    Phase-1 swap target: real CMDB relationship traversal (ServiceNow CI
+    relationships, or a topology graph derived from OTel trace data).
+    """
+    key = service.lower().strip()
+    deps = _DEPENDENCIES_MAPPING.get(key, [])
+    return ToolResult(
+        ok=True,
+        data={"service": service, "dependencies": list(deps)},
+        metadata={"provider": "mock", "matched": key in _DEPENDENCIES_MAPPING},
+    )
