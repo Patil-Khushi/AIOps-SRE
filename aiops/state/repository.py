@@ -187,6 +187,16 @@ def evict_expired_clusters(window: timedelta) -> int:
         return len(rows)
 
 
+def delete_all_clusters() -> int:
+    """Wipe every cluster row. Eval-harness hook; not a production path."""
+    with _session() as s:
+        rows = s.exec(select(ClusterRow)).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
 def _aware(dt: datetime) -> datetime:
     """SQLite round-trips TIMESTAMP as naive UTC. Re-attach the tzinfo so
     comparisons against ``datetime.now(timezone.utc)`` don't blow up."""
@@ -254,6 +264,7 @@ def save_notification(
 
 
 __all__ = [
+    "delete_all_clusters",
     "evict_expired_clusters",
     "find_active_cluster",
     "get_verdict",

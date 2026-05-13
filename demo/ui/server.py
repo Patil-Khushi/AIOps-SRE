@@ -43,26 +43,11 @@ from pydantic import BaseModel, Field
 
 
 # Load .env explicitly. ``uv run`` does NOT auto-load .env files, so without
-# this every uvicorn launch sees a bare environment, the AIOPS_LLM_PROVIDER
-# setdefault below sets the provider to "stub", and the dashboard header chip
-# is stuck red. Done here (not via python-dotenv) to avoid an extra dep.
-def _load_dotenv() -> None:
-    env_path = Path(__file__).resolve().parents[2] / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        # Strip inline comments and surrounding whitespace/quotes.
-        val = val.split("#", 1)[0].strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = val
+# this every uvicorn launch sees a bare environment and the dashboard header
+# chip is stuck red.
+from aiops._dotenv import load_dotenv  # noqa: E402
 
-
-_load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # Default to the stub LLM so the demo runs without an API key. Override by
 # setting AIOPS_LLM_PROVIDER=anthropic before launching uvicorn (or by

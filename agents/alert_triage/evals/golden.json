@@ -28,7 +28,8 @@
         "assigned_team": "Payments Team",
         "assigned_engineer_contains": "oncall@payments",
         "min_confidence_score": 0.7,
-        "recommended_runbook_contains": "payment"
+        "recommended_runbook_contains": "payment",
+        "status": "Active"
       }
     },
     {
@@ -54,7 +55,8 @@
         ],
         "assigned_team": "Order Experience",
         "assigned_engineer_contains": "oncall@order-experience",
-        "min_confidence_score": 0.7
+        "min_confidence_score": 0.7,
+        "status": "Active"
       }
     },
     {
@@ -78,7 +80,8 @@
         ],
         "assigned_team": "Ads Team",
         "assigned_engineer_contains": "oncall@ads",
-        "min_confidence_score": 0.7
+        "min_confidence_score": 0.7,
+        "status": "Active"
       }
     },
     {
@@ -99,7 +102,8 @@
           "Sev-2",
           "Sev-3"
         ],
-        "assigned_team": "Finance Systems"
+        "assigned_team": "Finance Systems",
+        "status": "Active"
       }
     },
     {
@@ -125,7 +129,8 @@
         "min_confidence_score": 0.9,
         "assigned_team": "Payments Team",
         "assigned_engineer_contains": "oncall@payments",
-        "recommended_runbook_contains": "payment"
+        "recommended_runbook_contains": "payment",
+        "status": "Active"
       }
     },
     {
@@ -142,7 +147,8 @@
         "source": "Prometheus"
       },
       "expected": {
-        "assigned_team": "Platform On-Call"
+        "assigned_team": "Platform On-Call",
+        "status": "Active"
       }
     },
     {
@@ -162,7 +168,8 @@
         "severity": "Sev-4",
         "min_confidence_score": 0.7,
         "assigned_team": "Ads Team",
-        "assigned_engineer_contains": "oncall@ads"
+        "assigned_engineer_contains": "oncall@ads",
+        "status": "Active"
       }
     },
     {
@@ -184,7 +191,8 @@
         "min_confidence_score": 0.85,
         "assigned_team": "Order Experience",
         "assigned_engineer_contains": "oncall@order-experience",
-        "recommended_runbook_contains": "cart"
+        "recommended_runbook_contains": "cart",
+        "status": "Active"
       }
     }
   ]

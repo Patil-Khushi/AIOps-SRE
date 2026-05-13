@@ -18,7 +18,7 @@ Public surface::
     from agents.alert_triage import Alert, TriageVerdict, AuditMetadata, triage, run
 """
 
-from agents.alert_triage.agent import run, triage
+from agents.alert_triage.agent import reset_state, run, triage
 from agents.alert_triage.models import Alert, AuditMetadata, TriageVerdict
 
-__all__ = ["Alert", "AuditMetadata", "TriageVerdict", "run", "triage"]
+__all__ = ["Alert", "AuditMetadata", "TriageVerdict", "reset_state", "run", "triage"]

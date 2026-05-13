@@ -203,6 +203,13 @@ def reset_dedup_store() -> None:
     _EMBED_CACHE.clear()
 
 
+def reset_state() -> None:
+    """Eval-harness hook (A11). Wipe persistent cluster rows + the in-memory
+    embedding cache so each golden case starts from a clean dedup state."""
+    state_repo.delete_all_clusters()
+    reset_dedup_store()
+
+
 # ─── stage 5: severity classification ───────────────────────────────────────
 
 
