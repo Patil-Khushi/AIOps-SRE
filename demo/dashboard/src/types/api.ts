@@ -37,6 +37,24 @@ export interface TriageVerdict {
   audit_metadata: AuditMetadata;
 }
 
+// RA-003 Auto-Ticketing output (mirrors agents/auto_ticketing/models.py:TicketRecord).
+export interface TicketRecord {
+  created: boolean;
+  ticket_id?: string | null;
+  system: 'servicenow' | 'mock' | 'none';
+  urgency?: number | null;
+  short_description?: string | null;
+  channel_notified?: string | null;
+  notification_sent: boolean;
+  audit_metadata: string[];
+}
+
+// Combined response from POST /api/triage and each entry in POST /api/triage/live.
+export interface TriageResult {
+  verdict: TriageVerdict;
+  ticket: TicketRecord;
+}
+
 export interface HealthResponse {
   status: string;
   llm_provider: string;

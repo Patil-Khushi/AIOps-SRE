@@ -33,8 +33,9 @@ export default function Reasoning() {
   if (verdicts.loading) return <LoadingState label="Running RA-001 against every firing alert…" />;
   if (verdicts.error) return <ErrorState error={verdicts.error} />;
 
-  const list = verdicts.data?.verdicts ?? [];
-  const selected: TriageVerdict | null = (list[selectedIdx] as TriageVerdict) ?? null;
+  const results = verdicts.data?.results ?? [];
+  const list: TriageVerdict[] = results.map((r) => r.verdict);
+  const selected: TriageVerdict | null = list[selectedIdx] ?? null;
 
   return (
     <div className="space-y-6">
