@@ -108,7 +108,7 @@ export default function Overview() {
         />
         <StatCard
           label="Active scenarios"
-          value={(scenarios.data?.scenarios.filter((s) => s.current_variant === 'on') ?? []).length}
+          value={(scenarios.data?.scenarios.filter((s) => s.current_variant !== 'off') ?? []).length}
           icon={<Zap className="h-4 w-4" />}
           hint={`${scenarios.data?.scenarios.length ?? 0} configured`}
         />
