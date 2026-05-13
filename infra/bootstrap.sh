@@ -43,14 +43,19 @@ echo "==> Adding OpenTelemetry Helm repo"
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null 2>&1 || true
 helm repo update >/dev/null
 
-# Skip install if otel-demo is already healthy — running helm upgrade after
-# inject.py has patched flagd-config triggers a server-side-apply conflict.
-# Pass FORCE=1 to override (clear flagd patches first or run teardown.sh).
+# Skip install if otel-demo is already healthy — keeps re-runs fast. The helm
+# call below uses --server-side=true --force-conflicts so it survives stale
+# field managers left by inject.py / past kubectl-applies, but skipping the
+# upgrade entirely is still faster when nothing has changed. FORCE=1 overrides
+# and runs helm upgrade unconditionally.
 already_healthy=0
 if [ "${FORCE:-0}" != "1" ]; then
   existing=$(helm -n "$NAMESPACE" ls --filter '^otel-demo$' -o json 2>/dev/null)
   if [ -n "$existing" ] && [ "$existing" != "[]" ]; then
-    status=$(echo "$existing" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0].get("status",""))' 2>/dev/null || echo '')
+    # POSIX-pure parse — python3 isn't on PATH on Windows git-bash even when
+    # Windows Python is installed. We just need a single field out of a known
+    # one-element array, so grep+cut is sufficient and dependency-free.
+    status=$(echo "$existing" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
     if [ "$status" = "deployed" ]; then
       ready=$(kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/component=frontend-proxy \
         -o "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || echo '')
@@ -69,10 +74,17 @@ else
     upgrade --install otel-demo open-telemetry/opentelemetry-demo
     --namespace "$NAMESPACE" --create-namespace
     --values "$repo_root/demo/otel-demo/values.yaml"
+    # Server-side apply with --force-conflicts lets helm take ownership of
+    # fields earlier kubectl-apply/kubectl-patch invocations claimed (e.g.
+    # flagd-config .data.demo.flagd.json after inject.py runs, or the
+    # prometheus configmap after manual edits). Without these flags, later
+    # upgrades fail with "Apply failed with N conflicts".
+    --server-side=true --force-conflicts
     --wait --timeout 15m
   )
   [ -n "$CHART_VERSION" ] && helm_args+=(--version "$CHART_VERSION")
   helm "${helm_args[@]}"
+fi
 
 echo "==> Waiting for frontend pod to be Ready"
 kubectl -n "$NAMESPACE" wait --for=condition=Ready pod \

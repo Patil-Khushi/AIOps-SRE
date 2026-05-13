@@ -12,7 +12,8 @@
 param(
     [string]$Namespace = 'otel-demo',
     [string]$ChartVersion = '',                # empty = latest
-    [string]$Context     = 'rancher-desktop'   # set to '' to use current context
+    [string]$Context     = 'rancher-desktop',  # set to '' to use current context
+    [switch]$Force                             # skip the already-healthy check and run helm upgrade unconditionally
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,10 +66,11 @@ Write-Host "==> Adding OpenTelemetry Helm repo"
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts 2>$null | Out-Null
 helm repo update | Out-Null
 
-# Skip the install if the demo is already healthy — running helm upgrade after
-# inject.py has patched flagd-config triggers a server-side-apply conflict
-# (kubectl-patch owns .data.demo.flagd.json). Idempotency wins; pass -Force to
-# override (you'll need to clear flagd patches first or run teardown.ps1).
+# Skip the install if the demo is already healthy — keeps re-runs fast. The
+# helm call below uses --server-side=true --force-conflicts so it survives
+# stale field managers left by inject.py / past kubectl-applies, but skipping
+# the upgrade entirely is still faster when nothing has changed. Pass -Force
+# to override and run helm upgrade unconditionally.
 $alreadyHealthy = $false
 if (-not $Force) {
     $existing = helm -n $Namespace ls --filter '^otel-demo$' -o json 2>$null
@@ -95,11 +97,18 @@ if ($alreadyHealthy) {
         'upgrade', '--install', 'otel-demo', 'open-telemetry/opentelemetry-demo',
         '--namespace', $Namespace, '--create-namespace',
         '--values', $valuesPath,
+        # Server-side apply with --force-conflicts lets helm take ownership of
+        # fields that earlier kubectl-apply/kubectl-patch invocations claimed
+        # (e.g. flagd-config .data.demo.flagd.json after inject.py runs, or
+        # the prometheus configmap after manual edits). Without these flags,
+        # subsequent upgrades fail with "Apply failed with N conflicts".
+        '--server-side=true', '--force-conflicts',
         '--wait', '--timeout', '15m'
     )
     if ($ChartVersion) { $helmArgs += @('--version', $ChartVersion) }
     helm @helmArgs
     if ($LASTEXITCODE -ne 0) { Write-Error 'helm install failed.' }
+}
 
 Write-Host "==> Waiting for frontend pod to be Ready"
 kubectl -n $Namespace wait --for=condition=Ready pod -l app.kubernetes.io/component=frontend --timeout=300s
