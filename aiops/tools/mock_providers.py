@@ -3,11 +3,22 @@
 These let Phase-0 smoke tests (and Phase-1 agent scaffolding) run without any
 real backend. Each capability gets a real provider implementation in Phase 1+;
 when that lands, agents do not change — only the registry's active provider does.
+
+The ``itsm.cmdb.lookup`` mock is gated on ``AIOPS_USE_MOCK_ITSM`` so a developer
+with a configured ServiceNow PDI gets the real CMDB lookup, while CI / tests
+(which don't have PDI creds) keep getting the static table. The mock for
+``itsm.incident.create`` is unconditional because the smoke test exercises it.
 """
 
 from __future__ import annotations
 
+import os
+
 from .registry import ToolResult, tool
+
+
+def _use_mock_itsm() -> bool:
+    return os.environ.get("AIOPS_USE_MOCK_ITSM", "true").strip().lower() in {"1", "true", "yes"}
 
 
 @tool(
@@ -74,25 +85,26 @@ _CMDB_MAPPING: dict[str, dict[str, str | None]] = {
 _CMDB_DEFAULT: dict[str, str | None] = {"team": "Platform On-Call", "runbook": None}
 
 
-@tool(
-    name="mock.itsm.cmdb.lookup",
-    capability="itsm.cmdb.lookup",
-    provider="mock",
-    description="Map service name to owning team + recommended runbook URL.",
-)
-def mock_cmdb_lookup(service: str) -> ToolResult:
-    """Return CMDB-style ownership info for a service.
-
-    Falls back to ``Platform On-Call`` when the service is unknown so the
-    agent always has someone to route to.
-    """
-    key = service.lower().strip()
-    info = _CMDB_MAPPING.get(key, _CMDB_DEFAULT)
-    return ToolResult(
-        ok=True,
-        data={"service": service, "team": info["team"], "runbook": info["runbook"]},
-        metadata={"provider": "mock", "matched": key in _CMDB_MAPPING},
+if _use_mock_itsm():
+    @tool(
+        name="mock.itsm.cmdb.lookup",
+        capability="itsm.cmdb.lookup",
+        provider="mock",
+        description="Map service name to owning team + recommended runbook URL.",
     )
+    def mock_cmdb_lookup(service: str) -> ToolResult:
+        """Return CMDB-style ownership info for a service.
+
+        Falls back to ``Platform On-Call`` when the service is unknown so the
+        agent always has someone to route to.
+        """
+        key = service.lower().strip()
+        info = _CMDB_MAPPING.get(key, _CMDB_DEFAULT)
+        return ToolResult(
+            ok=True,
+            data={"service": service, "team": info["team"], "runbook": info["runbook"]},
+            metadata={"provider": "mock", "matched": key in _CMDB_MAPPING},
+        )
 
 
 def _team_slug(team: str) -> str:
