@@ -62,6 +62,7 @@ from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
+from aiops import llm as aiops_llm  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import get_registry  # noqa: E402
@@ -107,7 +108,9 @@ def index() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    """Quick probe: agent importable, mocks registered, port-forwards reachable."""
+    """Quick probe: agent importable, mocks registered, port-forwards reachable,
+    LLM provider actually answering. The LLM probe is cached (60s success /
+    10s failure) so frequent dashboard refreshes don't hammer the API."""
     registry = get_registry()
     caps = sorted({t.capability for t in registry.list()})
 
@@ -124,9 +127,16 @@ def health() -> dict[str, Any]:
     except Exception:
         pass
 
+    llm = aiops_llm.ping()
+
     return {
         "status": "ok",
-        "llm_provider": os.environ.get("AIOPS_LLM_PROVIDER"),
+        "llm_provider": llm["provider"],
+        "llm_model": llm["model"],
+        "llm_ok": llm["ok"],
+        "llm_error": llm["error"],
+        "llm_latency_ms": llm["latency_ms"],
+        "llm_cached": llm["cached"],
         "registered_capabilities": caps,
         "prometheus_reachable": prom_ok,
         "jaeger_reachable": jaeger_ok,

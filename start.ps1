@@ -114,20 +114,46 @@ if (Test-Path $dashDir) {
     }
 }
 
-# --- 2c. ensure the UI extra is synced into .venv ---
-# Without this, `uv run uvicorn` will silently fall back to a uvicorn elsewhere
-# on PATH whose site-packages is missing httpx etc. Idempotent and fast on re-runs.
-Write-Step '2c' "syncing 'ui' extra into .venv..."
+# --- 2c. ensure the right extras are synced into .venv ---
+# Without `--extra ui`, `uv run uvicorn` silently falls back to a uvicorn
+# elsewhere on PATH whose site-packages is missing httpx etc.
+# Without `--extra llm-<provider>`, the LLM gateway raises ImportError at
+# runtime and every agent falls to its template / Tier-4 fallback (DEMO-2).
+# `--extra embeddings` unlocks RA-001 dedup similarity + RA-002 historical
+# similarity tiers. Idempotent and fast on re-runs.
+Write-Step '2c' "syncing extras (dev, ui, embeddings, llm-<provider>) into .venv..."
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     throw "uv not found on PATH. Install uv: https://docs.astral.sh/uv/getting-started/installation/"
 }
+
+# Resolve the LLM provider: -LlmProvider param wins, then .env, then default.
+function Get-EnvFileValue($path, $key) {
+    if (-not (Test-Path $path)) { return $null }
+    foreach ($line in Get-Content $path) {
+        if ($line -match "^\s*$([Regex]::Escape($key))\s*=\s*(.+?)\s*(#.*)?$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+    return $null
+}
+$resolvedProvider = if ($LlmProvider) { $LlmProvider } else { Get-EnvFileValue (Join-Path $RepoRoot '.env') 'AIOPS_LLM_PROVIDER' }
+if (-not $resolvedProvider) { $resolvedProvider = 'stub' }
+
+$extras = @('--extra', 'dev', '--extra', 'ui', '--extra', 'embeddings')
+$lp = $resolvedProvider.ToLowerInvariant()
+if     ($lp -eq 'anthropic') { $extras += @('--extra', 'llm-anthropic') }
+elseif ($lp -eq 'openai')    { $extras += @('--extra', 'llm-openai') }
+elseif ($lp -eq 'ollama')    { $extras += @('--extra', 'llm-ollama') }
+elseif ($lp -eq 'stub')      { }   # no SDK needed
+else { Write-Warning "unknown AIOPS_LLM_PROVIDER='$resolvedProvider' - skipping llm-* extra" }
+$extrasStr = $extras -join ' '
 # Run uv via cmd so its stderr chatter doesn't get wrapped as a PS 5.1
 # NativeCommandError under $ErrorActionPreference = 'Stop'.
-cmd /c "uv sync --extra ui --quiet >NUL 2>&1"
+cmd /c "uv sync $extrasStr --quiet >NUL 2>&1"
 if ($LASTEXITCODE -ne 0) {
-    throw "uv sync --extra ui failed (exit $LASTEXITCODE). Run it manually to see the error."
+    throw "uv sync $extrasStr failed (exit $LASTEXITCODE). Run it manually to see the error."
 }
-Write-Host "    .venv has uvicorn + fastapi" -ForegroundColor Green
+Write-Host "    .venv has uvicorn + fastapi + llm SDK for '$resolvedProvider'" -ForegroundColor Green
 
 # --- 3. ui server ---
 Write-Step 3 "starting demo UI server on http://localhost:$UiPort ..."

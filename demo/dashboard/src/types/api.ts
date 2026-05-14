@@ -57,7 +57,12 @@ export interface TriageResult {
 
 export interface HealthResponse {
   status: string;
-  llm_provider: string;
+  llm_provider: string | null;       // probed provider (= request that succeeded), null on failure
+  llm_model: string | null;          // probed model id, null on failure
+  llm_ok: boolean;                   // true if the cached ping returned successfully
+  llm_error: string | null;          // exception message when llm_ok=false
+  llm_latency_ms: number | null;     // round-trip on success
+  llm_cached: boolean;               // true if this is a cached probe (60s success / 10s failure TTL)
   registered_capabilities: string[];
   prometheus_reachable: boolean;
   jaeger_reachable: boolean;

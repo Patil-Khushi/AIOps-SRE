@@ -5,9 +5,13 @@ import { api } from '@/lib/api';
 import type { HealthResponse } from '@/types/api';
 import { clsx } from '@/lib/format';
 
-function ChipDot({ ok, label }: { ok: boolean; label: string }) {
+function ChipDot({
+  ok,
+  label,
+  title,
+}: { ok: boolean; label: string; title?: string }) {
   return (
-    <span className="chip">
+    <span className="chip" title={title}>
       <span className={clsx('h-1.5 w-1.5 rounded-full', ok ? 'bg-ok' : 'bg-bad')} />
       {label}
     </span>
@@ -48,7 +52,15 @@ export default function Header() {
           <>
             <ChipDot ok={h.prometheus_reachable} label="Prometheus" />
             <ChipDot ok={h.jaeger_reachable}     label="Jaeger" />
-            <ChipDot ok={h.llm_provider !== 'stub'} label={`LLM · ${h.llm_provider ?? '—'}`} />
+            <ChipDot
+              ok={h.llm_ok}
+              label={`LLM · ${h.llm_provider ?? '—'}`}
+              title={
+                h.llm_ok
+                  ? `${h.llm_model ?? ''} · ${h.llm_latency_ms ?? '?'}ms${h.llm_cached ? ' (cached)' : ''}`
+                  : h.llm_error ?? 'LLM unreachable'
+              }
+            />
           </>
         ) : (
           <span className="chip">connecting…</span>

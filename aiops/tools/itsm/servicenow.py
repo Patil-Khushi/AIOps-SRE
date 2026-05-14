@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 
+from aiops.tools.itsm import _demo_cmdb
 from aiops.tools.registry import ToolResult, tool
 
 
@@ -254,10 +255,12 @@ def cmdb_lookup(service: str) -> ToolResult:
     """Resolve a service name to its owning team + runbook URL.
 
     Queries ``cmdb_ci_service`` by ``name`` (case-insensitive, exact match
-    first then ``LIKE``). Returns ``ok=True, data=None`` when the service
-    isn't in the CMDB — the agent's existing fallback ("Platform On-Call")
-    handles that case (mirroring the mock provider's contract at boundaries
-    that matter to the caller).
+    first then ``LIKE``). When the real PDI returns no row — which is the
+    common case for the OpenTelemetry Astronomy Shop services on a stock
+    Personal Developer Instance — we fall back to the demo CMDB table in
+    ``aiops.tools.itsm._demo_cmdb`` so ownership routing keeps working
+    end-to-end (DEMO-1 / #53). The fallback is signalled via metadata
+    (``fallback="demo_cmdb"``) so callers/agents can see what happened.
     """
     key = (service or "").strip()
     if not key:
@@ -282,11 +285,7 @@ def cmdb_lookup(service: str) -> ToolResult:
         return res
     results = (res.data or {}).get("result", []) or []
     if not results:
-        return ToolResult(
-            ok=True,
-            data=None,
-            metadata={"provider": "servicenow", "matched": False},
-        )
+        return _demo_cmdb_fallback(service)
     row = results[0]
     return ToolResult(
         ok=True,
@@ -300,6 +299,27 @@ def cmdb_lookup(service: str) -> ToolResult:
             "matched": True,
             "sys_class_name": _resolve(row.get("sys_class_name")),
         },
+    )
+
+
+def _demo_cmdb_fallback(service: str) -> ToolResult:
+    """Look the service up in the in-process demo CMDB after a PDI miss.
+
+    Returns ``data=None`` only when the service is unknown in BOTH ServiceNow
+    AND the demo table — preserves the agent's existing "Platform On-Call"
+    fallback for truly-unknown services.
+    """
+    info = _demo_cmdb.lookup(service)
+    if info is None:
+        return ToolResult(
+            ok=True,
+            data=None,
+            metadata={"provider": "servicenow", "matched": False, "fallback": "demo_cmdb"},
+        )
+    return ToolResult(
+        ok=True,
+        data={"service": service, "team": info["team"], "runbook": info["runbook"]},
+        metadata={"provider": "servicenow", "matched": True, "fallback": "demo_cmdb"},
     )
 
 
