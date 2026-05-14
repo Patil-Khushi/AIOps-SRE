@@ -522,7 +522,10 @@ def triage(alert: Alert) -> TriageVerdict:
         if cmdb.ok and cmdb.data:
             team = cmdb.data.get("team") or team
             runbook = cmdb.data.get("runbook")
-            decision_trace.append(f"assigned to {team} via CMDB lookup")
+            provider = cmdb.metadata.get("provider", "unknown")
+            fallback = cmdb.metadata.get("fallback")
+            source = f"{provider} (fallback: {fallback})" if fallback else provider
+            decision_trace.append(f"assigned to {team} via CMDB lookup [{source}]")
         else:
             decision_trace.append("CMDB lookup returned no match; defaulted to Platform On-Call")
     except KeyError:

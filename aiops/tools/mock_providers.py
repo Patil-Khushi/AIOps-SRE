@@ -8,11 +8,17 @@ The ``itsm.cmdb.lookup`` mock is gated on ``AIOPS_USE_MOCK_ITSM`` so a developer
 with a configured ServiceNow PDI gets the real CMDB lookup, while CI / tests
 (which don't have PDI creds) keep getting the static table. The mock for
 ``itsm.incident.create`` is unconditional because the smoke test exercises it.
+
+The CMDB demo table itself lives in ``aiops.tools.itsm._demo_cmdb`` so the
+real ServiceNow provider can fall back to it when a stock PDI has no
+``cmdb_ci_service`` row for a demo service (see DEMO-1 / #53).
 """
 
 from __future__ import annotations
 
 import os
+
+from aiops.tools.itsm import _demo_cmdb
 
 from .registry import ToolResult, tool
 
@@ -56,39 +62,9 @@ def mock_notify(channel: str, message: str) -> ToolResult:
 # Real Phase-1 providers will hit ServiceNow CMDB (itsm.cmdb.lookup) and
 # PagerDuty (oncall.schedule.lookup). The agent code does not change when
 # those land — only the registry's active provider for these capabilities.
+# The CMDB demo table lives in aiops.tools.itsm._demo_cmdb so the real
+# ServiceNow provider can fall back to the same data on no-match.
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Service → owning team + runbook URL. Lowercase keys; agent code lowercases
-# the alert's service before lookup. Covers the OTel demo's services and a
-# few generic aliases ("payment-api" matches the canonical example input).
-_CMDB_MAPPING: dict[str, dict[str, str | None]] = {
-    "payment": {"team": "Payments Team", "runbook": "https://runbooks.example.com/payment-cpu"},
-    "payment-api": {"team": "Payments Team", "runbook": "https://runbooks.example.com/payment-cpu"},
-    "payment-service": {
-        "team": "Payments Team",
-        "runbook": "https://runbooks.example.com/payment-cpu",
-    },
-    "cart": {"team": "Order Experience", "runbook": "https://runbooks.example.com/cart"},
-    "checkout": {"team": "Order Experience", "runbook": "https://runbooks.example.com/checkout"},
-    "product-catalog": {"team": "Catalog Team", "runbook": "https://runbooks.example.com/catalog"},
-    "product-reviews": {"team": "Catalog Team", "runbook": None},
-    "recommendation": {
-        "team": "Personalization Team",
-        "runbook": "https://runbooks.example.com/recommendation",
-    },
-    "frontend": {"team": "Web Experience", "runbook": "https://runbooks.example.com/frontend"},
-    "frontend-proxy": {"team": "Web Experience", "runbook": None},
-    "shipping": {"team": "Fulfillment Team", "runbook": "https://runbooks.example.com/shipping"},
-    "ad": {"team": "Ads Team", "runbook": None},
-    "quote": {"team": "Pricing Team", "runbook": None},
-    "currency": {"team": "Pricing Team", "runbook": None},
-    "fraud-detection": {"team": "Trust and Safety", "runbook": None},
-    "email": {"team": "Communications", "runbook": None},
-    "accounting": {"team": "Finance Systems", "runbook": None},
-    "image-provider": {"team": "Assets Team", "runbook": None},
-}
-
-_CMDB_DEFAULT: dict[str, str | None] = {"team": "Platform On-Call", "runbook": None}
 
 
 if _use_mock_itsm():
@@ -105,12 +81,12 @@ if _use_mock_itsm():
         Falls back to ``Platform On-Call`` when the service is unknown so the
         agent always has someone to route to.
         """
-        key = service.lower().strip()
-        info = _CMDB_MAPPING.get(key, _CMDB_DEFAULT)
+        info = _demo_cmdb.lookup(service) or _demo_cmdb.CMDB_DEFAULT
+        matched = _demo_cmdb.lookup(service) is not None
         return ToolResult(
             ok=True,
             data={"service": service, "team": info["team"], "runbook": info["runbook"]},
-            metadata={"provider": "mock", "matched": key in _CMDB_MAPPING},
+            metadata={"provider": "mock", "matched": matched},
         )
 
 

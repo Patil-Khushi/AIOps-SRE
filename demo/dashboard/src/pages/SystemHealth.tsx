@@ -53,9 +53,15 @@ export default function SystemHealth() {
           value={health.data?.llm_provider ?? '…'}
           icon={<Boxes className="h-4 w-4" />}
           intent={
-            health.data?.llm_provider && health.data.llm_provider !== 'stub' ? 'ok' : 'warn'
+            !health.data ? 'warn' : health.data.llm_ok ? 'ok' : 'bad'
           }
-          hint="From AIOPS_LLM_PROVIDER"
+          hint={
+            !health.data
+              ? 'AIOPS_LLM_PROVIDER'
+              : health.data.llm_ok
+                ? `${health.data.llm_model ?? ''} · ${health.data.llm_latency_ms ?? '?'}ms${health.data.llm_cached ? ' (cached)' : ''}`
+                : (health.data.llm_error ?? 'LLM unreachable')
+          }
         />
       </div>
 

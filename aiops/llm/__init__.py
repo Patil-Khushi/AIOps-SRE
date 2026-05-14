@@ -13,6 +13,7 @@ Why this exists:
 
 from .base import LLMProvider, LLMRequest, LLMResponse, Message, get_provider
 from .gateway import acomplete, complete
+from .health import ping
 
 __all__ = [
     "LLMProvider",
@@ -22,4 +23,5 @@ __all__ = [
     "acomplete",
     "complete",
     "get_provider",
+    "ping",
 ]

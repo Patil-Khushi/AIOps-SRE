@@ -2,154 +2,463 @@
   "repo": "UbiquotousPanda/AIops",
   "project_id": "PVT_kwHOC7k8484BXefj",
   "labels": [
-    { "name": "dev-a", "color": "0075ca", "description": "Assigned to Dev A" },
-    { "name": "dev-b", "color": "e4e669", "description": "Assigned to Dev B" },
-    { "name": "dev-c", "color": "d93f0b", "description": "Assigned to Dev C" },
-    { "name": "dev-d", "color": "0e8a16", "description": "Assigned to Dev D" },
-    { "name": "alert-infra", "color": "c5def5", "description": "RA-001 Alert Infrastructure" },
-    { "name": "itsm", "color": "f9d0c4", "description": "RA-003 ITSM Integration" },
-    { "name": "incident-classifier", "color": "bfd4f2", "description": "RA-002 Incident Classifier" },
-    { "name": "notification-router", "color": "d4c5f9", "description": "RA-005 Notification Router" },
-    { "name": "scenarios", "color": "e99695", "description": "Failure Scenarios" },
-    { "name": "priority:high", "color": "b60205", "description": "High priority" },
-    { "name": "priority:medium", "color": "fbca04", "description": "Medium priority" },
-    { "name": "priority:low", "color": "0e8a16", "description": "Low priority" }
+    {
+      "name": "dev-a",
+      "color": "0075ca",
+      "description": "Assigned to Dev A"
+    },
+    {
+      "name": "dev-b",
+      "color": "e4e669",
+      "description": "Assigned to Dev B"
+    },
+    {
+      "name": "dev-c",
+      "color": "d93f0b",
+      "description": "Assigned to Dev C"
+    },
+    {
+      "name": "dev-d",
+      "color": "0e8a16",
+      "description": "Assigned to Dev D"
+    },
+    {
+      "name": "alert-infra",
+      "color": "c5def5",
+      "description": "RA-001 Alert Infrastructure"
+    },
+    {
+      "name": "itsm",
+      "color": "f9d0c4",
+      "description": "RA-003 ITSM Integration"
+    },
+    {
+      "name": "incident-classifier",
+      "color": "bfd4f2",
+      "description": "RA-002 Incident Classifier"
+    },
+    {
+      "name": "notification-router",
+      "color": "d4c5f9",
+      "description": "RA-005 Notification Router"
+    },
+    {
+      "name": "scenarios",
+      "color": "e99695",
+      "description": "Failure Scenarios"
+    },
+    {
+      "name": "priority:high",
+      "color": "b60205",
+      "description": "High priority"
+    },
+    {
+      "name": "priority:medium",
+      "color": "fbca04",
+      "description": "Medium priority"
+    },
+    {
+      "name": "priority:low",
+      "color": "0e8a16",
+      "description": "Low priority"
+    },
+    {
+      "name": "demo-readiness",
+      "color": "5319e7",
+      "description": "Demo-flow fixes surfaced during end-to-end testing"
+    }
   ],
   "issues": [
     {
       "title": "[A1] Verify metric series in Prometheus",
-      "labels": ["dev-a", "alert-infra", "priority:high"],
-      "body": "**As a** dev team\n**I want to** verify which metric series exist in Prometheus\n**So that** we know if spanmetrics is on or off\n\n## Task\nRun:\n```\nkubectl -n otel-demo exec deploy/prometheus -- wget -qO- 'http://localhost:9090/api/v1/series?match[]=traces_span_metrics_calls_total' | head\n```\nSame for `http_client_duration_milliseconds_count`.\n\n## Done When\nYou know whether spanmetrics is on or off.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** verify which metric series exist in Prometheus\n**So that** we know if spanmetrics is on or off\n\n## Task\nRun:\n```\nkubectl -n otel-demo exec deploy/prometheus -- wget -qO- 'http://localhost:9090/api/v1/series?match[]=traces_span_metrics_calls_total' | head\n```\nSame for `http_client_duration_milliseconds_count`.\n\n## Done When\nYou know whether spanmetrics is on or off.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[A2] Enable spanmetrics connector",
-      "labels": ["dev-a", "alert-infra", "priority:high"],
-      "body": "**As a** dev team\n**I want to** enable the spanmetrics connector\n**So that** traces_span_metrics_* series are visible in Prometheus\n\n## Task\nEnable the `spanmetrics` connector in `demo/otel-demo/values.yaml` (collector config block) and `helm upgrade` via `infra/bootstrap.ps1`.\n\n## Done When\n`traces_span_metrics_*` series visible in Prometheus.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** enable the spanmetrics connector\n**So that** traces_span_metrics_* series are visible in Prometheus\n\n## Task\nEnable the `spanmetrics` connector in `demo/otel-demo/values.yaml` (collector config block) and `helm upgrade` via `infra/bootstrap.ps1`.\n\n## Done When\n`traces_span_metrics_*` series visible in Prometheus.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[A3] Verify prometheus-rules.yml is loaded",
-      "labels": ["dev-a", "alert-infra", "priority:high"],
-      "body": "**As a** dev team\n**I want to** verify `infra/prometheus-rules.yml` is loaded into the Prometheus configmap\n**So that** alert rules are active\n\n## Task\nRun:\n```\nkubectl -n otel-demo exec deploy/prometheus -- promtool rules list\n```\nIf not loaded, add a helm-upgrade step or sidecar that patches the configmap on every bootstrap.\n\n## Done When\n`promtool rules list` shows the `aiops-demo` group.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** verify `infra/prometheus-rules.yml` is loaded into the Prometheus configmap\n**So that** alert rules are active\n\n## Task\nRun:\n```\nkubectl -n otel-demo exec deploy/prometheus -- promtool rules list\n```\nIf not loaded, add a helm-upgrade step or sidecar that patches the configmap on every bootstrap.\n\n## Done When\n`promtool rules list` shows the `aiops-demo` group.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[A4] Tighten alert rule timings",
-      "labels": ["dev-a", "alert-infra", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** tighten alert rule timings\n**So that** the demo loop fires in ~90 s instead of several minutes\n\n## Task\nIn every rule in `infra/prometheus-rules.yml`: `for: 30s` → `for: 15s`, `[2m]` → `[1m]`.\n\n## Done When\nOne commit, one helm upgrade, alert fires within 90 s of flag flip.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** tighten alert rule timings\n**So that** the demo loop fires in ~90 s instead of several minutes\n\n## Task\nIn every rule in `infra/prometheus-rules.yml`: `for: 30s` \u2192 `for: 15s`, `[2m]` \u2192 `[1m]`.\n\n## Done When\nOne commit, one helm upgrade, alert fires within 90 s of flag flip.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[A5] Extract prometheus_adapter.py",
-      "labels": ["dev-a", "alert-infra", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** extract the inline Prometheus normalizer into `aiops/tools/alerts/`\n**So that** alert normalization is modular and source-agnostic\n\n## Task\nPull `_prometheus_alert_to_candidate` from `demo/ui/server.py:205` into `aiops/tools/alerts/prometheus_adapter.py`. Register capability `alerts.normalize.prometheus`. Server calls `registry.call('alerts.normalize.prometheus', raw_alert=...)`.\n\n## Done When\nOne smoke test confirms the adapter produces the same shape as before.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** extract the inline Prometheus normalizer into `aiops/tools/alerts/`\n**So that** alert normalization is modular and source-agnostic\n\n## Task\nPull `_prometheus_alert_to_candidate` from `demo/ui/server.py:205` into `aiops/tools/alerts/prometheus_adapter.py`. Register capability `alerts.normalize.prometheus`. Server calls `registry.call('alerts.normalize.prometheus', raw_alert=...)`.\n\n## Done When\nOne smoke test confirms the adapter produces the same shape as before.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[A6] Stub datadog, cloudwatch, alertmanager adapters",
-      "labels": ["dev-a", "alert-infra", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** stub source adapters for Datadog, CloudWatch, and Alertmanager push\n**So that** multi-source alert normalization is supported (and demo-able)\n\n## Task\nCreate `datadog_adapter.py`, `cloudwatch_adapter.py`, `alertmanager_push_adapter.py` under `aiops/tools/alerts/`. Each handles one minimal payload shape and returns a canonical `Alert`. Registered capabilities: `alerts.normalize.datadog`, `alerts.normalize.cloudwatch`, `alerts.normalize.alertmanager`.\n\n## Done When\nThe 3 capabilities appear in `/api/health`'s `registered_capabilities`.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** stub source adapters for Datadog, CloudWatch, and Alertmanager push\n**So that** multi-source alert normalization is supported (and demo-able)\n\n## Task\nCreate `datadog_adapter.py`, `cloudwatch_adapter.py`, `alertmanager_push_adapter.py` under `aiops/tools/alerts/`. Each handles one minimal payload shape and returns a canonical `Alert`. Registered capabilities: `alerts.normalize.datadog`, `alerts.normalize.cloudwatch`, `alerts.normalize.alertmanager`.\n\n## Done When\nThe 3 capabilities appear in `/api/health`'s `registered_capabilities`.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[A7] Fix evals/harness.py golden.json shape bug",
-      "labels": ["dev-a", "alert-infra", "priority:low"],
-      "body": "**As a** dev team\n**I want to** fix the eval harness golden.json shape mismatch\n**So that** CI gating works against the agent's actual file shape\n\n## Task\n`evals/harness.py:66` expects `[Case, ...]` but `agents/alert_triage/evals/golden.json` is `{\"cases\": [...]}`. Accept both shapes.\n\n## Done When\n`uv run pytest -q` is green including `test_eval_harness_phase0_passes_with_no_agents`.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:low"
+      ],
+      "body": "**As a** dev team\n**I want to** fix the eval harness golden.json shape mismatch\n**So that** CI gating works against the agent's actual file shape\n\n## Task\n`evals/harness.py:66` expects `[Case, ...]` but `agents/alert_triage/evals/golden.json` is `{\"cases\": [...]}`. Accept both shapes.\n\n## Done When\n`uv run pytest -q` is green including `test_eval_harness_phase0_passes_with_no_agents`.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[A8] Write 8 golden cases for alert_triage",
-      "labels": ["dev-a", "alert-infra", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** write 8 golden cases for the alert_triage agent\n**So that** eval pass rate is observable in CI\n\n## Task\nIn `agents/alert_triage/evals/golden.json`, cover: exact-dedup, embedding-dedup, Sev-1 customer-facing, Sev-3 internal, LLM-consult ambiguous severity, CMDB hit, CMDB miss, multi-source alerts.\n\n## Done When\n`uv run python -m evals.harness --agent alert_triage` pass rate ≥ 0.85.\n\n## Assignee\nDev A — RA-001 Alert Triage finish"
+      "labels": [
+        "dev-a",
+        "alert-infra",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** write 8 golden cases for the alert_triage agent\n**So that** eval pass rate is observable in CI\n\n## Task\nIn `agents/alert_triage/evals/golden.json`, cover: exact-dedup, embedding-dedup, Sev-1 customer-facing, Sev-3 internal, LLM-consult ambiguous severity, CMDB hit, CMDB miss, multi-source alerts.\n\n## Done When\n`uv run python -m evals.harness --agent alert_triage` pass rate \u2265 0.85.\n\n## Assignee\nDev A \u2014 RA-001 Alert Triage finish"
     },
     {
       "title": "[B1] Provision ServiceNow PDI tenant",
-      "labels": ["dev-b", "itsm", "priority:high"],
-      "body": "**As a** dev team\n**I want to** provision a free ServiceNow Personal Developer Instance\n**So that** we have a real ITSM tenant for RA-003 Auto-Ticketing\n\n## Task\nSign up at https://developer.servicenow.com/ (Washington DC release). Note instance URL + admin password.\n\n## Done When\nYou can log into `https://devXXXXXX.service-now.com/`.\n\n## Assignee\nDev B — RA-003 Auto-Ticketing"
+      "labels": [
+        "dev-b",
+        "itsm",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** provision a free ServiceNow Personal Developer Instance\n**So that** we have a real ITSM tenant for RA-003 Auto-Ticketing\n\n## Task\nSign up at https://developer.servicenow.com/ (Washington DC release). Note instance URL + admin password.\n\n## Done When\nYou can log into `https://devXXXXXX.service-now.com/`.\n\n## Assignee\nDev B \u2014 RA-003 Auto-Ticketing"
     },
     {
       "title": "[B2] Create aiops_agent service account in ServiceNow",
-      "labels": ["dev-b", "itsm", "priority:high"],
-      "body": "**As a** dev team\n**I want to** create a dedicated service account in ServiceNow\n**So that** the agent authenticates with least privilege\n\n## Task\nCreate user `aiops_agent` with the `itil` role. Generate basic-auth credentials (or OAuth2 client). Store in `.env` as `SERVICENOW_INSTANCE_URL`, `SERVICENOW_USER`, `SERVICENOW_PASSWORD`.\n\n## Done When\n`curl -u user:pw <inst>/api/now/table/incident?sysparm_limit=1` returns JSON.\n\n## Assignee\nDev B — RA-003 Auto-Ticketing"
+      "labels": [
+        "dev-b",
+        "itsm",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** create a dedicated service account in ServiceNow\n**So that** the agent authenticates with least privilege\n\n## Task\nCreate user `aiops_agent` with the `itil` role. Generate basic-auth credentials (or OAuth2 client). Store in `.env` as `SERVICENOW_INSTANCE_URL`, `SERVICENOW_USER`, `SERVICENOW_PASSWORD`.\n\n## Done When\n`curl -u user:pw <inst>/api/now/table/incident?sysparm_limit=1` returns JSON.\n\n## Assignee\nDev B \u2014 RA-003 Auto-Ticketing"
     },
     {
       "title": "[B3] Create aiops/tools/itsm/servicenow.py provider",
-      "labels": ["dev-b", "itsm", "priority:high"],
-      "body": "**As a** dev team\n**I want to** create the ServiceNow tool provider\n**So that** agents call ServiceNow through the capability registry\n\n## Task\nCreate `aiops/tools/itsm/__init__.py` and `aiops/tools/itsm/servicenow.py`. Register capabilities `itsm.incident.create`, `itsm.incident.update`, `itsm.cmdb.lookup` (last one replaces the mock).\n\n## Done When\n`get_registry().call('itsm.incident.create', short_description='test', urgency=3)` returns a real ServiceNow `sys_id`.\n\n## Assignee\nDev B — RA-003 Auto-Ticketing"
+      "labels": [
+        "dev-b",
+        "itsm",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** create the ServiceNow tool provider\n**So that** agents call ServiceNow through the capability registry\n\n## Task\nCreate `aiops/tools/itsm/__init__.py` and `aiops/tools/itsm/servicenow.py`. Register capabilities `itsm.incident.create`, `itsm.incident.update`, `itsm.cmdb.lookup` (last one replaces the mock).\n\n## Done When\n`get_registry().call('itsm.incident.create', short_description='test', urgency=3)` returns a real ServiceNow `sys_id`.\n\n## Assignee\nDev B \u2014 RA-003 Auto-Ticketing"
     },
     {
       "title": "[B4] Update mock_providers.py for ITSM flag",
-      "labels": ["dev-b", "itsm", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** gate the mock CMDB on an env flag\n**So that** CI/tests keep using mocks while dev uses the real ServiceNow client\n\n## Task\nIn `aiops/tools/mock_providers.py`, only register `itsm.cmdb.lookup` when `AIOPS_USE_MOCK_ITSM=true` (default for tests/CI; set `false` in `.env.example`).\n\n## Done When\nSmoke tests still pass with mocks; `start.ps1` uses the real ServiceNow client.\n\n## Assignee\nDev B — RA-003 Auto-Ticketing"
+      "labels": [
+        "dev-b",
+        "itsm",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** gate the mock CMDB on an env flag\n**So that** CI/tests keep using mocks while dev uses the real ServiceNow client\n\n## Task\nIn `aiops/tools/mock_providers.py`, only register `itsm.cmdb.lookup` when `AIOPS_USE_MOCK_ITSM=true` (default for tests/CI; set `false` in `.env.example`).\n\n## Done When\nSmoke tests still pass with mocks; `start.ps1` uses the real ServiceNow client.\n\n## Assignee\nDev B \u2014 RA-003 Auto-Ticketing"
     },
     {
       "title": "[B5] Add itsm optional extra to pyproject.toml",
-      "labels": ["dev-b", "itsm", "priority:low"],
-      "body": "**As a** dev team\n**I want to** declare the ITSM dependency set explicitly\n**So that** install intent is visible\n\n## Task\nAdd to `pyproject.toml`:\n```toml\nitsm = [\"httpx>=0.27\"]\n```\n(`httpx` is already core — this is organizational.)\n\n## Done When\nOrganizational only — no functional impact.\n\n## Assignee\nDev B — RA-003 Auto-Ticketing"
+      "labels": [
+        "dev-b",
+        "itsm",
+        "priority:low"
+      ],
+      "body": "**As a** dev team\n**I want to** declare the ITSM dependency set explicitly\n**So that** install intent is visible\n\n## Task\nAdd to `pyproject.toml`:\n```toml\nitsm = [\"httpx>=0.27\"]\n```\n(`httpx` is already core \u2014 this is organizational.)\n\n## Done When\nOrganizational only \u2014 no functional impact.\n\n## Assignee\nDev B \u2014 RA-003 Auto-Ticketing"
     },
     {
       "title": "[B6] Write aiops/tools/itsm/README.md",
-      "labels": ["dev-b", "itsm", "priority:low"],
-      "body": "**As a** dev team\n**I want to** document the ITSM integration\n**So that** the next dev sets it up in <15 minutes\n\n## Task\nOne-page README covering: PDI provisioning, env vars, capability shapes, how to revoke creds.\n\n## Done When\nREADME exists, reviewed by another dev.\n\n## Assignee\nDev B — RA-003 Auto-Ticketing"
+      "labels": [
+        "dev-b",
+        "itsm",
+        "priority:low"
+      ],
+      "body": "**As a** dev team\n**I want to** document the ITSM integration\n**So that** the next dev sets it up in <15 minutes\n\n## Task\nOne-page README covering: PDI provisioning, env vars, capability shapes, how to revoke creds.\n\n## Done When\nREADME exists, reviewed by another dev.\n\n## Assignee\nDev B \u2014 RA-003 Auto-Ticketing"
     },
     {
       "title": "[C1] Scaffold agents/incident_classifier/",
-      "labels": ["dev-c", "incident-classifier", "priority:high"],
-      "body": "**As a** dev team\n**I want to** create the directory structure for the incident classifier agent\n**So that** RA-002 has a base layout\n\n## Task\nCreate `agents/incident_classifier/` with `agent.py`, `models.py`, `prompts.py`, `evals/golden.json`, `README.md`. Mirror the layout of `alert_triage/`.\n\n## Done When\n`from agents.incident_classifier import classify` resolves.\n\n## Assignee\nDev C — RA-002 Incident Classifier"
+      "labels": [
+        "dev-c",
+        "incident-classifier",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** create the directory structure for the incident classifier agent\n**So that** RA-002 has a base layout\n\n## Task\nCreate `agents/incident_classifier/` with `agent.py`, `models.py`, `prompts.py`, `evals/golden.json`, `README.md`. Mirror the layout of `alert_triage/`.\n\n## Done When\n`from agents.incident_classifier import classify` resolves.\n\n## Assignee\nDev C \u2014 RA-002 Incident Classifier"
     },
     {
       "title": "[C2] Define ClassificationInput and Classification models",
-      "labels": ["dev-c", "incident-classifier", "priority:high"],
-      "body": "**As a** dev team\n**I want to** define the typed input/output for incident classification\n**So that** the contract is explicit and testable\n\n## Task\n`ClassificationInput` takes a `TriageVerdict`. `Classification` fields: `incident_type ∈ {infrastructure, application, network, external_dependency, change_related}`, `confidence`, `rationale`, `tags: list[str]`.\n\n## Done When\nPydantic models validate.\n\n## Assignee\nDev C — RA-002 Incident Classifier"
+      "labels": [
+        "dev-c",
+        "incident-classifier",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** define the typed input/output for incident classification\n**So that** the contract is explicit and testable\n\n## Task\n`ClassificationInput` takes a `TriageVerdict`. `Classification` fields: `incident_type \u2208 {infrastructure, application, network, external_dependency, change_related}`, `confidence`, `rationale`, `tags: list[str]`.\n\n## Done When\nPydantic models validate.\n\n## Assignee\nDev C \u2014 RA-002 Incident Classifier"
     },
     {
       "title": "[C3] Write prompts.py for incident classifier",
-      "labels": ["dev-c", "incident-classifier", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** version the classifier prompts\n**So that** changes are reviewable and reproducible\n\n## Task\nIn `prompts.py`: system prompt + classification user prompt. 4 few-shot cases covering all 5 incident types.\n\n## Done When\nPrompts render with `.format(...)` cleanly.\n\n## Assignee\nDev C — RA-002 Incident Classifier"
+      "labels": [
+        "dev-c",
+        "incident-classifier",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** version the classifier prompts\n**So that** changes are reviewable and reproducible\n\n## Task\nIn `prompts.py`: system prompt + classification user prompt. 4 few-shot cases covering all 5 incident types.\n\n## Done When\nPrompts render with `.format(...)` cleanly.\n\n## Assignee\nDev C \u2014 RA-002 Incident Classifier"
     },
     {
       "title": "[C4] Implement classify() function",
-      "labels": ["dev-c", "incident-classifier", "priority:high"],
-      "body": "**As a** dev team\n**I want to** implement the classify entry point\n**So that** every triage is auto-classified\n\n## Task\nRule-based first pass on `affected_service` + `decision_trace` keywords (e.g., 'pod restart' → infrastructure, '5xx error' → application). LLM consult only when rules don't match.\n\n## Done When\nSync function; rule-based hits return in <1 s.\n\n## Assignee\nDev C — RA-002 Incident Classifier"
+      "labels": [
+        "dev-c",
+        "incident-classifier",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** implement the classify entry point\n**So that** every triage is auto-classified\n\n## Task\nRule-based first pass on `affected_service` + `decision_trace` keywords (e.g., 'pod restart' \u2192 infrastructure, '5xx error' \u2192 application). LLM consult only when rules don't match.\n\n## Done When\nSync function; rule-based hits return in <1 s.\n\n## Assignee\nDev C \u2014 RA-002 Incident Classifier"
     },
     {
       "title": "[C5] Persist classifications to state",
-      "labels": ["dev-c", "incident-classifier", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** persist classifier output\n**So that** the dashboard and downstream agents can read it\n\n## Task\nAdd `ClassificationRow` to `aiops/state/models.py` (verdict_id FK, incident_type, confidence, rationale, tags JSON). Add `save_classification` to `aiops/state/repository.py`.\n\n## Done When\n`state_repo.save_classification(...)` works in a unit test.\n\n## Assignee\nDev C — RA-002 Incident Classifier"
+      "labels": [
+        "dev-c",
+        "incident-classifier",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** persist classifier output\n**So that** the dashboard and downstream agents can read it\n\n## Task\nAdd `ClassificationRow` to `aiops/state/models.py` (verdict_id FK, incident_type, confidence, rationale, tags JSON). Add `save_classification` to `aiops/state/repository.py`.\n\n## Done When\n`state_repo.save_classification(...)` works in a unit test.\n\n## Assignee\nDev C \u2014 RA-002 Incident Classifier"
     },
     {
       "title": "[C6] Wire classifier into POST /api/triage",
-      "labels": ["dev-c", "incident-classifier", "priority:high"],
-      "body": "**As a** dev team\n**I want to** auto-run the classifier after every triage\n**So that** the response payload includes a classification\n\n## Task\n`POST /api/triage` runs the classifier after triage, embeds `classification` in the response, persists both.\n\n## Done When\nOne curl shows `verdict` + `classification` in the same payload.\n\n## Assignee\nDev C — RA-002 Incident Classifier"
+      "labels": [
+        "dev-c",
+        "incident-classifier",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** auto-run the classifier after every triage\n**So that** the response payload includes a classification\n\n## Task\n`POST /api/triage` runs the classifier after triage, embeds `classification` in the response, persists both.\n\n## Done When\nOne curl shows `verdict` + `classification` in the same payload.\n\n## Assignee\nDev C \u2014 RA-002 Incident Classifier"
     },
     {
       "title": "[C7] Write 5 golden cases for incident_classifier",
-      "labels": ["dev-c", "incident-classifier", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** seed the classifier's eval set\n**So that** CI grades the agent from day one\n\n## Task\nCases: pod-restart (infra), 5xx spike (app), DNS resolution failure (network), external API 429s (external), recent deploy (change).\n\n## Done When\n`uv run python -m evals.harness --agent incident_classifier` pass rate ≥ 0.85.\n\n## Assignee\nDev C — RA-002 Incident Classifier"
+      "labels": [
+        "dev-c",
+        "incident-classifier",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** seed the classifier's eval set\n**So that** CI grades the agent from day one\n\n## Task\nCases: pod-restart (infra), 5xx spike (app), DNS resolution failure (network), external API 429s (external), recent deploy (change).\n\n## Done When\n`uv run python -m evals.harness --agent incident_classifier` pass rate \u2265 0.85.\n\n## Assignee\nDev C \u2014 RA-002 Incident Classifier"
     },
     {
       "title": "[D1] Provision Slack workspace and bot",
-      "labels": ["dev-d", "notification-router", "priority:high"],
-      "body": "**As a** dev team\n**I want to** provision a Slack workspace and bot app\n**So that** RA-005 (and later RA-006) can post and manage channels\n\n## Task\nCreate a free Slack workspace for the POC. Create an app at https://api.slack.com/apps with bot token scopes: `chat:write`, `chat:write.public`, `channels:read`, `channels:manage`. Note `SLACK_BOT_TOKEN` (xoxb-…).\n\n## Done When\nBot installed in workspace; `curl -H 'Authorization: Bearer $SLACK_BOT_TOKEN' https://slack.com/api/auth.test` returns `ok: true`.\n\n## Assignee\nDev D — RA-005 Notification Router"
+      "labels": [
+        "dev-d",
+        "notification-router",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** provision a Slack workspace and bot app\n**So that** RA-005 (and later RA-006) can post and manage channels\n\n## Task\nCreate a free Slack workspace for the POC. Create an app at https://api.slack.com/apps with bot token scopes: `chat:write`, `chat:write.public`, `channels:read`, `channels:manage`. Note `SLACK_BOT_TOKEN` (xoxb-\u2026).\n\n## Done When\nBot installed in workspace; `curl -H 'Authorization: Bearer $SLACK_BOT_TOKEN' https://slack.com/api/auth.test` returns `ok: true`.\n\n## Assignee\nDev D \u2014 RA-005 Notification Router"
     },
     {
       "title": "[D2] Create Slack channels and invite bot",
-      "labels": ["dev-d", "notification-router", "priority:high"],
-      "body": "**As a** dev team\n**I want to** create severity-routed Slack channels\n**So that** notifications land in the right place\n\n## Task\nCreate `#aiops-oncall`, `#aiops-alerts-high`, `#aiops-alerts-noise`. Invite the bot. Add to `.env`:\n```\nSLACK_OPS_CHANNELS={\"Sev-1\":\"oncall\",\"Sev-2\":\"alerts-high\",\"Sev-3\":\"alerts-noise\",\"Sev-4\":\"alerts-noise\"}\n```\n\n## Done When\nChannels exist; bot listed as member of all three.\n\n## Assignee\nDev D — RA-005 Notification Router"
+      "labels": [
+        "dev-d",
+        "notification-router",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** create severity-routed Slack channels\n**So that** notifications land in the right place\n\n## Task\nCreate `#aiops-oncall`, `#aiops-alerts-high`, `#aiops-alerts-noise`. Invite the bot. Add to `.env`:\n```\nSLACK_OPS_CHANNELS={\"Sev-1\":\"oncall\",\"Sev-2\":\"alerts-high\",\"Sev-3\":\"alerts-noise\",\"Sev-4\":\"alerts-noise\"}\n```\n\n## Done When\nChannels exist; bot listed as member of all three.\n\n## Assignee\nDev D \u2014 RA-005 Notification Router"
     },
     {
       "title": "[D3] Create aiops/tools/chatops/slack.py",
-      "labels": ["dev-d", "notification-router", "priority:high"],
-      "body": "**As a** dev team\n**I want to** wrap Slack behind the capability registry\n**So that** agents never call Slack SDKs directly (CLAUDE.md non-negotiable #1)\n\n## Task\nCreate `aiops/tools/chatops/__init__.py` and `aiops/tools/chatops/slack.py`. Register capabilities `notify.slack.post`, `chatops.channel.create`, `chatops.channel.invite` (last two pre-positioned for RA-006 War-Room).\n\n## Done When\n`get_registry().call('notify.slack.post', channel='aiops-alerts-noise', text='hello')` posts to Slack.\n\n## Assignee\nDev D — RA-005 Notification Router"
+      "labels": [
+        "dev-d",
+        "notification-router",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** wrap Slack behind the capability registry\n**So that** agents never call Slack SDKs directly (CLAUDE.md non-negotiable #1)\n\n## Task\nCreate `aiops/tools/chatops/__init__.py` and `aiops/tools/chatops/slack.py`. Register capabilities `notify.slack.post`, `chatops.channel.create`, `chatops.channel.invite` (last two pre-positioned for RA-006 War-Room).\n\n## Done When\n`get_registry().call('notify.slack.post', channel='aiops-alerts-noise', text='hello')` posts to Slack.\n\n## Assignee\nDev D \u2014 RA-005 Notification Router"
     },
     {
       "title": "[D4] Move SCENARIOS to YAML files",
-      "labels": ["dev-d", "scenarios", "priority:high"],
-      "body": "**As a** dev team\n**I want to** make YAML the single source of truth for failure scenarios\n**So that** UI and CLI don't disagree on which scenarios exist\n\n## Task\nMove the in-Python `SCENARIOS` dict from `demo/ui/server.py:265` into `demo/failure_injection/scenarios/*.yaml` — one YAML per scenario, matching the existing schema (id, title, description, mechanism: flagd, flagd.flag_key, flagd.variant, category, eta_seconds, expected_alert).\n\n## Done When\n13 YAML files exist in `demo/failure_injection/scenarios/`.\n\n## Assignee\nDev D — RA-005 Notification Router"
+      "labels": [
+        "dev-d",
+        "scenarios",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** make YAML the single source of truth for failure scenarios\n**So that** UI and CLI don't disagree on which scenarios exist\n\n## Task\nMove the in-Python `SCENARIOS` dict from `demo/ui/server.py:265` into `demo/failure_injection/scenarios/*.yaml` \u2014 one YAML per scenario, matching the existing schema (id, title, description, mechanism: flagd, flagd.flag_key, flagd.variant, category, eta_seconds, expected_alert).\n\n## Done When\n13 YAML files exist in `demo/failure_injection/scenarios/`.\n\n## Assignee\nDev D \u2014 RA-005 Notification Router"
     },
     {
       "title": "[D5] Refactor server.py to load SCENARIOS from disk",
-      "labels": ["dev-d", "scenarios", "priority:high"],
-      "body": "**As a** dev team\n**I want to** load scenarios from disk at server startup\n**So that** there's one definition consumed by both UI and CLI\n\n## Task\nRefactor `demo/ui/server.py` to glob `demo/failure_injection/scenarios/*.yaml` at startup. Existing endpoints (`/api/scenarios`, `/api/scenarios/{id}/inject`, `/api/scenarios/reset-all`) keep working.\n\n## Done When\n`.\\start.ps1`; UI's inject buttons still work for all 13 scenarios.\n\n## Assignee\nDev D — RA-005 Notification Router"
+      "labels": [
+        "dev-d",
+        "scenarios",
+        "priority:high"
+      ],
+      "body": "**As a** dev team\n**I want to** load scenarios from disk at server startup\n**So that** there's one definition consumed by both UI and CLI\n\n## Task\nRefactor `demo/ui/server.py` to glob `demo/failure_injection/scenarios/*.yaml` at startup. Existing endpoints (`/api/scenarios`, `/api/scenarios/{id}/inject`, `/api/scenarios/reset-all`) keep working.\n\n## Done When\n`.\\start.ps1`; UI's inject buttons still work for all 13 scenarios.\n\n## Assignee\nDev D \u2014 RA-005 Notification Router"
     },
     {
       "title": "[D6] Add truth files for 10 missing scenarios",
-      "labels": ["dev-d", "scenarios", "priority:medium"],
-      "body": "**As a** dev team\n**I want to** add truth files for every scenario\n**So that** the CLAUDE.md hard rule 'every failure scenario ships with a truth file' is satisfied\n\n## Task\nAdd `demo/truth_files/<scenario_id>.yaml` for the 10 scenarios missing them. Use `demo/truth_files/template.yaml`. Even a one-line cause + expected_alert is fine for day one — fill out fix steps later.\n\n## Done When\n`uv run pytest tests/test_smoke.py::test_every_scenario_has_a_truth_file` is green.\n\n## Assignee\nDev D — RA-005 Notification Router"
+      "labels": [
+        "dev-d",
+        "scenarios",
+        "priority:medium"
+      ],
+      "body": "**As a** dev team\n**I want to** add truth files for every scenario\n**So that** the CLAUDE.md hard rule 'every failure scenario ships with a truth file' is satisfied\n\n## Task\nAdd `demo/truth_files/<scenario_id>.yaml` for the 10 scenarios missing them. Use `demo/truth_files/template.yaml`. Even a one-line cause + expected_alert is fine for day one \u2014 fill out fix steps later.\n\n## Done When\n`uv run pytest tests/test_smoke.py::test_every_scenario_has_a_truth_file` is green.\n\n## Assignee\nDev D \u2014 RA-005 Notification Router"
+    },
+    {
+      "title": "[DEMO-1] CMDB lookup: fall back to mock when real ServiceNow returns no match",
+      "labels": [
+        "dev-a",
+        "itsm",
+        "demo-readiness",
+        "priority:high"
+      ],
+      "body": "**As a** demo operator running with `AIOPS_USE_MOCK_ITSM=false`\n**I want to** keep getting the mock CMDB's team + runbook mappings when the real ServiceNow PDI has no `cmdb_ci_service` row for a demo service\n**So that** every verdict still routes to the right team with the right runbook, not the default `Platform On-Call` fallback\n\n## Symptom (observed 2026-05-14 in `/api/triage` response)\nWith `AIOPS_USE_MOCK_ITSM=false`, the registry routes `itsm.cmdb.lookup` to the real ServiceNow PDI. The PDI ships with no `payment`/`cart`/`checkout`/etc. CI records, so every lookup returns `ok=True, data=None`. Result:\n- `assigned_team: \"Platform On-Call\"` (wrong \u2014 should be \"Payments Team\")\n- `assigned_engineer: \"oncall@platform-on-call.example.com\"` (wrong)\n- `recommended_runbook: null` (wrong)\n- Decision trace: `\"CMDB lookup returned no match; defaulted to Platform On-Call\"`\n\n## Root cause\n`AIOPS_USE_MOCK_ITSM` is a single boolean that gates **three** capabilities together: `itsm.incident.create`, `itsm.incident.update`, **and** `itsm.cmdb.lookup`. In practice you want the real PDI for incident create/update (proves the integration) but the mock CMDB for the demo services. Today the flag forces both off.\n\n## Task\nPick one of these (recommend option A):\n\n**Option A \u2014 Real CMDB falls back to mock data on no-match (preferred).** In `aiops/tools/itsm/servicenow.py:cmdb_lookup`, when the ServiceNow query returns an empty result, look the service up in the mock table from `aiops/tools/mock_providers.py` and return that. Add a metadata flag `\"fallback\": \"mock_cmdb\"` so callers can see what happened.\n\n**Option B \u2014 Split the env flag.** Replace `AIOPS_USE_MOCK_ITSM` with two flags:\n- `AIOPS_ITSM_INCIDENT_PROVIDER=servicenow|mock` (default mock)\n- `AIOPS_ITSM_CMDB_PROVIDER=mock|servicenow` (default mock)\nUpdate `.env.example` + `mock_providers.py` + `servicenow.py` gates.\n\n## Done when\n- [ ] With `.env` configured for real ServiceNow incidents, a triage call on `payment` returns `assigned_team=\"Payments Team\"`, `recommended_runbook` populated.\n- [ ] Eval harness `--ci --min-pass-rate 0.85` stays green for `alert_triage`.\n- [ ] Decision trace surfaces which CMDB path was used.\n\n## Labels rationale\n`itsm` (RA-003 surface), `demo-readiness` (surfaced by E2E test), `priority:high` (every demo verdict is wrong without it)."
+    },
+    {
+      "title": "[DEMO-2] LLM gateway: install configured SDK + real ping in /api/health",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:high"
+      ],
+      "body": "**As a** demo operator with `AIOPS_LLM_PROVIDER=openai` set\n**I want to** see `/api/health` report whether the LLM is actually reachable\n**So that** I notice when the SDK is missing or the API key is bad **before** RA-001 falls to its template summary and RA-002 collapses to Tier-4 keywords\n\n## Symptom (observed 2026-05-14)\n- `/api/health` returns `\"llm_provider\": \"openai\"` (green chip in dashboard).\n- Actual `/api/triage` response shows: RA-001 emits the **template fallback** summary (`\"payment PaymentErrorRateHigh reported value 0.0500008... (source: Prometheus).\"` \u2014 raw metric string, no narrative). RA-002 audit trace says `\"LLM error: RuntimeError\"` and `\"Tier-4 keyword fallback chose application (keyword matches: 0)\"`. Confidence `0.25`, root cause `\"unable to determine from available signals\"`.\n- Net: the AI value of the POC is invisible to the demo audience.\n\n## Root cause\nTwo issues stacked:\n\n1. **SDK not installed.** `pyproject.toml` puts `openai>=1.40` in the `llm-openai` extra. `uv sync --extra dev --extra ui` doesn't include it. So `aiops/llm/openai_provider.py` raises `RuntimeError(\"openai SDK not installed\")` on every call.\n2. **Health endpoint never tries a real call.** It reads `os.environ.get(\"AIOPS_LLM_PROVIDER\")` and returns it. SDK missing / bad key / wrong endpoint -> still green.\n\n## Task\n1. **Add an `llm_ok` field to `/api/health`** \u2014 issue a 1-token ping (cached for ~60 s to avoid hammering the API). Surface `llm_ok: bool`, `llm_provider`, `llm_model`, and `llm_error: str | null`. Dashboard chip stays green only when `llm_ok=true`.\n2. **Document the LLM extra in `start.ps1` and `ONBOARDING.md`.** `start.ps1` should `uv sync` with the matching extra (`--extra llm-openai` when `AIOPS_LLM_PROVIDER=openai`, etc.), or fail loudly with a one-line instruction.\n3. **Audit-trace visibility.** RA-001's `_generate_summary` and RA-002's classify already log to the trace. Make sure the dashboard surfaces \"LLM unavailable \u2014 using template/Tier-4 fallback\" prominently when it happens, not just in the trace text.\n\n## Done when\n- [ ] `/api/health` returns `llm_ok: false` with a useful `llm_error` when the SDK is missing or the API key is bad.\n- [ ] `start.ps1` installs the right LLM extra automatically (or refuses to start with a clear message).\n- [ ] On a working setup, RA-001 emits an LLM-generated summary (not the template fallback) and RA-002 reaches Tier 2 or 3 instead of Tier 4 for every demo scenario.\n\n## Labels rationale\n`demo-readiness` (silent fallback is the worst kind of bug for a POC), `priority:high` (without this the demo has no \"AI\")."
+    },
+    {
+      "title": "[DEMO-3] Auto-Ticketing: include description + classification + decision trace in ServiceNow incident",
+      "labels": [
+        "dev-a",
+        "itsm",
+        "demo-readiness",
+        "priority:medium"
+      ],
+      "body": "**As a** human triaging an incident in ServiceNow\n**I want to** see the full triage context (summary, severity, classification, decision trace) in the incident's `description` field, not just a one-line `short_description`\n**So that** the ticket is actually actionable without re-running the agent\n\n## Symptom (observed 2026-05-14)\nServiceNow incident `INC0010026` has `short_description=\"[Sev-1] payment: payment PaymentErrorRateHigh reported value 0.05000... (source: Prometheus).\"` and **no description**. The incident shows up but a human opening it sees no narrative, no classification, no on-call info.\n\n## Root cause\n`agents/auto_ticketing/agent.py:ticket()` builds and passes `short_description` and `urgency` to `registry.call(\"itsm.incident.create\", ...)`. The ServiceNow provider's `create_incident` already accepts a `description` parameter \u2014 the agent just doesn't pass one.\n\n## Task\n1. **Build a richer description body in `auto_ticketing/agent.py`.** Include:\n    - The full `alert_summary` (RA-001's narrative, not template fallback if available)\n    - Severity + confidence + assigned team + on-call engineer + runbook\n    - The RA-001 decision trace (8 stages)\n    - Empty placeholder for RA-002 classification \u2014 filled in by the route once #28 lands (see follow-up below)\n2. **Pass `description=`, `assignment_group=` (= verdict.assigned_team), and `category=` (= incident_type when available) to the registry call.** All three are already supported by the ServiceNow provider.\n3. **Follow-up coupling:** because RA-002 classifies *after* RA-003 tickets, the classification can't be in the create call today. Either reorder the pipeline (RA-002 before RA-003) OR call `itsm.incident.update` from the route after classification to append the classification block. **Recommend reorder** \u2014 classification doesn't depend on the ticket id.\n\n## Done when\n- [ ] A new ServiceNow incident has a `description` field with the multi-paragraph triage context.\n- [ ] `assignment_group` matches the CMDB team (once DEMO-1 lands).\n- [ ] `category` is set from the RA-002 incident_type when classification runs before ticketing.\n\n## Out of scope\nScreenshot/image attachment \u2014 tracked separately in DEMO-8.\n\n## Labels rationale\n`itsm`, `demo-readiness`, `priority:medium`."
+    },
+    {
+      "title": "[DEMO-4] start.ps1 -Fresh: clear scenarios + state.db + chatops.jsonl on bring-up",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:medium"
+      ],
+      "body": "**As a** demo operator running `start.ps1`\n**I want to** start from a clean slate when I pass `-Fresh`\n**So that** the dashboard doesn't show stale alerts, the verdicts table doesn't carry forward, and the chatops feed isn't polluted by yesterday's notifications\n\n## Symptom (observed 2026-05-14)\nThree pieces of state survive a `stop.ps1` -> `start.ps1` cycle:\n\n1. **flagd-config in the cluster.** Scenarios injected previously stay flipped on. Alert stream shows \"1 payment failure\" at startup even before any user interaction.\n2. **`data/state.db`.** Verdicts, classifications, clusters all accumulate. `verdict_id=160` after a few hours of testing \u2014 most of which are from prior sessions.\n3. **`demo/audit/chatops.jsonl`.** Yesterday's entries (timestamps from 2026-05-13T17:38...) still live alongside today's. `Get-Content -Wait` shows the full history.\n\n## Task\n1. **Add a `-Fresh` switch to `start.ps1`** (and equivalent `FRESH=1` env in `start.sh` if it exists). When set, before the cluster check:\n    - `uv run python -m demo.failure_injection.inject --clear` \u2014 flips every scenario flag back to `off`.\n    - `Remove-Item data/state.db -ErrorAction SilentlyContinue` \u2014 fresh SQLite. `init_db()` re-creates it on the next FastAPI call.\n    - Move `demo/audit/chatops.jsonl` to `demo/audit/chatops.jsonl.bak-<timestamp>` and start a new empty file (don't lose the history \u2014 just archive it).\n2. **Document the flag** in `ONBOARDING.md` and the `start.ps1` header.\n3. **Default `-Fresh` is OFF** \u2014 the existing behaviour (carry state forward) is the right default for iterative development.\n\n## Done when\n- [ ] `.\\start.ps1 -Fresh` produces an empty alert stream, an empty verdicts list, and an empty chatops feed.\n- [ ] `.\\start.ps1` (no flag) keeps existing behaviour exactly as today.\n- [ ] Archived `chatops.jsonl.bak-*` files are gitignored.\n\n## Labels rationale\n`demo-readiness`, `priority:medium`. Speeds up every iteration when rehearsing the demo."
+    },
+    {
+      "title": "[DEMO-5] Dashboard: clarify Active scenarios vs Active alerts vs Prometheus rule shape",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:medium"
+      ],
+      "body": "**As a** demo viewer watching the Overview page\n**I want to** understand why \"4 scenarios active -> 1 alert firing\" is the right answer\n**So that** I don't think the system is broken when the alert count lags the scenario count\n\n## Symptom (observed 2026-05-14)\nInjected 4 scenarios: `payment_failure`, `payment_unreachable`, `product_catalog_failure`, `recommendation_cache_failure`. Dashboard shows \"Active scenarios: 4\" but \"Active alerts: 1\" (severity mix card and alert stream both show 1). Looks like 3 alerts are missing.\n\n## Root cause (not a bug, but the UI doesn't say so)\nTwo unrelated effects stacked:\n\n1. **Two scenarios share the same Prometheus rule.** `payment_failure` and `payment_unreachable` both fire `PaymentErrorRateHigh`. Prometheus emits **one** alert for a triggered rule, no matter how many flags caused it.\n2. **Different `for:` windows.** `PaymentErrorRateHigh` fires in ~30 s. `ProductCatalogErrorRateHigh` and `RecommendationLatencyP95High` have longer `for:` windows (60-120 s). They will fire eventually, but the UI doesn't show \"alerts pending\".\n\n## Task\n1. **Show the scenario -> alert mapping on the Overview card.** Each scenario tile lists which Prometheus alert it triggers. When two scenarios share an alert, mark them with the same colour band.\n2. **\"Pending alerts\" hint.** When a scenario is `Active` but its Prometheus alert hasn't fired yet, show a small \"firing in ~Ns\" countdown derived from the rule's `for:` window. Means we need the rule's `for:` value in the scenario YAML (or pulled from Prometheus rules API).\n3. **Stat-card copy.** Rename \"Active alerts\" -> \"Firing alerts\" and add a tooltip: \"Number of Prometheus rules currently in `firing` state. Each rule can be triggered by one or more injected scenarios.\"\n\n## Done when\n- [ ] Overview makes it obvious why injecting `payment_failure` + `payment_unreachable` produces one alert, not two.\n- [ ] When a scenario is active but the rule hasn't crossed its window yet, the UI tells me \"waiting ~60s for ProductCatalogErrorRateHigh to fire\".\n\n## Labels rationale\n`demo-readiness`, `priority:medium`. UX/copy work, not a bug; helps the demo narrative."
+    },
+    {
+      "title": "[DEMO-6] Add demo/audit/ and chatops.jsonl.bak-* to .gitignore",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:low"
+      ],
+      "body": "**As a** dev\n**I want to** make sure `demo/audit/chatops.jsonl` and any rotation backups stay out of git\n**So that** an `git add .` doesn't accidentally commit yesterday's notification dump (with mojibake) into the repo\n\n## Symptom (observed 2026-05-14)\n`demo/audit/chatops.jsonl` exists locally with entries dating back to a previous session. `.gitignore` covers `*.log` but not `*.jsonl`, and `demo/audit/` isn't excluded as a directory. Inspecting `git ls-files demo/audit/` is needed to confirm whether it's tracked.\n\n## Task\n1. Confirm whether `demo/audit/chatops.jsonl` is currently tracked. If yes \u2014 `git rm --cached` it.\n2. Add to `.gitignore`:\n    ```\n    # Chatops audit log + rotations from start.ps1 -Fresh\n    demo/audit/\n    !demo/audit/.gitkeep\n    ```\n3. Add an empty `demo/audit/.gitkeep` so the directory exists on fresh checkouts (the JsonFileChatOpsAdapter creates the file on demand, but the directory needs to exist).\n\n## Done when\n- [ ] `git status` on a fresh `start.ps1` doesn't list `demo/audit/chatops.jsonl` as untracked or modified.\n- [ ] A fresh checkout has the `demo/audit/` directory present.\n\n## Labels rationale\n`demo-readiness`, `priority:low`. Hygiene; takes 5 minutes."
+    },
+    {
+      "title": "[DEMO-7] Document Get-Content -Encoding UTF8 + cross-platform tail in ONBOARDING.md",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:low"
+      ],
+      "body": "**As a** dev on Windows tailing `demo/audit/chatops.jsonl`\n**I want to** know that `Get-Content -Wait` mangles UTF-8 unless I add `-Encoding UTF8`\n**So that** em-dashes don't show up as `\u00e2\u20ac\u201d` and I don't waste 20 minutes thinking the file is corrupt\n\n## Symptom (observed 2026-05-14)\n```\nPS C:\\Projects\\AIops> Get-Content demo/audit/chatops.jsonl -Wait\n{ ... \"Routing reason: Sev-1 critical \u00e2\u20ac\u201d page on-call regardless of hour\" ... }\n```\nThe file is valid UTF-8; PowerShell 5.1 reads it as the system code page (CP1252) and mangles every multi-byte character.\n\n## Root cause\nWindows PowerShell 5.1's `Get-Content` default encoding is `Default` (CP1252 on most US/EU machines), not UTF-8. PowerShell 7+ defaults to UTF-8, but `start.ps1` documents PS 5.1 as the supported shell.\n\n## Task\nAdd a short \"Tailing chatops audit log\" section to `ONBOARDING.md`:\n```powershell\n# PowerShell 5.1 \u2014 explicit UTF-8\nGet-Content demo/audit/chatops.jsonl -Wait -Encoding UTF8\n\n# git-bash / WSL\ntail -f demo/audit/chatops.jsonl\n```\nLink it from the existing \"6 known gotchas\" memory anchor and from the section in CLAUDE.md.\n\n## Done when\n- [ ] ONBOARDING.md has the command snippet under a clear heading.\n- [ ] CLAUDE.md's PowerShell tips section mentions the default-encoding gotcha if not already there.\n\n## Labels rationale\n`demo-readiness`, `priority:low`. 5-minute docs fix that saves the next person an hour."
+    },
+    {
+      "title": "[DEMO-8] Attach Grafana panel screenshot to ServiceNow incident",
+      "labels": [
+        "dev-a",
+        "itsm",
+        "demo-readiness",
+        "priority:low"
+      ],
+      "body": "**As a** human triaging the incident in ServiceNow\n**I want to** see a screenshot of the relevant Grafana panel (the actual graph that breached the threshold) attached to the incident\n**So that** I don't have to context-switch into Grafana to understand what fired\n\n## Symptom\nServiceNow incident has short_description + description (after DEMO-3) but no visual. Demo audiences ask \"what does the metric look like?\" and the agent can't show them.\n\n## Task\n1. **Capability:** add `observability.metrics.render_panel` to the registry. Implementation: Grafana's `render` API (`/render/d-solo/<dashboard>?panelId=<n>&from=now-15m&to=now&width=800&height=400&tz=UTC`) returns a PNG. Grafana ships a `grafana-image-renderer` plugin we can run as a sidecar.\n2. **Capability:** add `itsm.incident.attachment.add` to the ServiceNow provider \u2014 wraps `POST /api/now/attachment/file?table_name=incident&table_sys_id=<sys_id>&file_name=<n>` with the PNG body.\n3. **Wire in Auto-Ticketing:** after the incident is created, optionally render the panel that matches the verdict's `alert_summary` (mapping: alert name -> Grafana panel id) and attach the PNG. Failure to render must NOT fail the ticket creation \u2014 log and continue.\n\n## Estimated effort\n2-3 hours including:\n- Adding the Grafana image-renderer to `demo/otel-demo/values.yaml`\n- Building the alert-name -> panel-id mapping (consider storing this in the `demo/scenarios/*.yaml` YAMLs introduced by #47)\n- Capability + tool registration + agent wiring + one eval case for the attachment path\n\n## Done when\n- [ ] A new ServiceNow incident has a PNG attachment of the relevant Grafana panel.\n- [ ] Attachment failure does not break the ticket.\n- [ ] `evals/golden.json` covers \"alert with attachable panel\" and \"alert with no mapped panel\".\n\n## Labels rationale\n`itsm`, `demo-readiness`, `priority:low`. Substantial work; defer until P0/P1 land."
+    },
+    {
+      "title": "[DEMO-9] Fix verdict double-save in /api/triage handler",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:low"
+      ],
+      "body": "**As a** dev inspecting `data/state.db`\n**I want to** see exactly one `verdicts` row per `/api/triage` call\n**So that** `verdict_id` is a meaningful counter and the dashboard's verdict history isn't doubled\n\n## Symptom (observed 2026-05-14)\nAfter a few hours of testing, `verdict_id=160` in `/api/triage` responses. Roughly 80 actual triage calls were made \u2014 so every call is writing two rows.\n\n## Root cause\nTwo writers:\n\n1. `agents/alert_triage/agent.py:triage()` calls `state_repo.save_verdict(verdict, cluster_key=hit.cluster_key)` at the end of the 8-stage flow (and discards the returned id).\n2. `demo/ui/server.py:triage_alert()` calls `state_repo.save_verdict(verdict, cluster_key=alert_obj.cluster_key())` again at the route handler, **just** to capture `verdict_id` so it can link the classification row to it.\n\nIntroduced when RA-002 (#48) wired in the classification table needing a foreign key to the verdict row.\n\n## Task\nPick one (recommend option A):\n\n**Option A \u2014 Have `triage()` return the saved id.** Change the signature of `triage(alert)` to return `(TriageVerdict, int)` where the int is the row id. Update `agents/alert_triage/__init__.py` exports + every call site (`demo/ui/server.py`, `agents/auto_ticketing/agent.py`, any tests). The route handler drops its `save_verdict` call.\n\n**Option B \u2014 Move the save out of `triage()`.** The agent does the work, the route does the persistence. Cleaner separation but means `agents/auto_ticketing/agent.py` and the route both need to coordinate who saves what.\n\n## Done when\n- [ ] After 10 triage calls from a fresh `data/state.db`, `SELECT MAX(id) FROM verdicts` returns 10.\n- [ ] `agents/alert_triage/evals/golden.json` still passes (no behaviour change to agent output).\n- [ ] `verdict_id` in `/api/triage` response matches the actual row id.\n\n## Labels rationale\n`demo-readiness`, `priority:low`. Cosmetic; doesn't block anything but waste of disk + confusing during debugging."
+    },
+    {
+      "title": "[DEMO-10] start.ps1 builds demo/classifier-ui/ alongside demo/dashboard/",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:high"
+      ],
+      "body": "**As a** demo operator running `start.ps1` from a fresh clone\n**I want to** have both the React dashboard AND the standalone classifier UI built automatically\n**So that** `http://localhost:8765/classifier` actually loads instead of returning 503\n\n## Symptom\nAfter `start.ps1`, visiting `/classifier` returns:\n```\nHTTP 503 \u2014 classifier dashboard not built. Run: cd demo/classifier-ui && npm install && npm run build\n```\nThe user has to discover the second build step from the error message, run it manually, then refresh.\n\n## Root cause\n`start.ps1:86-115` only `npm install`s and `npm run build`s `demo/dashboard/`. It never touches `demo/classifier-ui/`. PR #48 added the SPA + the FastAPI route at `demo/ui/server.py:361,379` but forgot the build wiring.\n\n## Task\n1. In `start.ps1` after the existing dashboard build block, add the same pattern for `demo/classifier-ui/`:\n    - Detect if `dist/` is older than `src/` or missing\n    - Run `npm install --silent` then `npm run build`\n    - Cache the same way the dashboard build is cached\n2. Mirror in `start.sh` if a bash equivalent exists.\n3. Add `cd demo/classifier-ui && npm install && npm run build` to `ONBOARDING.md`'s setup section so a contributor not running `start.ps1` still gets it.\n\n## Done when\n- [ ] `.\\start.ps1` from a fresh `git clone` produces a working `/classifier` page (no 503).\n- [ ] Re-running `.\\start.ps1` skips the classifier-ui build if `dist/` is up to date (matches the existing dashboard caching).\n- [ ] ONBOARDING.md mentions the classifier-ui setup alongside the dashboard.\n\n## Labels rationale\n`demo-readiness`, `priority:high`. Surfaced by the audit on 2026-05-14. `/classifier` is currently broken on every fresh checkout."
+    },
+    {
+      "title": "[DEMO-11] .env.example overhaul: Azure block, drop dead vars, document observability + UI vars",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:medium"
+      ],
+      "body": "**As a** new contributor copying `.env.example` to `.env`\n**I want to** see every env var the code actually reads, with sane defaults and comments\n**So that** I don't get cryptic SDK errors at runtime or silently miss features I'm supposed to configure\n\n## Symptom\nAudit found six categories of drift between `.env`, `.env.example`, and the code that reads them. None individually breaks the demo, but together they make the env-var surface untrustworthy.\n\n## Findings\n1. **Azure block missing from `.env.example`.** Five keys live in `.env` (`ANTHROPIC_BASE_URL`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`) and the openai/anthropic providers read them, but `.env.example` documents none. A contributor switching LLM providers has to read source to know what to set.\n2. **Dead vars in `.env.example`** that no code reads \u2014 delete or implement:\n    - `AIOPS_LLM_TIMEOUT_SECONDS` (line 4) \u2014 comment claims \"applied by aiops/llm\" but nothing reads it\n    - `AIOPS_LLM_MAX_CALLS_PER_INCIDENT` (line 36) \u2014 claimed as a cost cap; only `AIOPS_LLM_MAX_TOKENS_PER_CALL` is actually applied in `aiops/llm/gateway.py`\n    - `AIOPS_KIND_CLUSTER_NAME` (line 33) \u2014 leftover from kind/k3d era; project now uses Rancher Desktop k3s\n    - `KUBECONFIG` (line 32) \u2014 empty in `.env`, never read\n3. **Observability timeouts undocumented.** `aiops/tools/observability/prometheus.py:12` reads `AIOPS_PROMETHEUS_TIMEOUT`; `aiops/tools/observability/jaeger.py:16` reads `AIOPS_JAEGER_TIMEOUT`. Neither appears in `.env.example`.\n4. **Jaeger URL / API prefix undocumented.** `demo/ui/server.py:657-658` reads `AIOPS_JAEGER_URL` and `AIOPS_JAEGER_API_PREFIX` for the topology endpoint. Demo operators bringing their own Jaeger will get 404s with no clue what to set.\n5. **Alert broadcast interval undocumented.** `demo/ui/server.py:780` reads `AIOPS_ALERT_BROADCAST_INTERVAL` for the WebSocket push cadence.\n6. **`AIOPS_SERVICENOW_TIMEOUT` / `AIOPS_SERVICENOW_RUNBOOK_FIELD` only in `.env.example`.** Code reads them (`aiops/tools/itsm/servicenow.py:66,244`) but `.env` doesn't carry them. Anyone copying `.env.example` -> `.env` loses these defaults silently if they prune comments.\n7. **No `AIOPS_UI_PORT`.** `start.ps1:14` hardcodes `$UiPort = 8765`. Port conflicts force script edits.\n8. **LLM provider/model defaults inconsistent.** `.env.example:2-3` says `anthropic` / `claude-sonnet-4-6`; `.env:2-3` says `openai` / `gpt-5`; `aiops/llm/base.py:75` defaults to `anthropic`. Three sources, three answers.\n\n## Task\n1. Add an explicit `# Azure OpenAI` block to `.env.example` (all five keys + comments).\n2. Add an explicit `# Anthropic via Azure AI Foundry` block.\n3. Delete the four dead vars (1.2 above).\n4. Add `AIOPS_PROMETHEUS_TIMEOUT`, `AIOPS_JAEGER_TIMEOUT`, `AIOPS_JAEGER_URL`, `AIOPS_JAEGER_API_PREFIX`, `AIOPS_ALERT_BROADCAST_INTERVAL`, `AIOPS_UI_PORT` with their current code defaults.\n5. Pick one canonical default for `AIOPS_LLM_PROVIDER` + `AIOPS_LLM_MODEL` and align `.env.example` and `aiops/llm/base.py` to match.\n6. Read `start.ps1:14` to support `$env:AIOPS_UI_PORT` override.\n\n## Done when\n- [ ] Every env var that any code reads is documented in `.env.example`.\n- [ ] No var in `.env.example` is unread by code.\n- [ ] LLM provider default is consistent in three places.\n- [ ] `start.ps1 -Port 9000` (or `$env:AIOPS_UI_PORT=9000; .\\start.ps1`) works.\n\n## Labels rationale\n`demo-readiness`, `priority:medium`. Surfaced by audit 2026-05-14. Won't break the demo but every contributor wastes an hour learning the env-var surface from source."
+    },
+    {
+      "title": "[DEMO-12] Consolidate demo/scenarios/ and demo/failure_injection/scenarios/ into one source of truth",
+      "labels": [
+        "dev-a",
+        "scenarios",
+        "demo-readiness",
+        "priority:medium"
+      ],
+      "body": "**As a** contributor adding a new failure scenario\n**I want to** drop a single YAML file in one obvious directory\n**So that** the UI picks it up, the CLI picks it up, and the smoke test enforces a paired truth file \u2014 all automatically\n\n## Symptom\nTwo scenario directories exist with overlapping purpose and different content:\n\n| Directory | File count | Consumed by | Truth-file enforced by smoke test? |\n|---|---|---|---|\n| `demo/scenarios/` | 12 YAML | UI's `/api/scenarios` endpoint (via `_load_scenarios()` in `demo/ui/server.py`) | NO |\n| `demo/failure_injection/scenarios/` | 3 YAML | CLI tool `demo.failure_injection.inject` | YES (`tests/test_smoke.py:114`) |\n\n## Issues\n1. **9 scenarios have no truth file, no enforcement.** The smoke test only walks `demo/failure_injection/scenarios/`. Truth-file discipline (CLAUDE.md non-negotiable #8) silently lapses for 75% of demo scenarios.\n2. **README confusion.** `demo/scenarios/README.md` and `demo/failure_injection/README.md` both describe scenario YAML schema. Neither explicitly says \"don't use the other one\". `demo/failure_injection/README.md:25` says \"Drop a YAML file in `scenarios/`\" without specifying which `scenarios/`.\n3. **Drift risk.** Two directories will diverge \u2014 the CLI's set, the UI's set, and the truth-file set become three different things.\n\n## Task\nPick one (recommend option A):\n\n**Option A \u2014 One directory, both consumers.** Consolidate to `demo/scenarios/`:\n- Move `demo/failure_injection/scenarios/*.yaml` into `demo/scenarios/` (keep filenames; no dup ids).\n- Update `demo/failure_injection/inject.py` to read from `demo/scenarios/`.\n- Update `tests/test_smoke.py:test_every_scenario_has_a_truth_file` to walk `demo/scenarios/`.\n- Backfill truth files for the 9 UI-only scenarios (template in `demo/truth_files/template.yaml`).\n- Delete `demo/failure_injection/scenarios/`.\n- Merge the two READMEs into one at `demo/scenarios/README.md`; replace `demo/failure_injection/README.md` with a thin pointer.\n\n**Option B \u2014 Two directories, two purposes, explicit naming.** Rename `demo/failure_injection/scenarios/` to `demo/failure_injection/cli_runnable/`, document that ALL scenario metadata lives in `demo/scenarios/` and the CLI dir is a subset of the cluster-applicable ones. Keep truth-file enforcement on `demo/scenarios/`.\n\n## Done when\n- [ ] There's one obvious place to add a new scenario YAML.\n- [ ] The smoke test enforces a truth file for every scenario.\n- [ ] `demo.failure_injection.inject --list` and `/api/scenarios` show the same set.\n- [ ] Two READMEs no longer overlap in content.\n\n## Labels rationale\n`scenarios`, `demo-readiness`, `priority:medium`. Surfaced by audit 2026-05-14."
+    },
+    {
+      "title": "[DEMO-13] Phase-0 -> Phase-1 doc refresh: CLAUDE.md, agents/README, classifier docs, infra/README",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:medium"
+      ],
+      "body": "**As a** new contributor (human or AI) reading the project docs\n**I want to** read accurate state-of-the-codebase text\n**So that** I don't waste time treating shipped agents as skeletons or trying to use scripts that don't exist\n\n## Findings\nFive documents claim Phase-0 state when the repo is mid-Phase-1:\n\n1. **`agents/incident_classifier/README.md` header** says \"Status: skeleton only. `classify()` raises `NotImplementedError`.\" The function is fully implemented with multi-tier LLM fallback + state persistence (`agent.py:513` onwards).\n2. **Same README's input contract** says `{ triage_verdict: TriageVerdict }`. Actual code requires `{ alert: Alert, triage_verdict: TriageVerdict }` \u2014 `demo/ui/server.py:173` passes both.\n3. **`agents/incident_classifier/__main__.py:8`** docstring still says \"v0: classify raises NotImplementedError\".\n4. **`agents/README.md:3`** says \"Phase 0: this directory is intentionally empty of implementations.\" Four agents now live here.\n5. **`CLAUDE.md:7,110`** Repository state + Repository layout sections still say only `alert_triage` is in flight. Now: `auto_ticketing`, `incident_classifier`, `notification_router` all shipped and tested.\n6. **`infra/README.md:21`** claims a bash variant exists \"step-for-step with the PowerShell\". No `bootstrap.sh` / `teardown.sh` actually exist in `infra/`.\n\n## Task\nTouch every file above with a small targeted edit:\n1. `agents/incident_classifier/README.md` \u2014 replace the \"skeleton only\" header with a Phase-1 status line; fix the ClassificationInput shape.\n2. `agents/incident_classifier/__main__.py:8` \u2014 replace the stale docstring with a one-liner describing the actual CLI.\n3. `agents/README.md` \u2014 describe the four agents and which phase each belongs to (Reactive-Active).\n4. `CLAUDE.md` Repository state + Repository layout \u2014 list the four agents under `agents/`, note the chatops seam under `aiops/tools/chatops`, note the classifier UI under `demo/classifier-ui/`.\n5. `infra/README.md:21` \u2014 either delete the bash claim OR commit `bootstrap.sh`/`teardown.sh` if you want bash support.\n\n## Done when\n- [ ] No doc says any agent is \"skeleton only\" when its `classify()`/`triage()`/`ticket()`/`route()` are implemented.\n- [ ] `agents/README.md` reflects the current agent roster.\n- [ ] `CLAUDE.md` Repository state + Repository layout match the post-#48 reality.\n- [ ] `infra/README.md` doesn't reference scripts that don't exist.\n\n## Labels rationale\n`demo-readiness`, `priority:medium`. Surfaced by audit 2026-05-14. Doc-only work, ~30 minutes."
+    },
+    {
+      "title": "[DEMO-14] demo/ui/server.py header docstring lists 12 endpoints, file implements 21",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:low"
+      ],
+      "body": "**As a** maintainer reading `demo/ui/server.py`'s top docstring to orient\n**I want to** see every endpoint the file serves\n**So that** I don't miss routes when refactoring or debugging\n\n## Symptom\nHeader docstring at `demo/ui/server.py:1-25` documents 12 endpoints. The file actually defines 21 via `@app.get`/`@app.post`/`@app.websocket`. Missing from the docstring:\n\n- `GET /api/verdicts` (line 249)\n- `GET /api/classifier/classifications` (line 273)\n- `GET /api/classifier/metrics` (line 285)\n- `POST /api/classifier/evaluate` (line 306)\n- `GET /api/scenarios` (line 547)\n- `POST /api/scenarios/{id}/inject` (line 573)\n- `POST /api/scenarios/{id}/reset` (line 586)\n- `POST /api/scenarios/reset-all` (line 598)\n- `GET /classifier` (line 364)\n- `GET /classifier/{path:path}` (line 379)\n- `GET /dashboard/{path:path}` (line 850)\n\n## Task\nReplace the static endpoint list in the module docstring with either:\n(a) the regenerated full list (12 + 11 = 23 lines, lower maintenance burden but still dies on the next route addition), or\n(b) a single-line pointer to FastAPI's auto-generated `/docs` (OpenAPI) \u2014 \"See `GET /docs` for the full endpoint catalog\" \u2014 which never drifts.\n\nRecommend (b).\n\n## Done when\n- [ ] The docstring doesn't list a partial set of endpoints that pretends to be complete.\n\n## Labels rationale\n`demo-readiness`, `priority:low`. 5-minute fix; not blocking anything. Surfaced by audit 2026-05-14."
+    },
+    {
+      "title": "[DEMO-15] Migrate @app.on_event(\"startup\") to FastAPI lifespan context manager",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:low"
+      ],
+      "body": "**As a** maintainer\n**I want to** stop seeing FastAPI deprecation warnings on every pytest run\n**So that** the test log stays signal-only and the codebase is ready for a future FastAPI major\n\n## Symptom\nThree usages of `@app.on_event(\"startup\")`, deprecated since FastAPI 0.104:\n- `demo/ui/server.py:83` \u2014 `_bootstrap_state` (calls `init_db()`)\n- `demo/ui/server.py:88` \u2014 `_register_chatops_adapters` (registers JsonFileChatOpsAdapter)\n- `demo/ui/chatops_ws.py:122` \u2014 `_chatops_ws_bootstrap` (registers WebSocketChatOpsAdapter)\n\n`pytest` logs show 8 DeprecationWarning entries from these.\n\n## Task\nReplace the three `@app.on_event` decorators with a single `lifespan` context manager passed to `FastAPI(lifespan=...)`. Pattern:\n```python\nfrom contextlib import asynccontextmanager\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    init_db()\n    get_chatops_client().register(JsonFileChatOpsAdapter(...))\n    _register_chatops_ws_adapter(app)\n    yield\n    # teardown \u2014 none today\n\napp = FastAPI(title=..., lifespan=lifespan)\n```\n\nThe chatops_ws.py case needs a small refactor \u2014 currently it registers via `@app.on_event` inside a function `register_routes(app)`. Either expose a separate `bootstrap_adapter(app)` function called from the lifespan, or merge the adapter registration into the parent lifespan.\n\n## Done when\n- [ ] No `@app.on_event` remains in the codebase.\n- [ ] `uv run pytest -W default` shows no FastAPI DeprecationWarning entries.\n- [ ] All existing tests still pass.\n\n## Labels rationale\n`demo-readiness`, `priority:low`. Pure cleanup; PR #47 flagged it during review."
+    },
+    {
+      "title": "[DEMO-16] Decompose demo/ui/server.py (878 lines) \u2014 extract eval invocation, kubectl wrapper, AlertHub",
+      "labels": [
+        "dev-a",
+        "demo-readiness",
+        "priority:low"
+      ],
+      "body": "**As a** maintainer touching the demo UI\n**I want to** find UI/route code in `demo/ui/server.py` and infrastructure code elsewhere\n**So that** server.py is reviewable and individual subsystems can be tested in isolation\n\n## Symptom\n`demo/ui/server.py` has grown to 878 lines and now contains:\n1. **Eval-harness invocation + metric parsing** (L306-356) \u2014 wraps `evals.harness.run_agent` + computes pass-rate stats. Belongs in `evals/` or a dedicated service module.\n2. **kubectl wrapper + flagd configmap patcher** (L421-491) \u2014 pure infra plumbing for the scenario inject/reset routes. Belongs under `demo/failure_injection/` or `demo/infra/`.\n3. **`_AlertHub` WebSocket broadcaster** (L762-827) \u2014 reusable pub/sub for alert push. Belongs under `aiops/` if other services would want it, or a `demo/ui/_alert_hub.py` submodule.\n\n## Task\nPick at least one to extract (recommend doing them in this order):\n1. **`_AlertHub` -> `demo/ui/_alert_hub.py`** (smallest blast radius; pure class). Mirror the pattern of `demo/ui/chatops_ws.py`.\n2. **kubectl wrapper + flagd patcher -> `demo/failure_injection/cluster.py`** (the inject CLI already lives in that package; co-locate the cluster-side functions).\n3. **Eval invocation -> `evals/runner.py`** (a thin re-export of `harness.run_agent` plus the metric extraction the route does).\n\nEach extraction should:\n- Keep the same test coverage (move tests if needed)\n- Use `aiops.tools` capabilities where there's a registry-friendly seam (kubectl could be a `automation.cluster.exec` capability someday \u2014 out of scope here, just note it)\n- Land as separate small PRs so review is easy\n\n## Done when\n- [ ] `demo/ui/server.py` is under 600 lines and contains only route handlers + their immediate helpers.\n- [ ] At least one of the three subsystems lives in its own file.\n- [ ] All tests pass; no behavioural change to any `/api/*` endpoint.\n\n## Labels rationale\n`demo-readiness`, `priority:low`. Refactor work; nothing is broken today but maintenance pain grows."
     }
   ]
 }
