@@ -39,9 +39,10 @@ from typing import Any
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from pydantic import BaseModel, Field
 
 # Load .env explicitly. ``uv run`` does NOT auto-load .env files, so without
@@ -142,6 +143,17 @@ def health() -> dict[str, Any]:
         "jaeger_reachable": jaeger_ok,
         "checked_at": datetime.now(UTC).isoformat(),
     }
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    """Prometheus scrape endpoint. Currently exposes ``aiops_scenario_active``
+    only — the gauge that Plan B's ScenarioActive alert rule keys on. Refresh
+    is synchronous (re-reads flagd configmap) so every scrape reflects current
+    truth, not cached state. If flagd is unreachable the gauge is left as-is
+    rather than 500ing the scrape."""
+    _refresh_scenario_gauge()
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/fixtures")
@@ -454,6 +466,41 @@ def _load_scenarios() -> dict[str, dict[str, Any]]:
 SCENARIOS: dict[str, dict[str, Any]] = _load_scenarios()
 
 
+# Synthetic gauge surfaced at /metrics so Prometheus has a signal that fires
+# the moment a scenario is injected — bypasses the upstream OTel-demo gap where
+# payment/product-catalog spans stay STATUS_CODE_UNSET even when the failure
+# flag is on. Labels match what the existing alert-rule machinery expects so
+# the agent chain's CMDB lookup has a usable `service` to route on.
+_SCENARIO_ACTIVE = Gauge(
+    "aiops_scenario_active",
+    "1 when the scenario's flag is in a non-off variant per flagd; 0 otherwise.",
+    ["scenario_id", "flag", "service"],
+)
+
+
+def _refresh_scenario_gauge() -> None:
+    """Re-derive ``aiops_scenario_active`` from the live flagd configmap.
+
+    Called on every ``/metrics`` scrape so the gauge tracks reality without
+    needing the UI to push on every inject/reset. Failure to reach flagd
+    leaves the gauge at its last-known state (no exception bubbles up — a
+    scrape that 500s is worse than a scrape that's slightly stale)."""
+    current: dict[str, str] = {}
+    try:
+        cfg = _load_flagd_config()
+        for fname, fdef in (cfg.get("flags") or {}).items():
+            current[fname] = fdef.get("defaultVariant", "off")
+    except Exception:  # noqa: BLE001 — scrape must not throw
+        return
+    for sid, s in SCENARIOS.items():
+        variant = current.get(s["flag"], "off")
+        _SCENARIO_ACTIVE.labels(
+            scenario_id=sid,
+            flag=s["flag"],
+            service=s.get("service", "unknown"),
+        ).set(1 if variant != "off" else 0)
+
+
 def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
     """Invoke kubectl. Returns stdout. Raises HTTPException on non-zero exit."""
     try:
@@ -541,6 +588,14 @@ def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
                 "--type=merge",
                 "--patch-file",
                 patch_file,
+                # ARCH-1 bandaid (issue #70). Take ownership as the `helm`
+                # field manager so subsequent helm upgrades don't hit an SSA
+                # conflict on .data.demo.flagd.json. PR #42 added this to
+                # inject.py; this UI server path was missed until 2026-05-15
+                # demo prep. Real fix is the aiops/tools/feature_flags seam —
+                # see docs/arch_1_feature_flags_seam_design.md. Do NOT remove
+                # this flag until that refactor lands.
+                "--field-manager=helm",
             ]
         )
     finally:
@@ -643,6 +698,14 @@ def reset_all_scenarios() -> dict[str, Any]:
                 "--type=merge",
                 "--patch-file",
                 patch_file,
+                # ARCH-1 bandaid (issue #70). Take ownership as the `helm`
+                # field manager so subsequent helm upgrades don't hit an SSA
+                # conflict on .data.demo.flagd.json. PR #42 added this to
+                # inject.py; this UI server path was missed until 2026-05-15
+                # demo prep. Real fix is the aiops/tools/feature_flags seam —
+                # see docs/arch_1_feature_flags_seam_design.md. Do NOT remove
+                # this flag until that refactor lands.
+                "--field-manager=helm",
             ]
         )
     finally:
