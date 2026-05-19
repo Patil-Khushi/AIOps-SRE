@@ -35,12 +35,20 @@ def _session() -> Session:
 # ─── verdicts ──────────────────────────────────────────────────────────────
 
 
-def save_verdict(verdict: Any, cluster_key: str) -> int:
+def save_verdict(
+    verdict: Any,
+    cluster_key: str,
+    *,
+    alert_id: str | None = None,
+) -> int:
     """Persist a triage verdict. Accepts the agent's Pydantic ``TriageVerdict``
-    and the cluster_key it was assigned to. Returns the row id."""
+    and the cluster_key it was assigned to. ``alert_id`` (the originating
+    alert for this verdict) is written for the transport-layer idempotency
+    lookup. Returns the row id."""
     audit = verdict.audit_metadata
     row = VerdictRow(
         cluster_key=cluster_key,
+        alert_id=alert_id,
         affected_service=verdict.affected_service,
         severity=verdict.severity,
         confidence_score=verdict.confidence_score,
@@ -63,6 +71,31 @@ def save_verdict(verdict: Any, cluster_key: str) -> int:
         s.commit()
         s.refresh(row)
         return int(row.id)  # type: ignore[arg-type]
+
+
+def find_recent_verdict_by_alert_id(
+    alert_id: str, *, window: timedelta
+) -> dict[str, Any] | None:
+    """Return the most recently created verdict for ``alert_id`` within
+    ``window``, or ``None`` if none exists. Used by the alert_triage agent's
+    transport-layer idempotency check: a duplicate delivery of the same
+    alert_id returns the cached verdict instead of re-running the pipeline.
+
+    Empty ``alert_id`` is rejected to avoid grouping malformed inputs together.
+    """
+    if not alert_id:
+        return None
+    cutoff = datetime.now(UTC) - window
+    stmt = (
+        select(VerdictRow)
+        .where(VerdictRow.alert_id == alert_id)
+        .where(VerdictRow.created_at >= cutoff)  # type: ignore[arg-type]
+        .order_by(VerdictRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(1)
+    )
+    with _session() as s:
+        row = s.exec(stmt).first()
+    return _verdict_row_to_dict(row) if row else None
 
 
 def list_verdicts(
@@ -137,9 +170,16 @@ def upsert_cluster(
     metric: str,
     alert_id: str,
     seen_at: datetime,
+    embedding: list[float] | None = None,
 ) -> dict[str, Any]:
     """Append ``alert_id`` to the cluster (creating it on first sighting).
-    Returns the up-to-date cluster as a dict."""
+    Returns the up-to-date cluster as a dict.
+
+    ``embedding``, when provided, is the L2-normalized centroid the caller
+    wants persisted. Pass it on the new-cluster path to seed, and on each
+    similarity-match path to update with the running mean — see
+    ``agents.alert_triage.agent._dedup``.
+    """
     with _session() as s:
         row = s.get(ClusterRow, cluster_key)
         if row is None:
@@ -151,6 +191,7 @@ def upsert_cluster(
                 last_seen=seen_at,
                 alert_count=1,
                 source_alerts=[alert_id],
+                embedding=list(embedding) if embedding is not None else [],
             )
             s.add(row)
         else:
@@ -158,8 +199,16 @@ def upsert_cluster(
             if alert_id not in existing:
                 existing.append(alert_id)
             row.source_alerts = existing
-            row.alert_count = len(existing)
+            # alert_count tracks DELIVERIES (how many times the agent has been
+            # called for this cluster), not distinct alert_ids — that count
+            # is already exposed via len(source_alerts). The transport-layer
+            # idempotency window above this layer (see triage()) absorbs
+            # network retries, so every increment here is a genuine refire
+            # the cluster should be credited with.
+            row.alert_count = (row.alert_count or 0) + 1
             row.last_seen = seen_at
+            if embedding is not None:
+                row.embedding = list(embedding)
             s.add(row)
         s.commit()
         s.refresh(row)
@@ -197,6 +246,19 @@ def delete_all_clusters() -> int:
         return len(rows)
 
 
+def delete_all_verdicts() -> int:
+    """Wipe every verdict row. Eval-harness hook; not a production path.
+    Needed because alert_triage's idempotency layer reads from VerdictRow —
+    leaving stale rows would silently short-circuit subsequent golden cases
+    that happen to reuse an alert_id."""
+    with _session() as s:
+        rows = s.exec(select(VerdictRow)).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
 def _aware(dt: datetime) -> datetime:
     """SQLite round-trips TIMESTAMP as naive UTC. Re-attach the tzinfo so
     comparisons against ``datetime.now(timezone.utc)`` don't blow up."""
@@ -212,6 +274,7 @@ def _cluster_row_to_dict(row: ClusterRow) -> dict[str, Any]:
         "last_seen": _aware(row.last_seen).isoformat(),
         "alert_count": row.alert_count,
         "source_alerts": list(row.source_alerts or []),
+        "embedding": list(row.embedding or []),
     }
 
 

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+import math
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -51,11 +52,39 @@ class Alert(BaseModel):
     def _coerce_timestamp(cls, v: Any) -> datetime:
         """Accept ISO 8601 strings (incl. trailing ``Z``) and datetimes."""
         if isinstance(v, datetime):
-            return v if v.tzinfo else v.replace(tzinfo=UTC)
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
         if isinstance(v, str):
             normalized = v.replace("Z", "+00:00") if v.endswith("Z") else v
             return datetime.fromisoformat(normalized)
         raise TypeError(f"Unsupported timestamp type: {type(v).__name__}")
+
+    @field_validator("alert_id", "service", "metric", mode="before")
+    @classmethod
+    def _require_nonempty_identifier(cls, v: Any) -> Any:
+        """Strip surrounding whitespace and reject empty / whitespace-only
+        identifiers. An empty service silently broke PromQL interpolation
+        (it would query ``service_name=""``, get no rows, and the agent
+        would proceed with empty context). Failing at construction makes the
+        problem visible at the boundary."""
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                raise ValueError("must not be empty or whitespace-only")
+            return stripped
+        return v
+
+    @field_validator("value", "threshold", mode="after")
+    @classmethod
+    def _must_be_finite(cls, v: float | None) -> float | None:
+        """Reject NaN and ±Inf. They flow through the rule-based severity
+        comparisons as silent ``False`` (NaN comparisons), so a malformed
+        upstream payload would fall through to the LLM consult with no
+        warning. Failing at construction surfaces it."""
+        if v is None:
+            return v
+        if not math.isfinite(v):
+            raise ValueError(f"must be a finite number, got {v!r}")
+        return v
 
     def cluster_key(self) -> str:
         """Stable hash used by step-4 dedup to group duplicate alerts.
@@ -109,6 +138,12 @@ class TriageVerdict(BaseModel):
     assigned_team: str
     assigned_engineer: str | None = None
     recommended_runbook: str | None = None
+    # Counts DELIVERIES of this alert into the agent — i.e. how many times
+    # the source has refired the same condition. NOT the same as the number
+    # of distinct alert_ids in the cluster; that's ``len(source_alerts)`` on
+    # the audit metadata. Transport-layer duplicates (network retries within
+    # the agent's idempotency window) do not increment this — they are
+    # short-circuited before reaching dedup.
     duplicate_alert_count: int = Field(default=1, ge=1)
     status: Status = "Active"
     audit_metadata: AuditMetadata

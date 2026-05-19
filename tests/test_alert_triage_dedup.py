@@ -7,7 +7,7 @@ file is its A10 follow-up.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -93,6 +93,26 @@ def test_distinct_metrics_dont_collide(clean_state):
     assert v2["status"] == "Active"
     assert v1["duplicate_alert_count"] == 1
     assert v2["duplicate_alert_count"] == 1
+
+
+def test_delayed_alert_still_dedupes_within_wall_clock_window(clean_state):
+    """An alert whose ``timestamp`` is older than the dedup window (e.g. a
+    backfilled or out-of-order delivery) must still dedupe against a second
+    copy that arrives moments later. Regression for the seen_at=alert.timestamp
+    bug: it caused the freshly-created cluster's last_seen to land outside the
+    wall-clock window, so evict_expired_clusters wiped it before the second
+    alert could match.
+    """
+    from agents.alert_triage import run
+
+    delayed_ts = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+
+    v1 = run(_alert_input(alert_id="ALT-DLY-1", timestamp=delayed_ts))
+    v2 = run(_alert_input(alert_id="ALT-DLY-2", timestamp=delayed_ts))
+
+    assert v1["status"] == "Active"
+    assert v2["status"] == "Suppressed", v2["audit_metadata"]["decision_trace"]
+    assert v2["duplicate_alert_count"] == 2
 
 
 def test_embedding_similarity_match_suppresses_paraphrase(clean_state):

@@ -62,6 +62,40 @@ def init_db() -> None:
     server boot — SQLite's ``CREATE TABLE IF NOT EXISTS`` is a no-op when the
     schema already matches."""
     SQLModel.metadata.create_all(get_engine())
+    _migrate_add_columns_if_missing()
+
+
+def _migrate_add_columns_if_missing() -> None:
+    """Tiny additive-only migrator. ``metadata.create_all`` is a no-op against
+    existing tables, so columns added to a model after first boot never reach
+    the DB without this. Idempotent — checks ``PRAGMA table_info`` (SQLite)
+    or ``information_schema`` (Postgres) before issuing ``ALTER TABLE``.
+
+    Scope: ``clusters.embedding`` (added when persistent dedup landed). When
+    the next column-add happens, extend ``_NEEDED`` rather than adding a
+    second function. For schema rewrites (column type change, drop) bring in
+    Alembic — this helper is intentionally additive-only.
+    """
+    from sqlalchemy import inspect, text
+
+    _NEEDED: list[tuple[str, str, str]] = [
+        # (table, column, SQL type)
+        ("clusters", "embedding", "JSON"),
+        ("verdicts", "alert_id", "VARCHAR"),
+    ]
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table, column, sql_type in _NEEDED:
+            if table not in existing_tables:
+                continue  # create_all just made it with the right schema
+            cols = {c["name"] for c in inspector.get_columns(table)}
+            if column in cols:
+                continue
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+            logger.info("migrated: added %s.%s (%s)", table, column, sql_type)
 
 
 def reset_engine_for_tests() -> None:

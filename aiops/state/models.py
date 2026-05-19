@@ -27,6 +27,12 @@ class VerdictRow(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     cluster_key: str = Field(index=True)
+    # alert_id of the *originating* alert for this verdict. Used by the agent's
+    # transport-layer idempotency check (Fragile #6 fix) — a duplicate delivery
+    # of the same alert_id within a short window returns the cached verdict
+    # instead of re-running the pipeline. Nullable for rows written before this
+    # column existed.
+    alert_id: str | None = Field(default=None, index=True)
     affected_service: str = Field(index=True)
     severity: str = Field(index=True)
     confidence_score: float
@@ -47,10 +53,13 @@ class VerdictRow(SQLModel, table=True):
 class ClusterRow(SQLModel, table=True):
     """Persists dedup clusters across uvicorn restarts.
 
-    Embedding vectors are NOT stored — they live in an in-memory cache
-    keyed by ``cluster_key`` for the lifetime of the agent process. After a
-    restart, exact-key dedup keeps working from the first new alert; the
-    embedding-similarity path degrades for one 5-minute window then heals.
+    Embedding storage: L2-normalized centroid vector as a JSON list of floats
+    (same shape as ``HistoricalIncidentRow.embedding``). Persisting it lets
+    embedding-similarity dedup survive a process restart instead of cold-windowing
+    until everything ages out. Empty list = no embedding (e.g. when the
+    ``embeddings`` extra isn't installed). The centroid is maintained as a
+    running mean (see ``agents.alert_triage.agent._EMA_ALPHA``) so the cluster
+    is anchored to its origin while still tracking slow drift.
     """
 
     __tablename__ = "clusters"
@@ -68,6 +77,7 @@ class ClusterRow(SQLModel, table=True):
     )
     alert_count: int = 1
     source_alerts: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    embedding: list[float] = Field(default_factory=list, sa_column=Column(JSON))
 
 
 class TicketRow(SQLModel, table=True):
