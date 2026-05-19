@@ -28,7 +28,7 @@ embeddings = ["sentence-transformers>=2.7", "numpy>=1.26"]
 
 # Demo UI (FastAPI service + static frontend in demo/ui/).
 # Install with: uv sync --extra ui
-ui = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
+ui = ["fastapi>=0.115", "uvicorn[standard]>=0.32", "prometheus-client>=0.20"]
 
 # ITSM providers (RA-003 Auto-Ticketing — ServiceNow via aiops/tools/itsm/).
 # Organizational only: httpx is already a core dep. Declaring the extra makes
