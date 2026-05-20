@@ -26,13 +26,11 @@ directly.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
 import re
 import subprocess
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -66,6 +64,7 @@ from agents.notification_router import route as route_notification  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
+from aiops.tools import feature_flags  # noqa: E402,F401  — ARCH-1 @tool registration
 from aiops.tools import get_registry  # noqa: E402
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
@@ -485,13 +484,13 @@ def _refresh_scenario_gauge() -> None:
     needing the UI to push on every inject/reset. Failure to reach flagd
     leaves the gauge at its last-known state (no exception bubbles up — a
     scrape that 500s is worse than a scrape that's slightly stale)."""
-    current: dict[str, str] = {}
     try:
-        cfg = _load_flagd_config()
-        for fname, fdef in (cfg.get("flags") or {}).items():
-            current[fname] = fdef.get("defaultVariant", "off")
-    except Exception:  # noqa: BLE001 — scrape must not throw
+        res = get_registry().call("feature_flags.list_variants")
+    except Exception:
         return
+    if not res.ok:
+        return
+    current: dict[str, str] = (res.data or {}).get("variants", {})
     for sid, s in SCENARIOS.items():
         variant = current.get(s["flag"], "off")
         _SCENARIO_ACTIVE.labels(
@@ -524,84 +523,18 @@ def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
     return r.stdout
 
 
-def _load_flagd_config() -> dict[str, Any]:
-    raw = _run_kubectl(
-        [
-            "get",
-            "cm",
-            "flagd-config",
-            "-n",
-            "otel-demo",
-            "-o",
-            "jsonpath={.data.demo\\.flagd\\.json}",
-        ]
-    )
-    if not raw.strip():
-        raise HTTPException(
-            status_code=500, detail="flagd-config configmap key 'demo.flagd.json' is empty"
-        )
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=500, detail=f"flagd config is not valid JSON: {exc}"
-        ) from exc
-
-
 def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
-    """Set ``flags.<flag_name>.defaultVariant`` to ``variant``. The variant must
-    be one of the variants declared for that flag in flagd-config (e.g. for
-    ``paymentFailure`` valid values are ``100%``, ``90%``, ``75%``, ``50%``,
-    ``25%``, ``10%``, ``off``). flagd watches the file and reloads ~1 s after
-    the configmap is patched."""
-
-    cfg = _load_flagd_config()
-    flags = cfg.get("flags") or {}
-    if flag_name not in flags:
-        raise HTTPException(
-            status_code=404,
-            detail=f"flag {flag_name!r} not present in flagd config; available: {sorted(flags)}",
-        )
-    valid_variants = list((flags[flag_name].get("variants") or {}).keys())
-    if variant not in valid_variants:
-        raise HTTPException(
-            status_code=400,
-            detail=f"variant {variant!r} not valid for flag {flag_name!r}; "
-            f"choose one of {valid_variants}",
-        )
-    flags[flag_name]["defaultVariant"] = variant
-    cfg["flags"] = flags
-
-    # Patch via temp file (Windows command-line length limit makes inline -p brittle).
-    patch_body = json.dumps({"data": {"demo.flagd.json": json.dumps(cfg)}})
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
-        f.write(patch_body)
-        patch_file = f.name
-    try:
-        _run_kubectl(
-            [
-                "patch",
-                "cm",
-                "flagd-config",
-                "-n",
-                "otel-demo",
-                "--type=merge",
-                "--patch-file",
-                patch_file,
-                # ARCH-1 bandaid (issue #70). Take ownership as the `helm`
-                # field manager so subsequent helm upgrades don't hit an SSA
-                # conflict on .data.demo.flagd.json. PR #42 added this to
-                # inject.py; this UI server path was missed until 2026-05-15
-                # demo prep. Real fix is the aiops/tools/feature_flags seam —
-                # see docs/arch_1_feature_flags_seam_design.md. Do NOT remove
-                # this flag until that refactor lands.
-                "--field-manager=helm",
-            ]
-        )
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(patch_file)
-
+    """Set ``flags.<flag_name>.defaultVariant`` to ``variant`` via the ARCH-1
+    feature-flags seam. Variant must be one of the variants declared for that
+    flag in flagd-config. flagd watches the configmap and reloads ~1 s later."""
+    res = get_registry().call("feature_flags.set_variant", flag=flag_name, variant=variant)
+    if not res.ok:
+        meta = res.metadata or {}
+        if "available_flags" in meta:
+            raise HTTPException(status_code=404, detail=res.error)
+        if "valid_variants" in meta:
+            raise HTTPException(status_code=400, detail=res.error)
+        raise HTTPException(status_code=502, detail=res.error)
     return {
         "flag": flag_name,
         "variant": variant,
@@ -615,11 +548,11 @@ def list_scenarios() -> dict[str, Any]:
     out: list[dict[str, Any]] = []
     current: dict[str, str] = {}
     try:
-        cfg = _load_flagd_config()
-        for fname, fdef in (cfg.get("flags") or {}).items():
-            current[fname] = fdef.get("defaultVariant", "off")
-    except HTTPException:
-        pass  # fall back to assuming all 'off'
+        res = get_registry().call("feature_flags.list_variants")
+        if res.ok:
+            current = (res.data or {}).get("variants", {})
+    except Exception:
+        pass
     for sid, s in SCENARIOS.items():
         out.append(
             {
@@ -662,58 +595,17 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
 
 @app.post("/api/scenarios/reset-all")
 def reset_all_scenarios() -> dict[str, Any]:
-    """Flip every scenario flag back to ``off`` in a single configmap patch.
-
-    Cheaper than calling /reset on each scenario sequentially (one kubectl
-    round-trip vs N), and atomic — flagd reloads once instead of N times.
+    """Flip every scenario flag back to ``off`` in a single SSA patch via the
+    ARCH-1 feature-flags seam. Atomic — flagd reloads once instead of N times.
     """
-    cfg = _load_flagd_config()
-    flags = cfg.get("flags") or {}
-    touched: list[dict[str, str]] = []
-    for s in SCENARIOS.values():
-        fname = s["flag"]
-        if fname not in flags:
-            continue
-        prev = flags[fname].get("defaultVariant", "off")
-        if prev != "off":
-            flags[fname]["defaultVariant"] = "off"
-            touched.append({"flag": fname, "from": prev, "to": "off"})
-    cfg["flags"] = flags
-
-    if not touched:
-        return {"reset_count": 0, "touched": [], "applied_at": datetime.now(UTC).isoformat()}
-
-    patch_body = json.dumps({"data": {"demo.flagd.json": json.dumps(cfg)}})
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
-        f.write(patch_body)
-        patch_file = f.name
-    try:
-        _run_kubectl(
-            [
-                "patch",
-                "cm",
-                "flagd-config",
-                "-n",
-                "otel-demo",
-                "--type=merge",
-                "--patch-file",
-                patch_file,
-                # ARCH-1 bandaid (issue #70). Take ownership as the `helm`
-                # field manager so subsequent helm upgrades don't hit an SSA
-                # conflict on .data.demo.flagd.json. PR #42 added this to
-                # inject.py; this UI server path was missed until 2026-05-15
-                # demo prep. Real fix is the aiops/tools/feature_flags seam —
-                # see docs/arch_1_feature_flags_seam_design.md. Do NOT remove
-                # this flag until that refactor lands.
-                "--field-manager=helm",
-            ]
-        )
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(patch_file)
+    flag_names = [s["flag"] for s in SCENARIOS.values()]
+    res = get_registry().call("feature_flags.reset_all", flags=flag_names)
+    if not res.ok:
+        raise HTTPException(status_code=502, detail=res.error or "reset_all failed")
+    data = res.data or {}
     return {
-        "reset_count": len(touched),
-        "touched": touched,
+        "reset_count": data.get("reset_count", 0),
+        "touched": data.get("touched", []),
         "applied_at": datetime.now(UTC).isoformat(),
     }
 

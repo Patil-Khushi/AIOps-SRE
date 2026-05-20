@@ -1,6 +1,6 @@
 # ARCH-1 — Feature-flag seam: kill the kubectl-patch shell-out
 
-**Status:** Designed, NOT implemented. Tracked as a high-priority GitHub issue. The bandaid in place today (`--field-manager=helm` added at two call sites + one-time `helm upgrade --force`) is a stopgap, not the answer.
+**Status:** ✅ **Shipped 2026-05-20** on branch `feat/arch-1-feature-flags-seam` (issue #70). The bandaid (`--field-manager=helm` at every call site) is gone — the constant lives in the adapter, and `tests/test_no_kubectl_for_flagd.py` enforces the seam. This document is preserved as historical context; the §3.3 sketch matches the shipped `aiops/tools/feature_flags/adapter.py`. One in-scope correction: a fourth capability `feature_flags.list_variants` was added beyond §3.2's original three, to keep the UI's `/metrics` gauge refresh to one K8s round-trip instead of N.
 
 **For the next Claude session (or human) picking this up:** read [§1](#1-what-youre-fixing-and-why) first. Don't start coding until you've also read [§3](#3-the-design) and [§6](#6-anti-patterns-do-not-do-this). The whole point of this doc is to prevent the architectural drift this fix is supposed to correct.
 
