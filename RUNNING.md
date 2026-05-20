@@ -83,6 +83,49 @@ uv run python -m demo.failure_injection.inject --clear
 
 System returns to baseline within ~1 minute.
 
+### Clean-slate reset (use this before every rehearsal / demo run)
+
+```powershell
+.\reset.ps1            # flagd flags off, chatops outbox truncated, scratch files removed
+.\reset.ps1 -Hard      # also wipes verdicts / classifications / tickets from data\state.db
+```
+
+What it does (in order):
+
+1. `POST /api/scenarios/reset-all` — flips every UI-known scenario flag back to `off` in one atomic kubectl patch.
+2. Belt-and-suspenders: runs `inject.py --clear` for any flag the UI doesn't know about.
+3. Truncates `demo\audit\chatops.jsonl`.
+4. Removes `.tmp_eval*.txt` scratch files.
+5. `-Hard` only: `DELETE FROM verdicts / classifications / tickets / notifications` in `data\state.db` so the dashboard's AI Reasoning page starts empty.
+
+What it prints at the end: a "post-reset state" block showing scenarios still on, Prometheus active alerts, and persisted-verdict count.
+
+> **About `prom active alerts` not going to 0 immediately:** Prometheus rules use rolling `[2m]` windows. An alert that was firing from a prior fault stays firing for ~2 min after you flip the flag off — that's *lag*, not a reset failure. The "scenarios" / "persisted verdicts" lines are the source of truth for whether reset actually worked.
+
+### Run a full agent chain from one HTTP call (the demo path)
+
+The dashboard's UI fixture endpoint runs **Alert Triage → Incident Classifier → Auto-Ticketing → Notification Router** as one chained call:
+
+```powershell
+Invoke-RestMethod -Method POST http://localhost:8765/api/triage/fixture/payment_cpu_spike -TimeoutSec 90 | ConvertTo-Json -Depth 4
+```
+
+Returns a single JSON with four blocks: `verdict`, `ticket` (real INC in ServiceNow PDI), `classification`, `persisted`. Takes ~30 s end-to-end (real Azure OpenAI round-trip).
+
+Other passing fixtures: `checkout_latency_p95_high`, `severity_hint_critical_direct`, `cmdb_miss_unknown_service`, `severity_hint_p2_high`.
+
+**The verdict/classification/ticket also appears in:**
+
+- Dashboard → AI Reasoning tab (`http://localhost:8765/reasoning`)
+- ServiceNow PDI → All → Incidents (the new `INC00100xx` record)
+- `demo\audit\chatops.jsonl` (tail it: `Get-Content demo\audit\chatops.jsonl -Tail 5`)
+
+### CLI usage caveats (read before you `--fixture`)
+
+- Pass **`--provider openai`** to every agent CLI invocation. The CLIs default to `stub` for keyless smoke tests — the stub returns canned answers, not real LLM verdicts.
+- **Do not run `python -m agents.incident_classifier --fixture` standalone** — the standalone CLI uses a stale fixture schema and crashes with a Pydantic `ValidationError`. The classifier still works correctly inside the UI chain above. Tracked for post-demo fix.
+- `python -m agents.auto_ticketing` has no `__main__` — drive it via the eval harness or the UI fixture endpoint.
+
 ### Run the tests (Window C)
 
 ```powershell
@@ -174,15 +217,26 @@ If even that doesn't help, full reset via Rancher Desktop UI: **Troubleshooting 
 # 1. Bring everything up (port-forwards + UI server, as background jobs)
 .\start.ps1
 
-# 2. Inject a failure
+# 2. Clean slate before each rehearsal / demo run
+.\reset.ps1            # or .\reset.ps1 -Hard for a virgin AI Reasoning page
+
+# 3. Run the full agent chain on a fixture (returns triage+ticket+classification)
+Invoke-RestMethod -Method POST http://localhost:8765/api/triage/fixture/payment_cpu_spike -TimeoutSec 90 | ConvertTo-Json -Depth 4
+
+# 4. Inject a failure (CLI scenarios — bare flagd flip; does NOT auto-trigger agents)
 uv run python -m demo.failure_injection.inject slow-product-catalog
 
-# 3. Clear the failure
+# 5. Clear the failure
 uv run python -m demo.failure_injection.inject --clear
 
-# 4. Check pod health
+# 6. Check pod health
 kubectl get pods -n otel-demo
 
-# 5. Tear it all down
+# 7. Tear it all down
 .\stop.ps1
 ```
+
+### Known sharp edges (be aware before tomorrow's demo)
+
+- **Clicking *Inject* in the dashboard's Failure Injection panel does not fire Prometheus alerts** today. The flag flips, the panel turns red, but `Alert Stream` / `Active alerts` / `Severity mix` stay empty because the rules query `status_code="STATUS_CODE_ERROR"` and the OTel demo's payment/product-catalog spans emit `STATUS_CODE_UNSET`. Tracked separately; for the demo, drive the chain via the fixture endpoint in command #3 above.
+- **`.\infra\port-forward.ps1` has a silent kuberlr trap inside its `Start-Job` block.** Use `.\start.ps1` instead — it passes the standalone kubectl into the job correctly.

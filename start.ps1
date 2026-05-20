@@ -172,11 +172,11 @@ Write-Host "    started uvicorn (job $($uiJob.Id))  [$providerNote]" -Foreground
 
 # --- 4. wait for /api/health then open browser ---
 Write-Step 4 "waiting for the UI server to come up..."
-$deadline = (Get-Date).AddSeconds(45)
+$deadline = (Get-Date).AddSeconds(60)
 $ready = $false
 while ((Get-Date) -lt $deadline) {
     try {
-        $r = Invoke-WebRequest "http://localhost:$UiPort/api/health" -UseBasicParsing -TimeoutSec 3
+        $r = Invoke-WebRequest "http://localhost:$UiPort/api/health" -UseBasicParsing -TimeoutSec 25
         if ($r.StatusCode -eq 200) { $ready = $true; break }
     } catch { Start-Sleep -Seconds 2 }
 }
