@@ -132,7 +132,7 @@ start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-fo
 - **No Docker, no cloud, ~16 GB laptops.** Org policy bans Docker on dev machines; AKS/GKE are post-POC. All cluster work is Rancher Desktop's bundled k3s. Allocate ≥6 GB to its VM (Settings → Virtual Machine); the OTel demo uses ~3.5 GB inside.
 - **Rancher Desktop ships a `kuberlr`-wrapped `kubectl` that rejects standard flags from Python `subprocess` calls.** Install a standalone `kubectl` (`winget install --scope user Kubernetes.kubectl`) — `start.ps1` and `demo/failure_injection/inject.py` prefer it via `$LOCALAPPDATA\Programs\kubectl`.
 - **Two PowerShell windows.** `start.ps1` runs port-forwards as background jobs in the *current* session; closing that shell kills them. Use `stop.ps1` to tear them down cleanly.
-- **`flagd-config` field-manager trap.** Failure-injection patches must use `--field-manager=helm` (already wired in `demo/failure_injection/inject.py`); plain `kubectl patch` poisons the configmap so subsequent `helm upgrade` fails with a server-side-apply conflict. Recovery procedure in `ONBOARDING.md` §7.
+- **flagd flag mutation goes through the seam.** Use `aiops.tools.get_registry().call("feature_flags.set_variant", flag=..., variant=...)` (or `feature_flags.get_variant` / `list_variants` / `reset_all`). Direct `kubectl patch flagd-config` is forbidden — `tests/test_no_kubectl_for_flagd.py` will fail CI for any new caller. Background: ARCH-1 (issue #70, `docs/arch_1_feature_flags_seam_design.md`).
 
 ### Common commands
 

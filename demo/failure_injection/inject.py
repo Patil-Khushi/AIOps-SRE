@@ -18,7 +18,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -29,6 +28,21 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+# ARCH-1 (issue #70): all flagd-config mutation goes through this seam. The
+# import below side-effect-registers the four feature_flags.* capabilities.
+# Requires the `ui` extra (kubernetes Python client). If you see ImportError
+# here, run: uv sync --extra ui
+try:
+    from aiops.tools import (
+        feature_flags,  # noqa: F401
+        get_registry,
+    )
+except ImportError as exc:  # pragma: no cover
+    sys.exit(
+        f"inject.py requires the 'ui' extra for the feature_flags seam: {exc}\n"
+        "Run: uv sync --extra ui"
+    )
 
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 DEFAULT_NAMESPACE = "otel-demo"
@@ -146,72 +160,47 @@ def _require_kubectl() -> str:
 
 
 def _flagd_set(flag_key: str, variant: str, *, namespace: str = DEFAULT_NAMESPACE) -> None:
-    """Patch the flagd ConfigMap to flip a default variant.
+    """Set a flagd defaultVariant via the ARCH-1 feature-flags seam, then kick
+    the flagd deployment so the change propagates immediately (rather than
+    waiting on kubelet's configmap sync interval).
 
-    The OTel demo's flagd is sourced from a ConfigMap. We patch the JSON in
-    place and restart flagd so the change picks up. This avoids needing to
-    port-forward and call flagd's HTTP API directly.
+    The ``namespace`` arg is honored for the rollout restart only — the seam's
+    configmap patch uses ``AIOPS_FLAGD_NAMESPACE`` (default ``otel-demo``).
     """
-    kubectl = _require_kubectl()
-    print(f"[flagd] reading ConfigMap flagd-config in ns={namespace}")
-    # Put -n BEFORE the subcommand. Some kubectl builds (e.g. the one shipped
-    # by Rancher Desktop) reject `-n` after the subcommand with
-    # "unknown shorthand flag: 'n' in -n" because of how flag interspersion is
-    # configured. Long form also works: --namespace=<ns>.
-    raw = subprocess.check_output(
-        [kubectl, "-n", namespace, "get", "configmap", "flagd-config", "-o", "json"]
-    )
-    cm = json.loads(raw)
-    # The ConfigMap key holding the flag JSON varies between chart versions —
-    # try the known names.
-    data_key = next(
-        (k for k in ("demo.flagd.json", "flagd-config.json") if k in cm.get("data", {})),
-        None,
-    )
-    if data_key is None:
-        sys.exit(f"flagd-config ConfigMap has unexpected shape: keys={list(cm.get('data', {}))}")
-    flag_doc = json.loads(cm["data"][data_key])
-    if "flags" not in flag_doc or flag_key not in flag_doc["flags"]:
-        sys.exit(f"flagd: unknown flag {flag_key!r}. Known: {list(flag_doc.get('flags', {}))}")
-    flag_doc["flags"][flag_key]["defaultVariant"] = variant
-    cm["data"][data_key] = json.dumps(flag_doc)
-    payload = json.dumps({"data": cm["data"]})
-    # --field-manager=helm so future helm upgrades / rollbacks don't conflict
-    # with our patches. Without this, kubectl uses field manager
-    # 'kubectl-patch' which Helm's server-side apply refuses to override and
-    # the next bootstrap.ps1 run fails with a managedFields conflict.
-    subprocess.check_call(
-        [
-            kubectl,
-            "-n",
-            namespace,
-            "patch",
-            "configmap",
-            "flagd-config",
-            "--patch",
-            payload,
-            "--field-manager=helm",
-        ]
-    )
+    res = get_registry().call("feature_flags.set_variant", flag=flag_key, variant=variant)
+    if not res.ok:
+        sys.exit(f"[flagd] set_variant failed: {res.error}")
     print(f"[flagd] set {flag_key}.defaultVariant = {variant!r}")
-    # flagd watches the file but we kick the deployment to be safe.
+
+    # Kick the flagd deployment so the configmap mount refreshes in seconds
+    # instead of waiting on kubelet's ~60-120s sync. Non-fatal if it fails.
+    kubectl = _require_kubectl()
     subprocess.call(
         [kubectl, "-n", namespace, "rollout", "restart", "deployment/flagd"],
         stderr=subprocess.DEVNULL,
     )
 
 
-def _flagd_clear(*, namespace: str = DEFAULT_NAMESPACE) -> None:
-    """Reset every flag we touched back to ``off``.
+def _flagd_clear() -> None:
+    """Reset every flagd-mechanism flag this CLI knows about back to ``off``
+    in a single SSA patch.
 
-    Phase 0 keeps a tiny static list. If you add a flag-driven scenario, append
-    its key here so ``--clear`` resets it.
+    Replaces the pre-ARCH-1 hardcoded 2-flag list. The seam takes a list of
+    flag names and atomically resets all of them — flagd reloads once.
     """
-    for flag in ("productCatalogFailure", "kafkaQueueProblems"):
-        try:
-            _flagd_set(flag, "off", namespace=namespace)
-        except subprocess.CalledProcessError as exc:
-            print(f"[flagd] WARN: could not reset {flag}: {exc}", file=sys.stderr)
+    flag_keys = [
+        s.spec["flagd"]["flag_key"]
+        for s in load_scenarios().values()
+        if s.mechanism == "flagd" and isinstance(s.spec.get("flagd"), dict)
+    ]
+    if not flag_keys:
+        print("[flagd] no flag-driven scenarios in catalog; nothing to clear")
+        return
+    res = get_registry().call("feature_flags.reset_all", flags=flag_keys)
+    if not res.ok:
+        sys.exit(f"[flagd] reset_all failed: {res.error}")
+    data = res.data or {}
+    print(f"[flagd] reset {data.get('reset_count', 0)} flag(s); touched={data.get('touched', [])}")
 
 
 def _kubectl_delete_pod(selector: str, *, namespace: str = DEFAULT_NAMESPACE) -> None:

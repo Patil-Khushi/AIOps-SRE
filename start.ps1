@@ -160,13 +160,24 @@ Write-Step 3 "starting demo UI server on http://localhost:$UiPort ..."
 if ($LlmProvider) { $env:AIOPS_LLM_PROVIDER = $LlmProvider }
 if ($LlmModel)    { $env:AIOPS_LLM_MODEL    = $LlmModel    }
 $uiJob = Start-Job -Name 'pf-ui-server' -ScriptBlock {
-    param($repoRoot, $port, $llmProvider, $llmModel)
+    param($repoRoot, $port, $llmProvider, $llmModel, $userProfile, $kubeconfig, $kubectlDir)
     Set-Location $repoRoot
+    # ARCH-1 (issue #70): Start-Job's child PS process does NOT reliably
+    # inherit USERPROFILE / KUBECONFIG from the parent on PS 5.1. Without
+    # them, kubernetes.config.load_kube_config() raises
+    # `ConfigException: Invalid kube-config file. No configuration found.`
+    # and the feature_flags seam fails 502 on every /api/scenarios/* call.
+    # Force-propagate them here.
+    if ($userProfile) { $env:USERPROFILE = $userProfile }
+    if ($kubeconfig)  { $env:KUBECONFIG  = $kubeconfig  }
+    if ($kubectlDir -and (Test-Path "$kubectlDir\kubectl.exe")) {
+        $env:Path = "$kubectlDir;$env:Path"
+    }
     # Only set if explicitly passed; otherwise let uv-loaded .env drive.
     if ($llmProvider) { $env:AIOPS_LLM_PROVIDER = $llmProvider }
     if ($llmModel)    { $env:AIOPS_LLM_MODEL    = $llmModel    }
     uv run uvicorn demo.ui.server:app --host 127.0.0.1 --port $port
-} -ArgumentList $RepoRoot, $UiPort, $LlmProvider, $LlmModel
+} -ArgumentList $RepoRoot, $UiPort, $LlmProvider, $LlmModel, $env:USERPROFILE, $env:KUBECONFIG, $standaloneKubectl
 $providerNote = if ($LlmProvider) { "LLM provider: $LlmProvider (overrides .env)" } else { "LLM provider: from .env" }
 Write-Host "    started uvicorn (job $($uiJob.Id))  [$providerNote]" -ForegroundColor Green
 
