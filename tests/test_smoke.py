@@ -116,14 +116,17 @@ def test_hitl_gate_optional_respects_tenant_flag():
 
 
 def test_every_scenario_has_a_truth_file():
-    scenarios_dir = REPO_ROOT / "demo" / "failure_injection" / "scenarios"
+    """DEMO-12 (#64): one folder, one rule — every scenario in
+    ``demo/scenarios/`` ships with a paired truth file. CLAUDE.md non-
+    negotiable #8: "truth files for every demo scenario"."""
+    scenarios_dir = REPO_ROOT / "demo" / "scenarios"
     truth_dir = REPO_ROOT / "demo" / "truth_files"
     scenario_ids = {
         yaml.safe_load(p.read_text(encoding="utf-8"))["id"] for p in scenarios_dir.glob("*.yaml")
     }
     truth_ids = {p.stem for p in truth_dir.glob("*.yaml") if p.stem != "template"}
     missing = scenario_ids - truth_ids
-    assert not missing, f"scenarios without truth files: {missing}"
+    assert not missing, f"scenarios without truth files: {sorted(missing)}"
 
 
 def test_truth_template_is_valid_yaml():

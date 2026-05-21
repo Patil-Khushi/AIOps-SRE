@@ -1,37 +1,86 @@
-# Failure-injection scenarios
+# `demo/scenarios/` — failure-scenario catalog (single source of truth)
 
-One YAML file per scenario. `demo/ui/server.py` reads this directory at
-startup (D5) and exposes the result via `/api/scenarios`. PMs, SREs, and
-test writers can add or edit a scenario by dropping a YAML file here — no
-Python edit required.
+One YAML file per failure scenario. **This is the only place scenarios live.**
+Both consumers read this folder:
 
-## Schema
+| Consumer | What it does |
+|---|---|
+| `demo/ui/server.py` | Reads every file at startup; exposes the catalog via `/api/scenarios`; the React dashboard's Overview page renders the Inject/Reset buttons. |
+| `demo/failure_injection/inject.py` | Reads every file at startup; the CLI `--list` and runnable scenarios are filtered to files that declare a `mechanism`. |
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `id` | string (snake_case) | yes | Must equal the filename stem (e.g. `payment_failure.yaml` → `id: payment_failure`). Used by `/api/scenarios/{id}/inject` and as the truth-file key. |
-| `category` | enum | yes | One of `errors`, `latency`, `capacity`, `infra`. Drives UI grouping. |
-| `flag` | string | yes | flagd feature-flag name (matches a key under `flags.*` in the `flagd-config` configmap). |
-| `variant_on` | string | no | Variant value flagd sets when the scenario is injected. Defaults to `"on"`. For intensity flags use the variant from flagd-config (e.g. `"100%"`, `"10sec"`, `"100x"`). |
-| `alert` | string | yes | Prometheus alert rule name expected to fire. Must match a rule defined in `demo/otel-demo/values.yaml` under `prometheus.serverFiles`. |
-| `service` | string | yes | OTel demo service whose telemetry the alert reads. |
-| `title` | string | yes | Short human label shown in the UI. |
-| `description` | string | yes | One-sentence description shown in the UI. |
-| `eta_seconds` | int | yes | Approximate seconds until the alert is expected to fire after injection. The UI polls `/api/live-alerts` for at least this long. |
+POC guide §8.1: ≥3 scenarios triggerable with one command. **CLAUDE.md non-negotiable #8:** every scenario ships with a paired truth file at `demo/truth_files/<id>.yaml`. Enforced by `tests/test_smoke.py::test_every_scenario_has_a_truth_file`.
+
+## Two flavours — pick the one that fits
+
+Both flavours coexist in this folder. The dashboard reads both; the CLI only runs files with a `mechanism` block.
+
+### Minimal (UI-only descriptor)
+
+Use for scenarios driven by simple flag toggles where the UI just needs metadata. The CLI silently skips these — they don't define how to inject the failure programmatically.
+
+```yaml
+id: payment_failure              # snake_case; must equal filename stem
+category: errors                 # errors | latency | capacity | infra (drives UI grouping)
+flag: paymentFailure             # flagd flag name (must exist in demo/otel-demo/values.yaml)
+variant_on: "100%"               # optional — defaults to "on"
+alert: PaymentErrorRateHigh      # Prometheus alert rule expected to fire
+service: payment                 # OTel demo service the alert reads
+title: Payment failure (HTTP 500s)
+description: Payment service rejects every charge with a 5xx error.
+eta_seconds: 90                  # how long before the alert fires after injection
+```
+
+### Extended (CLI-runnable)
+
+Use for scenarios you also want to run from `inject.py`. Adds a `mechanism` block plus optional signal expectations.
+
+```yaml
+id: slow-product-catalog         # kebab- or snake_case both OK; must equal filename stem
+title: Product catalog service responds slowly under load
+description: |
+  Multi-line. Why this scenario, what it tests, what NOT to claim from it.
+
+mechanism: flagd                 # flagd | kubectl | chaos-mesh (Phase 1+)
+flagd:                           # required when mechanism: flagd
+  flag_key: productCatalogFailure
+  variant: "on"
+kubectl:                         # required when mechanism: kubectl
+  namespace: otel-demo
+  selector: app.kubernetes.io/component=<service>
+  action: delete-pod
+
+expected_signals:                # informational, for the truth file to elaborate
+  - prometheus_metric: <PromQL>
+  - log_pattern: <regex>
+  - trace_pattern: <description>
+
+duration_seconds: 600
+clears_on: failure_injection.inject --clear
+```
 
 ## Adding a new scenario
 
-1. Pick a unique `id` (snake_case).
-2. Confirm the matching flagd flag exists in `demo/otel-demo/values.yaml`
-   (under `featureflagservice.flagdConfig` or wherever flagd-config lives).
-3. Confirm or add the matching Prometheus alert rule.
-4. Copy an existing file as a template, edit fields.
-5. Add a matching truth file at `demo/truth_files/<id>.yaml` (D6 enforces this).
-6. Restart the server. The scenario auto-appears on the Overview page.
+1. Pick a unique `id`. Use `snake_case` for new UI-only scenarios; kebab-case is OK for CLI-runnable scenarios that keep their legacy ids.
+2. Confirm the matching flagd flag exists in `demo/otel-demo/values.yaml` (or add it).
+3. If the scenario needs an alert, add or reuse a rule under `prometheus.serverFiles.alerting_rules.yml` in the same file.
+4. Drop a YAML in this folder using one of the schemas above.
+5. **Required:** add a paired truth file at `demo/truth_files/<id>.yaml` — copy `demo/truth_files/template.yaml` as a starting point.
+6. Restart the demo server (`.\stop.ps1; .\start.ps1`). The new scenario auto-appears in the Overview page; `inject.py --list` picks it up if it has a `mechanism` block.
 
-## Single source of truth
+## Using the CLI runner
 
-This directory is the source of truth. `demo/ui/server.py` is a consumer.
-If you change a value, do it here — not in Python. A smoke test
-(`tests/test_chatops_seam.py` and friends) verifies every scenario file
-parses against this schema and that every scenario has a truth file.
+```powershell
+uv run --extra ui python -m demo.failure_injection.inject --list
+uv run --extra ui python -m demo.failure_injection.inject slow-product-catalog
+uv run --extra ui python -m demo.failure_injection.inject --clear
+```
+
+`--clear` resets every flagd-driven failure. `kubectl`-driven scenarios (e.g. pod-kill) self-heal because Kubernetes restarts the pod.
+
+## Why two flavours?
+
+The dashboard needs lightweight catalog rows (12 of those today). The CLI needs the same scenarios plus explicit "how to inject" wiring (3 of those today). Combining them in one folder with optional fields keeps the catalog single-sourced without forcing every UI row to grow a full chaos-injection spec.
+
+## Why not just Chaos Mesh?
+
+Chaos Mesh is the right answer for Phase 1+ chaos experiments (PRS-007 Chaos Orchestrator). Phase 0 needs *cheap* repeatable failures we can trigger from a Python script during a demo, without depending on Chaos Mesh being installed. Both end up coexisting — Chaos Mesh becomes one of the `mechanism:` values in the schema above.

@@ -1,7 +1,12 @@
 """One-command failure-injection runner.
 
-Reads YAML scenario specs from ``demo/failure_injection/scenarios/`` and applies
-the failure to the running demo cluster. Two mechanisms supported in Phase 0:
+Reads YAML scenario specs from ``demo/scenarios/`` (the single source of truth
+shared with the UI's ``/api/scenarios`` endpoint) and applies the failure to
+the running demo cluster. Scenarios that lack a top-level ``mechanism`` field
+are UI-only descriptors and are silently skipped here — the CLI only runs
+scenarios that declare *how* to inject them.
+
+Two mechanisms supported in Phase 0:
 
 - ``flagd``    — POST to flagd's HTTP endpoint inside the cluster (port-forwarded).
 - ``kubectl``  — delete a pod by selector. Used for hard-failure scenarios.
@@ -44,7 +49,10 @@ except ImportError as exc:  # pragma: no cover
         "Run: uv sync --extra ui"
     )
 
-SCENARIOS_DIR = Path(__file__).parent / "scenarios"
+# DEMO-12 (#64): scenarios live in demo/scenarios/ — one folder, both the UI
+# and the CLI read from it. UI-only scenarios omit the ``mechanism`` field;
+# the CLI skips them at load time so its --list output stays runnable.
+SCENARIOS_DIR = Path(__file__).resolve().parents[1] / "scenarios"
 DEFAULT_NAMESPACE = "otel-demo"
 
 
@@ -58,9 +66,16 @@ class Scenario:
 
 
 def load_scenarios() -> dict[str, Scenario]:
+    """Load every YAML in ``demo/scenarios/`` that declares a ``mechanism``.
+
+    Files without ``mechanism`` are UI descriptors (catalog rows for the
+    dashboard); they are not runnable by this CLI and are silently skipped.
+    """
     out: dict[str, Scenario] = {}
     for p in sorted(SCENARIOS_DIR.glob("*.yaml")):
         data = yaml.safe_load(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or "mechanism" not in data:
+            continue  # UI-only descriptor — dashboard reads it, CLI skips it
         out[data["id"]] = Scenario(
             id=data["id"],
             title=data["title"],
