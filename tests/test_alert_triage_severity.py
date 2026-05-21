@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 
-
 # ─── pure-parser tests ─────────────────────────────────────────────────────
 
 
@@ -71,9 +70,7 @@ def test_parse_severity_response_accepts_variants(
 def test_parse_severity_response_rejects_garbage(text: str) -> None:
     from agents.alert_triage.agent import _parse_severity_response
 
-    assert _parse_severity_response(text) is None, (
-        f"parser should have rejected: {text!r}"
-    )
+    assert _parse_severity_response(text) is None, f"parser should have rejected: {text!r}"
 
 
 # ─── integration: trace-line dispatch ──────────────────────────────────────

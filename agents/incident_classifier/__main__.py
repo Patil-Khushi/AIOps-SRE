@@ -3,11 +3,10 @@
 Examples::
 
     uv run python -m agents.incident_classifier --list
-    uv run python -m agents.incident_classifier --fixture <id>
+    uv run python -m agents.incident_classifier --fixture <id> [--provider anthropic]
 
-v0: ``classify`` raises ``NotImplementedError``, so ``--fixture`` will fail
-loudly until RA-002 v1 lands. ``--list`` works against the (currently empty)
-golden set.
+Classifies a golden fixture and prints the structured ``Classification``.
+``--provider`` swaps the LLM backend via ``aiops.llm`` for ad-hoc comparison.
 """
 
 from __future__ import annotations

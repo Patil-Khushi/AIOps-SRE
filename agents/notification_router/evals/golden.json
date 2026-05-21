@@ -152,6 +152,36 @@
         "actions": ["post_to_chat"],
         "mentions": []
       }
+    },
+    {
+      "id": "suppressed-skips-chatops",
+      "description": "A Suppressed verdict (RA-001 marked it a duplicate) must not produce any actions, so route() short-circuits the chatops emit.",
+      "input": {
+        "verdict": {
+          "affected_service": "payment",
+          "severity": "Sev-2",
+          "confidence_score": 0.85,
+          "alert_summary": "Payment service error rate spike (duplicate cluster)",
+          "assigned_team": "Payments Team",
+          "assigned_engineer": "oncall@payments.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 3,
+          "status": "Suppressed",
+          "audit_metadata": {
+            "created_at": "2026-05-13T14:05:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["payment-dup-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T14:05:00Z"
+      },
+      "expected": {
+        "chat_severity": "info",
+        "channel": "suppressed",
+        "actions": [],
+        "mentions": []
+      }
     }
   ]
 }

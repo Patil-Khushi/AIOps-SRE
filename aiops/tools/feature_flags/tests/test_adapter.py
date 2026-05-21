@@ -54,9 +54,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> FlagdConfigMapAdapter:
     Resets ``adapter._adapter`` so each test gets a fresh singleton injection.
     """
     monkeypatch.setattr(adapter_mod.config, "load_incluster_config", lambda: None)
-    monkeypatch.setattr(
-        adapter_mod.config, "load_kube_config", lambda *a, **kw: None
-    )
+    monkeypatch.setattr(adapter_mod.config, "load_kube_config", lambda *a, **kw: None)
     monkeypatch.setattr(adapter_mod, "_resolve_kubeconfig_path", lambda: "/fake/kubeconfig")
     # Use lambdas so each constructor call returns a fresh MagicMock without
     # MagicMock(another_mock) tripping spec introspection (InvalidSpecError).

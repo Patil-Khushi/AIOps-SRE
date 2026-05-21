@@ -60,11 +60,7 @@ def _resolve_kubeconfig_path() -> str | None:
     """
     if (path := os.environ.get("KUBECONFIG")) and os.path.exists(path):
         return path
-    home = (
-        os.environ.get("USERPROFILE")
-        or os.environ.get("HOME")
-        or os.path.expanduser("~")
-    )
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or os.path.expanduser("~")
     candidate = os.path.join(home, ".kube", "config") if home else None
     if candidate and os.path.exists(candidate):
         return candidate

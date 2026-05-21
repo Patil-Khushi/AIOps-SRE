@@ -73,9 +73,7 @@ def save_verdict(
         return int(row.id)  # type: ignore[arg-type]
 
 
-def find_recent_verdict_by_alert_id(
-    alert_id: str, *, window: timedelta
-) -> dict[str, Any] | None:
+def find_recent_verdict_by_alert_id(alert_id: str, *, window: timedelta) -> dict[str, Any] | None:
     """Return the most recently created verdict for ``alert_id`` within
     ``window``, or ``None`` if none exists. Used by the alert_triage agent's
     transport-layer idempotency check: a duplicate delivery of the same

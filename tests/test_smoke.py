@@ -56,6 +56,11 @@ def test_tool_registry_dispatches_by_capability():
     )
 
     reg = get_registry()
+    # Force the mock provider for this assertion. When .env has
+    # AIOPS_USE_MOCK_ITSM=false the servicenow provider also registers and
+    # whichever module imported first wins via the registry's setdefault.
+    # The README documents `select_provider` as the swap pattern.
+    reg.select_provider("itsm.incident.create", "mock.itsm.incident.create")
     result = reg.call(
         "itsm.incident.create",
         short_description="payments DB pool exhausted",

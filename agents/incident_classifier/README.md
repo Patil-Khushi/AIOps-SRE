@@ -1,13 +1,13 @@
-# RA-002 — Incident Classifier (skeleton)
+# RA-002 — Incident Classifier
 
-Reactive-Active phase. Takes a triaged incident from RA-001 and assigns it a
+Reactive-Active phase. Takes a triaged alert from RA-001 and assigns it a
 category so downstream routing (Auto-Ticketing, runbook selection, RCA) can
 pick the right path.
 
-**Status:** skeleton only. `classify()` raises `NotImplementedError`. The
-authoritative contract is the catalog row in
-`docs/Adaptive_AIOps_Agent_Catalog.xlsx` (Reactive-Active sheet) — read it
-before filling this in.
+**Status:** Phase 1 shipped (PR #48). `classify()` runs a tiered rule →
+LLM → fallback pipeline with persistence + a standalone React dashboard at
+`/classifier`. The authoritative contract is the catalog row in
+`docs/Adaptive_AIOps_Agent_Catalog.xlsx` (Reactive-Active sheet).
 
 ## Public surface
 
@@ -24,17 +24,20 @@ from agents.incident_classifier import (
 
 | Symbol | Shape |
 |---|---|
-| `ClassificationInput` | `{ triage_verdict: TriageVerdict }` — wraps RA-001's output, the documented seam between the two agents. |
+| `ClassificationInput` | `{ alert: Alert, triage_verdict: TriageVerdict }` — both the upstream alert and RA-001's verdict; the classifier reads labels from one and ownership/severity from the other. |
 | `IncidentType` | Literal of `infrastructure` \| `application` \| `network` \| `external_dependency` \| `change_related`. |
 | `Classification` | `{ incident_type, confidence (0..1), rationale, tags: list[str] }`. |
-| `classify(payload)` | `ClassificationInput → Classification`. Raises `NotImplementedError` in v0. |
+| `classify(payload)` | `ClassificationInput → Classification`. Multi-tier: deterministic rules first, LLM consult for ambiguous cases, fallback when the LLM gateway is unreachable. |
 
 ## Run locally
 
 ```powershell
 uv run python -m agents.incident_classifier --list
-uv run python -m agents.incident_classifier --fixture <id>      # raises NotImplementedError in v0
+uv run python -m agents.incident_classifier --fixture <id>
+uv run python -m evals.harness --agent incident_classifier
 ```
+
+The standalone classifier dashboard ships under [`demo/classifier-ui/`](../../demo/classifier-ui/) and is served by the FastAPI demo app at `/classifier` once `start.ps1` builds it.
 
 ## Layout
 
@@ -43,23 +46,9 @@ agents/incident_classifier/
 ├── README.md
 ├── __init__.py
 ├── __main__.py          # CLI runner
-├── agent.py             # entry point: classify()
-├── models.py            # Incident, IncidentVerdict, AuditMetadata
-├── prompts.py           # SYSTEM_PROMPT, CLASSIFY_PROMPT_USER (placeholders)
+├── agent.py             # entry point: classify() + tiered pipeline + state persistence
+├── models.py            # ClassificationInput, Classification, IncidentType
+├── prompts.py           # SYSTEM_PROMPT, CLASSIFY_PROMPT_USER
 └── evals/
-    └── golden.json      # empty until v1
+    └── golden.json      # hand-built golden cases
 ```
-
-## Done when (skeleton ticket)
-
-- [x] Directory exists with the files above.
-- [x] `from agents.incident_classifier import classify` resolves.
-
-## Next (out of scope for this ticket)
-
-1. Read the catalog row for RA-002. Lock the input/output contract.
-2. Fill in `models.py` against that contract.
-3. Implement `classify()` — rule-based first, LLM consult for ambiguous cases
-   (mirror the pattern in `agents/alert_triage/agent.py`).
-4. Populate `evals/golden.json` in the same week (CLAUDE.md principle #7).
-5. Set the HITL level in `policies/hitl.rego` to match the catalog.

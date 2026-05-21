@@ -60,6 +60,10 @@ packages = ["aiops", "agents", "evals", "demo"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+extend-exclude = [
+    # Local worktrees Claude Code creates for parallel sessions; not source.
+    ".claude/worktrees",
+]
 
 [tool.ruff.lint]
 select = [
@@ -73,7 +77,10 @@ select = [
     "SIM",  # flake8-simplify
 ]
 ignore = [
-    "E501",  # line too long — handled by formatter where possible
+    "E501",   # line too long — handled by formatter where possible
+    "RUF001", # ambiguous Unicode in strings (× / ‒) — intentional in this codebase's docs
+    "RUF002", # ambiguous Unicode in docstrings — same reasoning
+    "RUF003", # ambiguous Unicode in comments (α, en-dash) — intentional math/typographic notation
 ]
 
 [tool.ruff.lint.per-file-ignores]

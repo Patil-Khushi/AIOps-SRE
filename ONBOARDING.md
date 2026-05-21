@@ -366,6 +366,23 @@ kubectl config current-context
 kubectl get pods -n otel-demo
 kubectl logs -n otel-demo -l app.kubernetes.io/component=frontend --tail=100
 helm list -n otel-demo
+
+# Frontend SPA builds (start.ps1 does these automatically — only needed
+# if you're running uvicorn directly and want /dashboard or /classifier).
+cd demo/dashboard      ; npm install ; npm run build ; cd ..\..
+cd demo/classifier-ui  ; npm install ; npm run build ; cd ..\..
+```
+
+### Tailing the chatops audit log
+
+The Notification Router writes every dispatch to [`demo/audit/chatops.jsonl`](demo/audit/). On PowerShell 5.1 you **must** pass `-Encoding UTF8` or em-dashes and other multi-byte characters show up as `â€"` mojibake (5.1's `Get-Content` default is CP1252; PS7+ defaults to UTF-8 but `start.ps1` documents 5.1 as the supported shell):
+
+```powershell
+# PowerShell 5.1 — explicit UTF-8
+Get-Content demo/audit/chatops.jsonl -Wait -Encoding UTF8
+
+# git-bash / WSL
+tail -f demo/audit/chatops.jsonl
 ```
 
 ---
