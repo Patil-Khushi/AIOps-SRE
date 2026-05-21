@@ -69,6 +69,7 @@ from aiops.tools import (  # noqa: E402
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
+from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -88,11 +89,24 @@ def _bootstrap_state() -> None:
 
 @app.on_event("startup")
 def _register_chatops_adapters() -> None:
-    """JSON audit log (D3). The WebSocket sink (D2) registers itself via
-    ``_register_chatops_ws_routes`` below."""
+    """JSON audit log (D3) + optional Slack webhook (CHAT-1). The WebSocket
+    sink (D2) registers itself via ``_register_chatops_ws_routes`` below.
+
+    Slack registration is opt-in: only happens when ``AIOPS_SLACK_WEBHOOK_URL``
+    is set in the environment. Without it the demo runs cleanly against the
+    JSONL audit log + WebSocket dashboard panel.
+    """
     audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
     get_chatops_client().register(JsonFileChatOpsAdapter(audit_path))
     logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
+
+    slack_url = os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip()
+    if slack_url:
+        try:
+            get_chatops_client().register(SlackWebhookAdapter(slack_url))
+            logger.info("chatops: registered slack webhook adapter")
+        except ValueError as exc:
+            logger.warning("chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping", exc)
 
 
 _register_chatops_ws_routes(app)
