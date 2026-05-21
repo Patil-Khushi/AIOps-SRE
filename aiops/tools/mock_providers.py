@@ -33,13 +33,28 @@ def _use_mock_itsm() -> bool:
     provider="mock",
     description="Pretend to create an ITSM incident; returns a fake ticket id.",
 )
-def mock_create_incident(short_description: str, urgency: int = 3) -> ToolResult:
+def mock_create_incident(
+    short_description: str,
+    urgency: int = 3,
+    description: str | None = None,
+    assignment_group: str | None = None,
+    category: str | None = None,
+) -> ToolResult:
+    """Mirror the real ServiceNow ``create_incident`` signature.
+
+    The extra kwargs are accepted (not just filtered out by the registry) so
+    tests can assert that RA-003 actually forwarded them — silently dropping
+    them would let a regression slide through CI.
+    """
     return ToolResult(
         ok=True,
         data={
             "id": "INC0000001",
             "short_description": short_description,
             "urgency": urgency,
+            "description": description,
+            "assignment_group": assignment_group,
+            "category": category,
             "state": "new",
         },
         metadata={"provider": "mock"},

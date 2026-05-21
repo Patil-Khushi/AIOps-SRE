@@ -53,11 +53,19 @@ def _register_if_real(**kwargs: Any) -> Any:
     return tool(**kwargs)
 
 
-def _config() -> tuple[str, httpx.BasicAuth, float] | None:
-    """Return (base_url, auth, timeout) or ``None`` if creds are unset.
+def _config() -> tuple[str, httpx.BasicAuth, float, bool | str] | None:
+    """Return (base_url, auth, timeout, verify) or ``None`` if creds are unset.
 
     Read lazily so ``.env`` edits take effect on the next call without
     re-importing the module.
+
+    ``verify`` controls httpx's TLS verification:
+    - default (unset / ``true``) — verify against the system CA bundle.
+    - a file path — verify against that custom CA bundle (the right answer
+      on a corp network: point this at the Zensar root CA PEM).
+    - ``false`` — skip verification entirely. POC escape hatch when a
+      TLS-intercepting proxy sits between the agent and the PDI; never use
+      in production.
     """
     url = os.environ.get("AIOPS_SERVICENOW_INSTANCE_URL", "").rstrip("/")
     user = os.environ.get("AIOPS_SERVICENOW_USER", "")
@@ -65,7 +73,16 @@ def _config() -> tuple[str, httpx.BasicAuth, float] | None:
     if not (url and user and password):
         return None
     timeout = float(os.environ.get("AIOPS_SERVICENOW_TIMEOUT", "15"))
-    return url, httpx.BasicAuth(username=user, password=password), timeout
+    verify_raw = os.environ.get("AIOPS_SERVICENOW_VERIFY_TLS", "true").strip()
+    verify: bool | str
+    if verify_raw.lower() in {"0", "false", "no"}:
+        verify = False
+    elif verify_raw.lower() in {"1", "true", "yes", ""}:
+        verify = True
+    else:
+        # Anything else is treated as a CA bundle path.
+        verify = verify_raw
+    return url, httpx.BasicAuth(username=user, password=password), timeout, verify
 
 
 def _not_configured() -> ToolResult:
@@ -89,7 +106,7 @@ def _request(
     cfg = _config()
     if cfg is None:
         return _not_configured()
-    base_url, auth, timeout = cfg
+    base_url, auth, timeout, verify = cfg
     try:
         r = httpx.request(
             method,
@@ -98,6 +115,7 @@ def _request(
             json=json,
             auth=auth,
             timeout=timeout,
+            verify=verify,
             headers={"Accept": "application/json"},
         )
     except httpx.HTTPError as exc:

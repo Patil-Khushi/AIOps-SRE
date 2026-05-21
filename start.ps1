@@ -211,7 +211,7 @@ if ($ready) {
 
 Write-Host ''
 Write-Host '== Up and running ==' -ForegroundColor Green
-Write-Host "  Dashboard:    http://localhost:$UiPort/dashboard/   (React)"
+Write-Host "  Dashboard:    http://localhost:$UiPort/dashboard/   (RA-001)"
 Write-Host "  Classifier:   http://localhost:$UiPort/classifier   (RA-002 SPA)"
 Write-Host "  Demo UI:      http://localhost:$UiPort/             (vanilla)"
 Write-Host "  API docs:     http://localhost:$UiPort/docs         (Swagger)"
