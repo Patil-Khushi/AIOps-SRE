@@ -184,11 +184,13 @@ class TriageRequest(BaseModel):
 
 @app.post("/api/triage", response_model=None)
 def triage_alert(req: TriageRequest) -> dict[str, Any]:
-    """Triage + auto-ticket + classify + notify chatops for a single alert.
+    """Triage + classify + auto-ticket + notify chatops for a single alert.
 
     Body: ``{"alert": {<Alert payload>}}``. Pipeline:
-    parse → RA-001 triage → persist verdict → RA-003 auto-ticket →
-    RA-002 classify → persist classification → RA-005 chatops notify.
+    parse → RA-001 triage → persist verdict → RA-002 classify →
+    persist classification → RA-003 auto-ticket (with classification so the
+    ticket's ``category`` + description's classification block are populated
+    at create time, not patched in later) → RA-005 chatops notify.
     A routing failure is logged but the response still returns 200 with
     everything else populated; ``notifications`` is ``null`` in that case.
 
@@ -204,10 +206,13 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     verdict: TriageVerdict = triage(alert_obj)
     verdict_id = state_repo.save_verdict(verdict, cluster_key=alert_obj.cluster_key())
 
-    ticket_record = auto_ticket(verdict)
-
+    # Classify BEFORE ticketing (DEMO-3 / #55): RA-002 does not depend on the
+    # ticket id, and the ServiceNow incident's ``category`` + description
+    # block are only useful if classification is available at create time.
     classification = classify(ClassificationInput(alert=alert_obj, triage_verdict=verdict))
     classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
+
+    ticket_record = auto_ticket(verdict, classification=classification)
 
     notifications: dict[str, Any] | None = None
     try:
