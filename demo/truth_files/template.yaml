@@ -55,6 +55,52 @@ scoring:
   fix_step_match: any-of             # any-of | first-equals | exact-set
   max_time_to_rca_seconds: 180
 
+# ─── EVAL-1 (#75): wire truth files into the harness ──────────────────────
+#
+# Adding the two blocks below opts this truth file in to automated evaluation
+# by `uv run python -m evals.harness`. Without them, the truth file remains
+# human documentation only (smoke test still enforces presence).
+#
+# Both blocks are optional individually — but you need both to be picked up:
+#   - expected_alert_payload  → the synthetic Alert payload fed to agents
+#   - exercises               → which agents to run, with per-agent expected output
+
+# The canonical Alert payload that THIS scenario produces upstream. Same
+# shape the FastAPI POST /api/triage accepts. The harness feeds this into
+# alert_triage.agent.run() directly.
+expected_alert_payload:
+  alert_id: <scenario-derived id, e.g. payment-error-rate-high>
+  service: <affected service, e.g. payment>
+  metric: <metric name, e.g. error_rate>
+  value: <numeric, e.g. 0.85>
+  threshold: <numeric, e.g. 0.05>
+  timestamp: "2026-05-21T10:00:00Z"
+  source: Prometheus              # or Alertmanager / Datadog / CloudWatch
+  labels:
+    alertname: <prometheus alertname>
+    severity: <critical | warning | info>
+    service: <same as service above>
+
+# Per-agent expected output. Field names follow the agent's run() output
+# shape, with the scoring suffix grammar from evals/scoring.py:
+#   <field>                  exact equality
+#   <field>_in: [list]       membership
+#   <field>_contains: value  substring/element
+#   min_<field>: N           numeric >=
+#   max_<field>: N           numeric <=
+#
+# v0: only `alert_triage` is wired (it takes a bare Alert payload as input).
+# Other agents listed here are recorded as "deferred" pending [INFRA-2 #74]
+# orchestrator (which provides chained inputs for classify/route/ticket).
+exercises:
+  alert_triage:
+    severity_in: ["Sev-1", "Sev-2"]
+    affected_service: <service name, must match service above>
+    status: Triaged                # or Suppressed if dedup is expected
+    min_confidence_score: 0.6
+  # incident_classifier: { ... }   # deferred — needs triage_verdict input
+  # notification_router: { ... }   # deferred — needs verdict input
+
 notes: |
   Anything else worth recording — known gotchas, why this scenario is in the
   POC, what we'd want to test once we have real customer data.

@@ -56,6 +56,27 @@ scoring:
   fix_step_match: any-of
   max_time_to_rca_seconds: 180
 
+# EVAL-1 (#75) — wired into the eval harness.
+expected_alert_payload:
+  alert_id: ALT-product-catalog-latency-p95-high
+  service: product-catalog
+  metric: latency_p95_seconds
+  value: 5.2
+  threshold: 1.0
+  timestamp: "2026-05-21T10:00:00Z"
+  source: Prometheus
+  labels:
+    alertname: ProductCatalogLatencyP95High
+    severity: warning
+    service: product-catalog
+
+exercises:
+  alert_triage:
+    severity_in: ["Sev-2", "Sev-3"]
+    affected_service: product-catalog
+    status_in: ["Triaged", "Suppressed"]  # see payment_failure.yaml for rationale
+    min_confidence_score: 0.5
+
 notes: |
   This is the easiest demo failure and a good first target for Alert Triage,
   Log Correlation, and the RCA Agent. The "obvious" fix (restart) is a known
