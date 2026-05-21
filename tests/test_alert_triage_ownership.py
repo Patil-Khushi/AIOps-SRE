@@ -74,7 +74,9 @@ def _stub_cmdb(monkeypatch, data: Any) -> None:
     prior = registry._active.get("itsm.cmdb.lookup")  # type: ignore[attr-defined]
     registry._active["itsm.cmdb.lookup"] = tool_name  # type: ignore[attr-defined]
     monkeypatch.setattr(
-        registry, "_active", {**registry._active, "itsm.cmdb.lookup": tool_name},  # type: ignore[attr-defined]
+        registry,
+        "_active",
+        {**registry._active, "itsm.cmdb.lookup": tool_name},  # type: ignore[attr-defined]
         raising=False,
     )
     # The above monkeypatch.setattr makes the restoration automatic at teardown.
@@ -99,7 +101,9 @@ def _stub_oncall(monkeypatch, data: Any) -> None:
         provider="test",
     )
     monkeypatch.setattr(
-        registry, "_active", {**registry._active, "oncall.schedule.lookup": tool_name},  # type: ignore[attr-defined]
+        registry,
+        "_active",
+        {**registry._active, "oncall.schedule.lookup": tool_name},  # type: ignore[attr-defined]
         raising=False,
     )
 
@@ -108,15 +112,21 @@ def _stub_oncall(monkeypatch, data: Any) -> None:
 
 
 def test_normal_cmdb_payload_populates_verdict(clean_state, monkeypatch):
-    _stub_cmdb(monkeypatch, {
-        "service": "payment",
-        "team": "Payments Team",
-        "runbook": "https://runbooks.example.com/payment-cpu",
-    })
-    _stub_oncall(monkeypatch, {
-        "team": "Payments Team",
-        "engineer_email": "oncall@payments.example.com",
-    })
+    _stub_cmdb(
+        monkeypatch,
+        {
+            "service": "payment",
+            "team": "Payments Team",
+            "runbook": "https://runbooks.example.com/payment-cpu",
+        },
+    )
+    _stub_oncall(
+        monkeypatch,
+        {
+            "team": "Payments Team",
+            "engineer_email": "oncall@payments.example.com",
+        },
+    )
 
     from agents.alert_triage import run
 
@@ -132,9 +142,9 @@ def test_normal_cmdb_payload_populates_verdict(clean_state, monkeypatch):
 @pytest.mark.parametrize(
     "weird_team",
     [
-        0,        # ServiceNow could return numeric IDs in a misconfigured field
-        False,    # accidental bool serialization
-        [],       # empty list (e.g. multi-team field misrendered)
+        0,  # ServiceNow could return numeric IDs in a misconfigured field
+        False,  # accidental bool serialization
+        [],  # empty list (e.g. multi-team field misrendered)
         {},
     ],
     ids=["int-zero", "bool-false", "empty-list", "empty-dict"],

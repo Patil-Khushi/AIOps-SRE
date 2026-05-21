@@ -138,9 +138,7 @@ def test_trace_lines_are_emitted_in_input_order(restore_active_provider):
 
     # Pull out the names that appear in trace lines, in the order they appear.
     trace_order = [
-        name
-        for name in input_order
-        if any(f"metrics_ctx[{name}]" in line for line in trace)
+        name for name in input_order if any(f"metrics_ctx[{name}]" in line for line in trace)
     ]
     # The error_rate_5xx query is the one carrying http_status_code → fails.
     assert "error_rate_5xx" in trace_order
@@ -168,7 +166,7 @@ def test_capability_not_registered_short_circuits(restore_active_provider):
 
     assert out is None
     not_registered_lines = [
-        l for l in trace if "capability observability.metrics.query not registered" in l
+        line for line in trace if "capability observability.metrics.query not registered" in line
     ]
     assert len(not_registered_lines) == 1, trace
 
@@ -186,7 +184,7 @@ def test_per_query_exceptions_are_captured_not_propagated(restore_active_provide
 
     assert out is not None
     # The failing query is recorded in the trace.
-    assert any("metrics_ctx[error_rate_5xx]" in l and "error" in l for l in trace), trace
+    assert any("metrics_ctx[error_rate_5xx]" in line and "error" in line for line in trace), trace
     # And the other queries still produced numeric values.
     results = out["results"]
     assert results["error_rate_5xx"] is None

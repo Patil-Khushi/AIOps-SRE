@@ -62,8 +62,10 @@ from agents.notification_router import route as route_notification  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
-from aiops.tools import feature_flags  # noqa: E402,F401  — ARCH-1 @tool registration
-from aiops.tools import get_registry  # noqa: E402
+from aiops.tools import (  # noqa: E402
+    feature_flags,  # noqa: F401  — ARCH-1 @tool registration
+    get_registry,
+)
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402

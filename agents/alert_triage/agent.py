@@ -56,8 +56,15 @@ logger = logging.getLogger(__name__)
 
 # ─── tunables ───────────────────────────────────────────────────────────────
 _CUSTOMER_FACING = {
-    "frontend", "frontend-proxy", "checkout", "payment", "cart",
-    "currency", "ad", "recommendation", "shipping",
+    "frontend",
+    "frontend-proxy",
+    "checkout",
+    "payment",
+    "cart",
+    "currency",
+    "ad",
+    "recommendation",
+    "shipping",
 }
 _DEDUP_WINDOW = timedelta(minutes=5)
 _EMBEDDING_SIM_THRESHOLD = 0.85
@@ -212,9 +219,7 @@ def _dedup(alert: Alert) -> _DedupHit:
                 if sim >= _EMBEDDING_SIM_THRESHOLD:
                     # EMA update: anchor to origin while letting the cluster
                     # track slow drift. See _EMA_ALPHA.
-                    ema = _normalize(
-                        (1 - _EMA_ALPHA) * centroid + _EMA_ALPHA * new_emb_norm
-                    )
+                    ema = _normalize((1 - _EMA_ALPHA) * centroid + _EMA_ALPHA * new_emb_norm)
                     updated = state_repo.upsert_cluster(
                         cluster_key=cluster["cluster_key"],
                         service=alert.service,
@@ -321,7 +326,9 @@ def _sanitize_labels(labels: dict[str, Any] | None) -> str:
         return "{}"
     items = []
     for k, v in labels.items():
-        items.append(f"{_sanitize_prompt_value(k, max_length=64)}={_sanitize_prompt_value(v, max_length=128)}")
+        items.append(
+            f"{_sanitize_prompt_value(k, max_length=64)}={_sanitize_prompt_value(v, max_length=128)}"
+        )
     return "{" + ", ".join(items) + "}"
 
 
@@ -458,12 +465,7 @@ def _escape_promql_label_value(value: str) -> str:
     Without escaping, ``service_name="foo"bar"`` becomes a parse error at
     Prometheus; ``"} or vector(1) #`` would be a query-injection vector.
     """
-    return (
-        value
-        .replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-    )
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _build_promql_queries(alert: Alert) -> dict[str, str]:
@@ -479,21 +481,21 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
     queries: dict[str, str] = {
         # Request rate (calls/s) by service
         "request_rate": (
-            f'sum by (service_name) '
+            f"sum by (service_name) "
             f'(rate(http_client_duration_milliseconds_count{{service_name="{svc}"}}[5m]))'
         ),
         # Error rate — http_status_code 5xx
         "error_rate_5xx": (
-            f'sum by (service_name) ('
-            f'rate(http_client_duration_milliseconds_count'
+            f"sum by (service_name) ("
+            f"rate(http_client_duration_milliseconds_count"
             f'{{service_name="{svc}",http_status_code=~"5.."}}[5m])'
-            f')'
+            f")"
         ),
         # p95 duration (ms) — the most common alerting metric
         "latency_p95_ms": (
-            f'histogram_quantile(0.95, sum by (le, service_name) ('
+            f"histogram_quantile(0.95, sum by (le, service_name) ("
             f'rate(http_client_duration_milliseconds_bucket{{service_name="{svc}"}}[5m])'
-            f'))'
+            f"))"
         ),
     }
     # Metric-specific add-on for alerts that name CPU / memory explicitly.
@@ -502,9 +504,7 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
             f'sum(rate(otelcol_process_cpu_seconds_total{{service_name="{svc}"}}[5m]))'
         )
     elif "memory" in metric or "mem" in metric:
-        queries["memory_bytes"] = (
-            f'avg(otelcol_process_memory_rss_bytes{{service_name="{svc}"}})'
-        )
+        queries["memory_bytes"] = f'avg(otelcol_process_memory_rss_bytes{{service_name="{svc}"}})'
     return queries
 
 
@@ -715,9 +715,7 @@ def triage(alert: Alert) -> TriageVerdict:
     # and Alertmanager retries. Distinct from Stage 3 dedup, which handles
     # the orthogonal case of multiple DIFFERENT alerts about the same
     # condition.
-    cached = state_repo.find_recent_verdict_by_alert_id(
-        alert.alert_id, window=_IDEMPOTENCY_WINDOW
-    )
+    cached = state_repo.find_recent_verdict_by_alert_id(alert.alert_id, window=_IDEMPOTENCY_WINDOW)
     if cached is not None:
         logger.info(
             "idempotent triage: alert_id=%s already processed at %s, returning cached verdict",
@@ -754,9 +752,7 @@ def triage(alert: Alert) -> TriageVerdict:
                 f"fetched metric bundle: {', '.join(f'{k}={v}' for k, v in non_null.items())}"
             )
         else:
-            decision_trace.append(
-                f"queried {len(results)} metric series but all returned empty"
-            )
+            decision_trace.append(f"queried {len(results)} metric series but all returned empty")
     traces_ctx = _fetch_trace_context(alert, decision_trace)
     if traces_ctx is not None:
         decision_trace.append(
