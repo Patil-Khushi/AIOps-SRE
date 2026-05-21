@@ -443,19 +443,28 @@ SCENARIOS_DIR = Path(__file__).resolve().parent.parent / "scenarios"
 
 
 def _load_scenarios() -> dict[str, dict[str, Any]]:
-    """Read every ``demo/scenarios/*.yaml`` into a dict keyed by id.
+    """Read every UI-descriptor YAML in ``demo/scenarios/`` into a dict keyed by id.
 
     The dict key is the scenario id (also the filename stem); the value
     is the rest of the YAML record. We pop ``id`` from the value because
     it is already the key — keeping it both places would risk drift.
     Iteration order is alphabetical by filename; the UI then groups by
     ``category`` so the on-screen layout is stable regardless of fs order.
+
+    DEMO-12 (#64): the folder now also holds CLI-runnable scenarios that
+    declare a ``mechanism`` field. Those are the responsibility of
+    ``demo.failure_injection.inject`` and are *not* part of the dashboard
+    catalog. We skip them here so ``/api/scenarios`` only returns the rows
+    the React Overview page knows how to render.
     """
     out: dict[str, dict[str, Any]] = {}
     for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise RuntimeError(f"scenario file {path.name} must be a YAML mapping")
+        if "mechanism" in data:
+            # CLI-runnable scenario — owned by inject.py, not the UI catalog.
+            continue
         sid = data.pop("id", None)
         if sid != path.stem:
             raise RuntimeError(
