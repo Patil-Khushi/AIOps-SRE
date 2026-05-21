@@ -1,6 +1,13 @@
 # `agents/` — one directory per agent
 
-**Phase 0: this directory is intentionally empty of implementations.** The POC guide (§8.1) excludes agents from Phase 0; the first ones land in Phase 1 (`Alert Triage`, `Auto-Ticketing`, `Notification Router`, `Log Correlation`).
+Phase 1 is in flight. Four Reactive-Active agents have shipped:
+
+| Dir | Catalog ID | Phase | What it does |
+|---|---|---|---|
+| `alert_triage/` | RA-001 | Reactive-Active | Triages incoming alerts → `TriageVerdict` (service, severity, owning team, dedup). |
+| `incident_classifier/` | RA-002 | Reactive-Active | Assigns each verdict an `IncidentType` (infra / app / network / external_dep / change). |
+| `auto_ticketing/` | RA-003 | Reactive-Active | Turns a `TriageVerdict` into a ServiceNow PDI ticket via the `aiops.tools.itsm` seam. |
+| `notification_router/` | RA-005 | Reactive-Active | Routes verdicts to chatops (page / team channel / noise bucket) by severity + time-of-day. |
 
 When you add an agent, the contract for it lives in `docs/Adaptive_AIOps_Agent_Catalog.xlsx`. Read its row before writing code — that row is the source of truth for: description, key features, primary tool mapping, secondary integrations, inputs, outputs, HITL level, KPI.
 
@@ -8,7 +15,7 @@ When you add an agent, the contract for it lives in `docs/Adaptive_AIOps_Agent_C
 
 ```
 agents/
-├── ra-001-alert-triage/
+├── alert_triage/
 │   ├── README.md           # short contract summary + how to run locally
 │   ├── agent.py            # entry point
 │   ├── prompts/
@@ -16,13 +23,13 @@ agents/
 │   └── evals/
 │       ├── golden.json     # hand-built test cases
 │       └── README.md       # how to score, what failure means
-├── ra-003-auto-ticketing/
+├── auto_ticketing/
 │   └── ...
-└── prs-008-rca/
+└── rca/                    # post-POC
     └── ...
 ```
 
-Directory naming: `<phase-prefix>-<id>-<slug>` matching the catalog (`RA-001` → `ra-001-alert-triage`).
+Directory naming: `<slug>/` — short, lower-case, underscores. The catalog ID lives in the agent's README header (e.g. "RA-001"), not in the directory name.
 
 ## Adding an agent (checklist)
 

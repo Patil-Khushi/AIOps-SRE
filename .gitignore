@@ -53,8 +53,11 @@ node_modules/
 # Eval / run artifacts
 evals/runs/
 demo/.runs/
-demo/audit/
 *.log
+
+# Chatops audit log + rotations from start.ps1 -Fresh
+demo/audit/*
+!demo/audit/.gitkeep
 
 # Persistent state DB (aiops.state default lives under data/)
 data/

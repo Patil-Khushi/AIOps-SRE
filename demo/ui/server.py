@@ -1,26 +1,24 @@
 """FastAPI service wrapping the Alert Triage agent for the demo UI.
 
-Endpoints:
+The full endpoint catalog is served by FastAPI itself — visit ``GET /docs``
+(Swagger) or ``GET /openapi.json`` on a running server. We keep the inventory
+there instead of in a hand-maintained list that drifts every time someone
+adds a route (it last went stale at 12 routes when the file actually had 21).
 
-- ``GET  /``                       — serves ``static/index.html`` (legacy vanilla UI)
-- ``GET  /dashboard/*``            — serves the React+Vite dashboard build (if present)
-- ``GET  /api/health``             — liveness + agent + port-forward checks
-- ``GET  /api/fixtures``           — list golden.json cases for the UI's fixture pane
-- ``POST /api/triage``             — run the agent on a posted Alert payload
-- ``POST /api/triage/fixture/{id}``— run the agent on a named fixture
-- ``GET  /api/live-alerts``        — fetch currently firing Prometheus alerts
-- ``POST /api/triage/live``        — triage every firing alert and return all verdicts
-- ``GET  /api/topology``           — service nodes + dependency edges from Jaeger
-- ``GET  /api/system/pods``        — kubectl-derived pod status for otel-demo
-- ``WS   /ws/alerts``              — push live Prometheus alerts to the dashboard
-- ``WS   /ws/chatops``             — push chatops notifications (RA-005 sink) to the dashboard
+Roughly, the service hosts: the Alert Triage agent (POST /api/triage*,
+GET /api/fixtures, GET /api/verdicts), the Incident Classifier (RA-002) under
+/api/classifier/*, the failure-injection scenario endpoints under
+/api/scenarios/*, the live cluster mirrors (/api/live-alerts, /api/topology,
+/api/system/pods), and two WebSocket fan-outs (/ws/alerts, /ws/chatops). The
+React dashboard mounts at /dashboard/, the standalone classifier SPA at
+/classifier, and a legacy vanilla UI at /.
 
 The agent runs in-process (single uvicorn worker = single dedup store) so the
 embedding dedup memory persists across triage calls within one server lifetime.
 
 Vendor neutrality: this module uses ``aiops.tools`` capabilities and
-``agents.alert_triage`` only — it does not import Prometheus / Jaeger clients
-directly.
+``agents.alert_triage`` / ``agents.incident_classifier`` only — it does not
+import Prometheus / Jaeger / Kubernetes clients directly.
 """
 
 from __future__ import annotations
@@ -175,11 +173,12 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     Body: ``{"alert": {<Alert payload>}}``. Pipeline:
     parse → RA-001 triage → persist verdict → RA-003 auto-ticket →
     RA-002 classify → persist classification → RA-005 chatops notify.
-    The chatops fan-out is a side effect: a routing failure is logged but
-    the response still returns 200 with verdict/ticket/classification populated.
+    A routing failure is logged but the response still returns 200 with
+    everything else populated; ``notifications`` is ``null`` in that case.
 
     Response: ``{"verdict": TriageVerdict, "ticket": TicketRecord,
-    "classification": Classification, "persisted": {verdict_id, classification_id}}``.
+    "classification": Classification, "notifications": RoutingDecision | null,
+    "persisted": {verdict_id, classification_id}}``.
     """
     try:
         alert_obj = Alert(**req.alert)
@@ -194,8 +193,9 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     classification = classify(ClassificationInput(alert=alert_obj, triage_verdict=verdict))
     classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
 
+    notifications: dict[str, Any] | None = None
     try:
-        route_notification(verdict)
+        notifications = route_notification(verdict).model_dump(mode="json")
     except Exception:
         logger.exception("RA-005: routing failed for verdict on %s", verdict.affected_service)
 
@@ -203,6 +203,7 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
         "verdict": verdict.model_dump(mode="json"),
         "ticket": ticket_record.model_dump(mode="json"),
         "classification": classification.model_dump(mode="json"),
+        "notifications": notifications,
         "persisted": {
             "verdict_id": verdict_id,
             "classification_id": classification_id,

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-As of 2026-05-12 the repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness skeleton, the OPA policy starter, smoke tests, and CI in place. Phase 1 has started: `agents/alert_triage/` is the first agent in flight, and the demo UIs (`demo/ui/` FastAPI + `demo/dashboard/` React/Vite) are wired up. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+As of 2026-05-21 the repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness, the OPA policy starter, smoke tests, and CI in place. **Phase 1 is mid-flight**: four Reactive-Active agents have shipped under `agents/` — `alert_triage/` (RA-001), `incident_classifier/` (RA-002), `auto_ticketing/` (RA-003), and `notification_router/` (RA-005). The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket sinks today; Slack/Teams post-POC), the standalone classifier dashboard under `demo/classifier-ui/`, and the React dashboard under `demo/dashboard/`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
 
 Source-of-truth documents (binary Office files):
 
@@ -106,19 +106,29 @@ The onboarding guide specifies five phases. Use this to judge what's in scope at
 aiops/                     # platform seams — never call vendor SDKs outside this package
 ├── llm/                   # provider-agnostic LLM gateway (anthropic / openai / ollama / stub)
 ├── tools/                 # tool registry — every external integration registers here
+│   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket adapters (RA-005 sink)
+│   ├── feature_flags/     # flagd adapter (replaces the kubectl-patch shell-out, ARCH-1)
+│   └── itsm/              # ServiceNow PDI client (incident.create/update, cmdb.lookup)
 └── policy/                # platform-enforced HITL gate (None / Optional / Required)
-agents/                    # one directory per agent (alert_triage in flight; more land in Phase 1)
+agents/                    # Phase-1 Reactive-Active agents shipped (see agents/README.md)
+├── alert_triage/          # RA-001
+├── incident_classifier/   # RA-002
+├── auto_ticketing/        # RA-003
+└── notification_router/   # RA-005
 evals/                     # hand-rolled JSON test harness; CI gates pass-rate
 demo/
 ├── otel-demo/             # Helm values for the upstream OpenTelemetry Demo chart
 ├── failure_injection/     # one-command failure scenario runner + starter scenarios
 ├── truth_files/           # ground truth per scenario (cause + expected fix)
 ├── load/                  # k6 baseline load script
+├── audit/                 # chatops.jsonl — RA-005 audit log (gitignored, kept by .gitkeep)
 ├── ui/                    # FastAPI demo server (uv extra: ui) — served at :8765
-└── dashboard/             # React + Vite + Tailwind dashboard (built into dist/, mounted at /dashboard/)
+├── dashboard/             # React + Vite + Tailwind dashboard (built into dist/, mounted at /dashboard/)
+└── classifier-ui/         # standalone RA-002 SPA (built into dist/, mounted at /classifier)
 infra/                     # Rancher Desktop k3s bootstrap (PowerShell + bash) + Prometheus rules
 policies/                  # OPA policies (hitl.rego); reference-only in Phase 0
-tests/                     # repo-level smoke tests
+scripts/                   # ops helpers (github_bulk runner, verify_snow_creds.ps1)
+tests/                     # repo-level smoke + integration tests
 start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-forwards + UI
 .github/workflows/         # CI: ruff + pytest + eval gate + opa check
 ```
@@ -133,6 +143,7 @@ start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-fo
 - **Rancher Desktop ships a `kuberlr`-wrapped `kubectl` that rejects standard flags from Python `subprocess` calls.** Install a standalone `kubectl` (`winget install --scope user Kubernetes.kubectl`) — `start.ps1` and `demo/failure_injection/inject.py` prefer it via `$LOCALAPPDATA\Programs\kubectl`.
 - **Two PowerShell windows.** `start.ps1` runs port-forwards as background jobs in the *current* session; closing that shell kills them. Use `stop.ps1` to tear them down cleanly.
 - **flagd flag mutation goes through the seam.** Use `aiops.tools.get_registry().call("feature_flags.set_variant", flag=..., variant=...)` (or `feature_flags.get_variant` / `list_variants` / `reset_all`). Direct `kubectl patch flagd-config` is forbidden — `tests/test_no_kubectl_for_flagd.py` will fail CI for any new caller. Background: ARCH-1 (issue #70, `docs/arch_1_feature_flags_seam_design.md`).
+- **PowerShell 5.1's `Get-Content` default encoding is CP1252, not UTF-8.** Tailing `demo/audit/chatops.jsonl` without `-Encoding UTF8` turns em-dashes into `â€"` mojibake. See ONBOARDING.md §11 "Tailing the chatops audit log".
 
 ### Common commands
 

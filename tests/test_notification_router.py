@@ -178,6 +178,21 @@ def test_route_propagates_incident_id(_isolated_chatops: ChatOpsClient):
     assert sink.received[0].incident_id == "INC-1234"
 
 
+def test_suppressed_verdict_does_not_reach_chatops(_isolated_chatops: ChatOpsClient):
+    """A Suppressed verdict must short-circuit before any chatops emit (RA-005 DoD)."""
+    sink = _RecordingAdapter()
+    _isolated_chatops.register(sink)
+
+    v = _verdict(severity="Sev-2")
+    v = v.model_copy(update={"status": "Suppressed"})
+
+    decision = route(v, now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC))
+
+    assert sink.received == []
+    assert decision.actions == []
+    assert decision.channel == "suppressed"
+
+
 # ─── golden.json regression ────────────────────────────────────────────────
 
 

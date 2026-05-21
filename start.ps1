@@ -83,36 +83,43 @@ foreach ($fwd in $forwards) {
 }
 Start-Sleep -Seconds 3   # let pf jobs bind their ports
 
-# --- 2.5 ensure dashboard build exists ---
-$dashDir  = Join-Path $RepoRoot 'demo\dashboard'
-$dashDist = Join-Path $dashDir 'dist\index.html'
-if (Test-Path $dashDir) {
-    if (-not (Test-Path $dashDist)) {
-        Write-Step '2b' "building React dashboard (first run, ~30 s)..."
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-            Write-Warning "npm not found; skipping dashboard build. /dashboard will 503."
-        } else {
-            Push-Location $dashDir
-            try {
-                # Run npm via cmd.exe so its stderr chatter doesn't get wrapped as a
-                # PS 5.1 NativeCommandError and tripped by $ErrorActionPreference = 'Stop'.
-                if (-not (Test-Path 'node_modules')) {
-                    Write-Host "    npm install ..." -ForegroundColor DarkGray
-                    cmd /c "npm install --no-audit --no-fund --silent >NUL 2>&1"
-                }
-                Write-Host "    npm run build ..." -ForegroundColor DarkGray
-                cmd /c "npm run build --silent >NUL 2>&1"
-                if (Test-Path $dashDist) {
-                    Write-Host "    dashboard built -> demo/dashboard/dist/" -ForegroundColor Green
-                } else {
-                    Write-Warning "dashboard build did not produce dist/index.html"
-                }
-            } finally { Pop-Location }
-        }
-    } else {
-        Write-Host "    dashboard already built" -ForegroundColor DarkGray
+# --- 2.5 ensure SPA builds exist (React dashboard + standalone classifier UI) ---
+function Invoke-SpaBuild($name, $dir, $missingMsg) {
+    $distIndex = Join-Path $dir 'dist\index.html'
+    if (-not (Test-Path $dir)) { return }
+    if (Test-Path $distIndex) {
+        Write-Host "    $name already built" -ForegroundColor DarkGray
+        return
     }
+    Write-Step '2b' "building $name (first run, ~30 s)..."
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Warning "npm not found; skipping $name build. $missingMsg"
+        return
+    }
+    Push-Location $dir
+    try {
+        # Run npm via cmd.exe so its stderr chatter doesn't get wrapped as a
+        # PS 5.1 NativeCommandError and tripped by $ErrorActionPreference = 'Stop'.
+        if (-not (Test-Path 'node_modules')) {
+            Write-Host "    npm install ($name) ..." -ForegroundColor DarkGray
+            cmd /c "npm install --no-audit --no-fund --silent >NUL 2>&1"
+        }
+        Write-Host "    npm run build ($name) ..." -ForegroundColor DarkGray
+        cmd /c "npm run build --silent >NUL 2>&1"
+        if (Test-Path $distIndex) {
+            Write-Host "    $name built -> $(Resolve-Path -Relative $distIndex)" -ForegroundColor Green
+        } else {
+            Write-Warning "$name build did not produce dist/index.html"
+        }
+    } finally { Pop-Location }
 }
+
+$dashDir       = Join-Path $RepoRoot 'demo\dashboard'
+$dashDist      = Join-Path $dashDir 'dist\index.html'
+$classifierDir = Join-Path $RepoRoot 'demo\classifier-ui'
+
+Invoke-SpaBuild 'React dashboard'   $dashDir       '/dashboard/ will 503.'
+Invoke-SpaBuild 'classifier UI'     $classifierDir '/classifier will 503.'
 
 # --- 2c. ensure the right extras are synced into .venv ---
 # Without `--extra ui`, `uv run uvicorn` silently falls back to a uvicorn
@@ -204,11 +211,15 @@ if ($ready) {
 
 Write-Host ''
 Write-Host '== Up and running ==' -ForegroundColor Green
-Write-Host "  Dashboard:  http://localhost:$UiPort/dashboard/   (React)"
-Write-Host "  Demo UI:    http://localhost:$UiPort/             (vanilla)"
-Write-Host "  Grafana:    http://localhost:8080/grafana/"
-Write-Host "  Jaeger UI:  http://localhost:8080/jaeger/ui/"
-Write-Host "  flagd UI:   http://localhost:8080/feature/"
+Write-Host "  Dashboard:    http://localhost:$UiPort/dashboard/   (React)"
+Write-Host "  Classifier:   http://localhost:$UiPort/classifier   (RA-002 SPA)"
+Write-Host "  Demo UI:      http://localhost:$UiPort/             (vanilla)"
+Write-Host "  API docs:     http://localhost:$UiPort/docs         (Swagger)"
+Write-Host "  Grafana:      http://localhost:8080/grafana/"
+Write-Host "  Jaeger UI:    http://localhost:8080/jaeger/ui/"
+Write-Host "  flagd UI:     http://localhost:8080/feature/"
+Write-Host "  Prometheus:   http://localhost:9090/"
+Write-Host "  Jaeger (raw): http://localhost:16686/"
 Write-Host ''
 Write-Host "Manage background jobs:"
 Write-Host "  Get-Job -Name 'pf-*'                       # see what's running"

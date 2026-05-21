@@ -30,7 +30,13 @@ In the PDI UI as admin:
 4. Save the user record.
 5. Open the user → **Roles** related list → add **`itil`** → Save.
 
-Quick verification from PowerShell:
+Quick verification from PowerShell — fill in `.env` (next section) first, then:
+
+```powershell
+.\scripts\verify_snow_creds.ps1
+```
+
+That reads `AIOPS_SERVICENOW_*` from `.env`, probes `/api/now/table/incident`, and prints OK/401. Equivalent ad-hoc curl if you prefer:
 
 ```powershell
 $u = "aiops_agent"; $p = "<the-password>"; $url = "https://devXXXXXX.service-now.com"

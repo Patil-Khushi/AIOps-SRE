@@ -92,6 +92,23 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
         f"hour={now.hour:02d}Z, business_hours={'yes' if in_hours else 'no'}",
     ]
 
+    # RA-001 marked this verdict Suppressed (duplicate of an existing cluster).
+    # Routing must be a no-op: empty actions → route() skips the chatops emit.
+    if verdict.status == "Suppressed":
+        reason = "verdict suppressed by RA-001 — duplicate of recent alert cluster"
+        audit.append("rule: status=Suppressed → no chatops emit")
+        return RoutingDecision(
+            chat_severity=Severity.INFO,
+            channel="suppressed",
+            title=title,
+            body=_render_body(verdict, reason),
+            mentions=[],
+            actions=[],
+            reason=reason,
+            audit_trace=audit,
+            decided_at=now,
+        )
+
     chat_sev: Severity
     channel: str
     actions: list[str]
@@ -171,9 +188,19 @@ def route(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDeci
 
     Side effect: drops a ``ChatMessage`` into the chatops seam, which fans
     it out to every registered adapter (WebSocket dashboard, JSON audit
-    log, future Slack/Teams/PagerDuty).
+    log, future Slack/Teams/PagerDuty). Empty ``actions`` (e.g. Suppressed
+    verdicts) short-circuit the emit so suppressed alerts can't reach
+    chatops sinks.
     """
     decision = decide(verdict, now=now)
+    if not decision.actions:
+        logger.info(
+            "RA-005: skipped routing for %s on %s (%s)",
+            verdict.severity,
+            verdict.affected_service,
+            decision.reason,
+        )
+        return decision
     msg = _decision_to_chat_message(verdict, decision)
     get_client().send(msg)
     logger.info(
