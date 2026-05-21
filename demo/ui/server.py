@@ -196,7 +196,9 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
 
     Response: ``{"verdict": TriageVerdict, "ticket": TicketRecord,
     "classification": Classification, "notifications": RoutingDecision | null,
-    "persisted": {verdict_id, classification_id}}``.
+    "persisted": {verdict_id, classification_id, notification_id}}``.
+    ``notification_id`` is ``null`` when routing failed or when the persistence
+    write itself raised (the JSONL audit log is the durable record).
     """
     try:
         alert_obj = Alert(**req.alert)
@@ -215,8 +217,22 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     ticket_record = auto_ticket(verdict, classification=classification)
 
     notifications: dict[str, Any] | None = None
+    notification_id: int | None = None
     try:
-        notifications = route_notification(verdict).model_dump(mode="json")
+        decision = route_notification(verdict)
+        # CHAT-2 (#82): persist the structured row alongside the existing
+        # JSONL audit log. Persistence failure must not break the pipeline —
+        # the JSONL adapter (the source of truth) already wrote.
+        try:
+            notification_id = state_repo.save_notification(decision, verdict_id=verdict_id)
+        except Exception:
+            logger.exception(
+                "RA-005: persist save_notification failed for verdict %s on %s "
+                "(JSONL audit log still written)",
+                verdict_id,
+                verdict.affected_service,
+            )
+        notifications = decision.model_dump(mode="json")
     except Exception:
         logger.exception("RA-005: routing failed for verdict on %s", verdict.affected_service)
 
@@ -228,6 +244,7 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
         "persisted": {
             "verdict_id": verdict_id,
             "classification_id": classification_id,
+            "notification_id": notification_id,
         },
     }
 
@@ -300,6 +317,23 @@ def list_verdicts_endpoint(
         raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
     verdicts = state_repo.list_verdicts(limit=limit, service=service, severity=severity)
     return {"count": len(verdicts), "verdicts": verdicts}
+
+
+@app.get("/api/notifications")
+def list_notifications_endpoint(
+    limit: int = 50,
+    service: str | None = None,
+) -> dict[str, Any]:
+    """Newest-first list of persisted RA-005 notifications.
+
+    CHAT-2 (#82): SQL counterpart to ``demo/audit/chatops.jsonl`` so the
+    dashboard's history view can query "notifications by service over the
+    last week" without re-parsing JSONL.
+    """
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+    rows = state_repo.list_notifications(limit=limit, service=service)
+    return {"count": len(rows), "notifications": rows}
 
 
 # ─── RA-002 Incident Classifier surface (standalone dashboard) ─────────────

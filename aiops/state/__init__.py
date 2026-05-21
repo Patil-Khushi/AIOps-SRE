@@ -82,6 +82,20 @@ def _migrate_add_columns_if_missing() -> None:
         # (table, column, SQL type)
         ("clusters", "embedding", "JSON"),
         ("verdicts", "alert_id", "VARCHAR"),
+        # CHAT-2 (#82): reshape of the RA-005 placeholder table into the
+        # RoutingDecision-aligned schema. ``create_all`` is a no-op on the
+        # existing ``notifications`` table, so additive columns need this.
+        # The old placeholder columns (target/status/sent_at/detail) had no
+        # writers, so we don't migrate them — they linger harmlessly until
+        # an Alembic rewrite.
+        ("notifications", "routed_at", "TIMESTAMP"),
+        ("notifications", "chat_severity", "VARCHAR"),
+        ("notifications", "title", "VARCHAR"),
+        ("notifications", "body", "VARCHAR"),
+        ("notifications", "service", "VARCHAR"),
+        ("notifications", "actions", "JSON"),
+        ("notifications", "reason", "VARCHAR"),
+        ("notifications", "audit_trace", "JSON"),
     ]
 
     engine = get_engine()
