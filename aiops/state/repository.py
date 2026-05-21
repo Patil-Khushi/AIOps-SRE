@@ -302,26 +302,92 @@ def save_ticket(
         return int(row.id)  # type: ignore[arg-type]
 
 
-def save_notification(
-    *,
-    verdict_id: int,
-    channel: str,
-    target: str,
-    status: str = "sent",
-    detail: dict[str, Any] | None = None,
-) -> int:
+def save_notification(decision: Any, verdict_id: int) -> int:
+    """Persist an RA-005 ``RoutingDecision``. Returns the row id.
+
+    ``decision`` is the agent's Pydantic ``RoutingDecision`` (channel, severity,
+    title, body, actions, audit_trace, …). ``verdict_id`` is the row id of the
+    originating RA-001 verdict from a prior ``save_verdict`` call — required so
+    the dashboard can join notification → verdict → classification → ticket.
+
+    ``service`` is read from the upstream verdict (not the decision — the
+    agent's RoutingDecision doesn't carry the service field). We look it up
+    here so the caller doesn't have to pass it as a third arg.
+
+    CHAT-2 (#82): the JSONL audit log keeps writing in parallel; this is an
+    additive structured row, not a replacement.
+    """
+    service: str | None = None
+    with _session() as s:
+        v = s.get(VerdictRow, verdict_id)
+        if v is not None:
+            service = v.affected_service
+
     row = NotificationRow(
         verdict_id=verdict_id,
-        channel=channel,
-        target=target,
-        status=status,
-        detail=detail or {},
+        routed_at=getattr(decision, "decided_at", None) or datetime.now(UTC),
+        channel=decision.channel,
+        # ``chat_severity`` is the chatops enum — accept either the enum or
+        # its string value so this is robust to whatever the agent emits.
+        chat_severity=getattr(decision.chat_severity, "value", str(decision.chat_severity)),
+        title=decision.title,
+        body=decision.body,
+        service=service,
+        # TODO(CHAT-3 #83): once the agent settles on a stable action vocabulary,
+        # populate from ``decision.actions``. For now we store the list verbatim
+        # if non-empty, else NULL — keeps the column honestly "unpopulated".
+        actions=list(decision.actions) if getattr(decision, "actions", None) else None,
+        reason=decision.reason,
+        audit_trace=list(getattr(decision, "audit_trace", []) or []),
     )
     with _session() as s:
         s.add(row)
         s.commit()
         s.refresh(row)
         return int(row.id)  # type: ignore[arg-type]
+
+
+def list_notifications(
+    *,
+    limit: int = 50,
+    service: str | None = None,
+) -> list[dict[str, Any]]:
+    """Newest-first list of persisted notifications. Optional filter by
+    service. Renders rows as plain dicts safe to serialize to JSON."""
+    stmt = (
+        select(NotificationRow)
+        .order_by(NotificationRow.routed_at.desc())  # type: ignore[attr-defined]
+        .limit(limit)
+    )
+    if service:
+        stmt = stmt.where(NotificationRow.service == service)
+    with _session() as s:
+        rows = s.exec(stmt).all()
+    return [_notification_row_to_dict(r) for r in rows]
+
+
+def count_notifications() -> int:
+    with _session() as s:
+        rows = s.exec(select(NotificationRow)).all()
+    return len(rows)
+
+
+def _notification_row_to_dict(row: NotificationRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "verdict_id": row.verdict_id,
+        "routed_at": _aware(row.routed_at).isoformat() if row.routed_at else None,
+        "channel": row.channel,
+        "chat_severity": row.chat_severity,
+        "title": row.title,
+        "body": row.body,
+        "service": row.service,
+        # ``actions`` is nullable (CHAT-3 #83 will populate); surface None as
+        # [] so dashboard code doesn't need a null-check on every row.
+        "actions": list(row.actions) if row.actions else [],
+        "reason": row.reason,
+        "audit_trace": list(row.audit_trace or []),
+    }
 
 
 # ─── classifications (RA-002 output) ───────────────────────────────────────
@@ -555,6 +621,7 @@ __all__ = [
     "average_classification_confidence",
     "count_classifications",
     "count_historical_incidents",
+    "count_notifications",
     "delete_all_clusters",
     "delete_all_historical_incidents",
     "delete_live_historical_incidents",
@@ -564,6 +631,7 @@ __all__ = [
     "get_verdict",
     "list_active_clusters",
     "list_classifications",
+    "list_notifications",
     "list_verdicts",
     "nearest_historical_incidents",
     "save_classification",

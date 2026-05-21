@@ -99,21 +99,38 @@ class TicketRow(SQLModel, table=True):
 
 
 class NotificationRow(SQLModel, table=True):
-    """Placeholder for Notification Router (RA-005). Lets the dashboard show
-    'which alert pinged which channel'."""
+    """Persists a Notification Router (RA-005) ``RoutingDecision`` so the
+    dashboard's history view can answer "notifications by service over the
+    last week" via SQL — instead of re-parsing ``demo/audit/chatops.jsonl``.
+
+    The JSONL adapter keeps writing alongside this row; the structured
+    column set is *additive* (CHAT-2 #82). Joinable by ``verdict_id`` against
+    ``VerdictRow`` and (via the same id) against ``ClassificationRow`` and
+    ``TicketRow``, which is what AUDIT-1 (#78) needs.
+
+    ``actions`` is nullable JSON: CHAT-3 (#83) populates it with the logical
+    actions taken (e.g. ``["page_oncall", "post_to_chat"]``). Until that lands
+    we accept the empty list / None from the agent without blocking.
+    """
 
     __tablename__ = "notifications"
 
     id: int | None = Field(default=None, primary_key=True)
     verdict_id: int = Field(foreign_key="verdicts.id", index=True)
-    channel: str
-    target: str  # slack channel id, team email, pagerduty service key
-    status: str = "sent"  # sent | failed | suppressed
-    sent_at: datetime = Field(
+    routed_at: datetime = Field(
         default_factory=_utcnow,
         sa_column=Column(DateTime(timezone=True), index=True),
     )
-    detail: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    channel: str = Field(index=True)
+    chat_severity: str = Field(index=True)  # p0 | p1 | p2 | p3 | info
+    title: str
+    body: str
+    service: str | None = Field(default=None, index=True)
+    # TODO(CHAT-3 #83): populate from RoutingDecision.actions once the agent
+    # emits a stable action vocabulary. Nullable until then.
+    actions: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    reason: str
+    audit_trace: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
 
 class ClassificationRow(SQLModel, table=True):
