@@ -23,6 +23,27 @@ import Prometheus / Jaeger / Kubernetes clients directly.
 
 from __future__ import annotations
 
+# Make Python's ssl module use the OS trust store (Windows / macOS) so HTTPS
+# calls from httpx, openai SDK, etc. accept corporate-proxy re-signed certs
+# (Zscaler / Netskope / etc.). Without this, every outbound HTTPS from the
+# demo server fails with "CERTIFICATE_VERIFY_FAILED" on machines behind a
+# TLS-inspecting proxy — the OS already trusts the corporate CA, but
+# Python's bundled certifi store doesn't. Must run BEFORE any module that
+# opens an SSL connection (httpx, openai, etc.).
+#
+# truststore is a hard dep in pyproject.toml, so the ImportError branch is
+# theoretically unreachable. Kept defensive intentionally: if a future
+# slim/container build trims optional deps or a fresh checkout runs the
+# server before `uv sync`, the demo should still boot (with stock certifi)
+# instead of crashing the FastAPI startup. The try/except also keeps this
+# block a single self-contained import for ruff's E402 rule.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 import asyncio
 import hmac
 import json
@@ -72,6 +93,7 @@ from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
+from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
     ApprovalError,
@@ -88,6 +110,7 @@ from aiops.tools import (  # noqa: E402
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
+from aiops.tools.chatops.adapters.pagerduty import PagerDutyAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
@@ -134,24 +157,44 @@ def _wire_hitl_approval_flow() -> None:
 
 @app.on_event("startup")
 def _register_chatops_adapters() -> None:
-    """JSON audit log (D3) + optional Slack webhook (CHAT-1). The WebSocket
-    sink (D2) registers itself via ``_register_chatops_ws_routes`` below.
+    """JSON audit log (D3) + optional Slack webhook (CHAT-1) + optional
+    PagerDuty Events API v2 (CHAT-5). The WebSocket sink (D2) registers
+    itself via ``_register_chatops_ws_routes`` below.
 
-    Slack registration is opt-in: only happens when ``AIOPS_SLACK_WEBHOOK_URL``
-    is set in the environment. Without it the demo runs cleanly against the
-    JSONL audit log + WebSocket dashboard panel.
+    Slack and PagerDuty are both opt-in: they only register when their
+    respective env vars are set. Without them the demo runs cleanly
+    against the JSONL audit log + WebSocket dashboard panel.
+
+    Idempotent by adapter class: re-calling this function (e.g. from a
+    test that triggers FastAPI startup twice, or a future hot-reload
+    path) won't register duplicate sinks of the same kind. Without this
+    guard the same audit JSON line lands twice per ``send()``.
     """
-    audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
-    get_chatops_client().register(JsonFileChatOpsAdapter(audit_path))
-    logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
+    client = get_chatops_client()
+    registered_kinds = {type(a) for a in client.adapters}
+
+    if JsonFileChatOpsAdapter not in registered_kinds:
+        audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
+        client.register(JsonFileChatOpsAdapter(audit_path))
+        logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
 
     slack_url = os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip()
-    if slack_url:
+    if slack_url and SlackWebhookAdapter not in registered_kinds:
         try:
-            get_chatops_client().register(SlackWebhookAdapter(slack_url))
+            client.register(SlackWebhookAdapter(slack_url))
             logger.info("chatops: registered slack webhook adapter")
         except ValueError as exc:
             logger.warning("chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping", exc)
+
+    pd_key = os.environ.get("AIOPS_PAGERDUTY_INTEGRATION_KEY", "").strip()
+    if pd_key and PagerDutyAdapter not in registered_kinds:
+        try:
+            client.register(PagerDutyAdapter(pd_key))
+            logger.info("chatops: registered pagerduty adapter (page_oncall actions only)")
+        except ValueError as exc:
+            logger.warning(
+                "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping", exc
+            )
 
 
 _register_chatops_ws_routes(app)
@@ -349,6 +392,46 @@ async def triage_live() -> dict[str, Any]:
     tasks = [asyncio.to_thread(_triage_one, c) for c in candidates]
     results = list(await asyncio.gather(*tasks)) if tasks else []
     return {"count": len(results), "results": results}
+
+
+class RcaRequest(BaseModel):
+    triage_verdict: dict[str, Any] = Field(
+        ..., description="The RA-001 TriageVerdict dict (as emitted by POST /api/triage)."
+    )
+    scenario_id: str | None = Field(
+        None,
+        description=(
+            "Optional locked-scenario hint (e.g. 'slow-product-catalog'). When the "
+            "LLM provider is unavailable, the agent uses this + the verdict's "
+            "affected_service to pick the deterministic fallback verdict. Safe to omit."
+        ),
+    )
+
+
+@app.post("/api/rca", response_model=None)
+async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
+    """Run the RCA Agent (PRS-008) against a prior triage verdict.
+
+    Body: ``{"triage_verdict": {<TriageVerdict dict>}, "scenario_id"?: str}``.
+    Returns an ``RCAVerdict`` with ``root_cause``, ``ranked_fix_steps`` (each
+    with ``blast_radius`` + ``rollback``), and ``confidence_score``. Every
+    fix step is tagged ``requires_hitl=true``; the platform HITL gate enforces
+    approval at the action boundary — this endpoint does NOT execute the fix.
+
+    The agent's LLM call can take 5–15 s (Claude via Foundry); ``rca_analyze``
+    is sync + blocking, so we wrap it in ``asyncio.to_thread`` to keep the
+    event loop free.
+    """
+    try:
+        verdict = await asyncio.to_thread(
+            rca_analyze, req.triage_verdict, scenario_id=req.scenario_id
+        )
+    except Exception as exc:
+        logger.exception(
+            "RCA agent raised on payload for %s", req.triage_verdict.get("affected_service")
+        )
+        raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
+    return verdict.model_dump(mode="json")
 
 
 @app.get("/api/verdicts")

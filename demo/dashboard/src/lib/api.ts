@@ -3,10 +3,12 @@ import type {
   HealthResponse,
   LiveAlertsResponse,
   PrometheusAlert,
+  RCAVerdict,
   ScenariosResponse,
   SystemPodsResponse,
   TopologyResponse,
   TriageResult,
+  TriageVerdict,
 } from '@/types/api';
 
 // Axios instance — uses Vite proxy in dev, same-origin in prod (served from /dashboard).
@@ -50,6 +52,10 @@ export const api = {
     unwrap<TriageResult>(http.post('/api/triage', { alert })),
   triageLive: () =>
     unwrap<{ count: number; results: TriageResult[] }>(http.post('/api/triage/live')),
+  rca: (triageVerdict: TriageVerdict, scenarioId?: string) =>
+    unwrap<RCAVerdict>(
+      http.post('/api/rca', { triage_verdict: triageVerdict, scenario_id: scenarioId ?? null }),
+    ),
   topology:    () => unwrap<TopologyResponse>(http.get('/api/topology')),
   pods:        () => unwrap<SystemPodsResponse>(http.get('/api/system/pods')),
 };
