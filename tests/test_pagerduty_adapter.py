@@ -1,17 +1,14 @@
 """Tests for the PagerDuty Events API v2 adapter (CHAT-5, issue #85).
 
-Covers the four explicit Done-when checks from #85:
-
-1. A page-flagged ChatMessage triggers exactly one HTTP POST to PD with
-   the right payload shape.
-2. A non-page ChatMessage (no ``page_oncall`` action) triggers zero POSTs.
-3. Two messages for the same incident_id collide on the same dedup_key.
-4. Empty / invalid integration key raises at construction (so misconfig
-   is caught at server startup, not on the first Sev-1).
+Covers the Done-when checks from #85 plus the review-feedback items
+from PR #96 (severity defense, regex key validation, registration
+boundary, fire-and-forget thread behaviour).
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -20,10 +17,11 @@ import pytest
 from aiops.tools.chatops import ChatMessage, ChatOpsClient, Severity
 from aiops.tools.chatops.adapters.pagerduty import (
     PAGE_ACTIONS,
+    PAGE_WORTHY_SEVERITIES,
     PagerDutyAdapter,
 )
 
-_FAKE_KEY = "y" * 32
+_FAKE_KEY = "y" * 32  # 32 alphanumeric chars — passes the regex
 _FIXED_TIME = datetime(2026, 5, 22, 14, 0, tzinfo=UTC)
 
 
@@ -48,7 +46,23 @@ def _msg(
     )
 
 
-# ─── construction ──────────────────────────────────────────────────────────
+def _wait_for_threads(timeout: float = 1.0) -> None:
+    """Wait for daemon HTTP-post threads spawned by the adapter to finish.
+
+    The adapter fires HTTP off the calling thread; tests asserting on the
+    mocked ``httpx.post`` need to wait until the daemon thread has actually
+    invoked the mock. Joins any thread whose name starts with ``pagerduty-``.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pending = [t for t in threading.enumerate() if t.name.startswith("pagerduty-")]
+        if not pending:
+            return
+        for t in pending:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+
+
+# ─── construction / key validation ─────────────────────────────────────────
 
 
 def test_empty_integration_key_rejected():
@@ -56,9 +70,34 @@ def test_empty_integration_key_rejected():
         PagerDutyAdapter("")
 
 
+def test_placeholder_text_rejected():
+    """Literal 'API_KEY' (a common copy-paste mistake) must fail at
+    construction so misconfiguration doesn't silently degrade to no-op."""
+    with pytest.raises(ValueError, match="integration key"):
+        PagerDutyAdapter("API_KEY")
+
+
 def test_too_short_integration_key_rejected():
     with pytest.raises(ValueError, match="integration key"):
-        PagerDutyAdapter("short")
+        PagerDutyAdapter("y" * 16)
+
+
+def test_too_long_integration_key_rejected():
+    with pytest.raises(ValueError, match="integration key"):
+        PagerDutyAdapter("y" * 33)
+
+
+def test_non_alphanumeric_integration_key_rejected():
+    with pytest.raises(ValueError, match="integration key"):
+        PagerDutyAdapter("a" * 31 + "-")
+
+
+def test_whitespace_is_trimmed_then_validated():
+    """A correctly-shaped key with leading/trailing whitespace is accepted
+    (auto-trimmed), so users can paste from the PD dashboard without
+    grooming."""
+    adapter = PagerDutyAdapter(f"   {_FAKE_KEY}\n")
+    assert adapter._integration_key == _FAKE_KEY
 
 
 def test_repr_does_not_leak_integration_key():
@@ -76,6 +115,7 @@ def test_send_skips_when_actions_lacks_page_oncall():
     adapter = PagerDutyAdapter(_FAKE_KEY)
     with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
         adapter.send(_msg(severity=Severity.P3, actions=["post_to_chat"]))
+        _wait_for_threads()
         mock_post.assert_not_called()
 
 
@@ -83,19 +123,37 @@ def test_send_skips_when_actions_empty():
     adapter = PagerDutyAdapter(_FAKE_KEY)
     with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
         adapter.send(_msg(actions=[]))
+        _wait_for_threads()
         mock_post.assert_not_called()
 
 
 def test_send_fires_when_actions_contains_page_oncall():
     adapter = PagerDutyAdapter(_FAKE_KEY)
-    mock_response = MagicMock()
-    mock_response.raise_for_status.return_value = None
-    with patch(
-        "aiops.tools.chatops.adapters.pagerduty.httpx.post",
-        return_value=mock_response,
-    ) as mock_post:
+    with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
+        mock_post.return_value.raise_for_status.return_value = None
         adapter.send(_msg())
+        _wait_for_threads()
         assert mock_post.call_count == 1
+
+
+# ─── defence-in-depth severity check (PR #96 CR #3) ────────────────────────
+
+
+@pytest.mark.parametrize("below_p2_severity", [Severity.P3, Severity.INFO])
+def test_send_refuses_to_page_below_p2_even_with_page_oncall(below_p2_severity, caplog):
+    """RA-005 should never attach page_oncall to a Sev-3/4 routing
+    decision; if it does (bug), this adapter refuses + logs a warning
+    rather than waking someone on a contradiction."""
+    adapter = PagerDutyAdapter(_FAKE_KEY)
+    with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
+        adapter.send(_msg(severity=below_p2_severity, actions=["page_oncall"]))
+        _wait_for_threads()
+        mock_post.assert_not_called()
+    assert any("refusing to page" in rec.message for rec in caplog.records)
+
+
+def test_page_worthy_severities_is_strictly_p0_p1_p2():
+    assert PAGE_WORTHY_SEVERITIES == {Severity.P0, Severity.P1, Severity.P2}
 
 
 # ─── payload shape ─────────────────────────────────────────────────────────
@@ -106,6 +164,7 @@ def test_payload_includes_required_pd_fields():
     with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
         mock_post.return_value.raise_for_status.return_value = None
         adapter.send(_msg())
+        _wait_for_threads()
 
         kwargs = mock_post.call_args.kwargs
         payload = kwargs["json"]
@@ -125,17 +184,18 @@ def test_payload_includes_required_pd_fields():
 
 def test_severity_maps_correctly_to_pd_levels():
     adapter = PagerDutyAdapter(_FAKE_KEY)
+    # Only test severities that survive the page-worthy gate; the
+    # below-P2 cases are covered by test_send_refuses_to_page_below_p2.
     cases = [
         (Severity.P0, "critical"),
         (Severity.P1, "critical"),
         (Severity.P2, "error"),
-        (Severity.P3, "warning"),
-        (Severity.INFO, "info"),
     ]
     for chat_sev, expected_pd in cases:
         with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
             mock_post.return_value.raise_for_status.return_value = None
             adapter.send(_msg(severity=chat_sev, actions=["page_oncall"]))
+            _wait_for_threads()
             sent = mock_post.call_args.kwargs["json"]["payload"]["severity"]
             assert sent == expected_pd, f"{chat_sev} should map to {expected_pd}, got {sent}"
 
@@ -145,6 +205,7 @@ def test_falls_back_to_source_string_when_service_missing():
     with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
         mock_post.return_value.raise_for_status.return_value = None
         adapter.send(_msg(service=None))
+        _wait_for_threads()
         body = mock_post.call_args.kwargs["json"]["payload"]
         assert body["source"] == "adaptive-aiops/RA-005"
         assert body["component"] == "unknown"
@@ -160,6 +221,7 @@ def test_same_incident_id_produces_same_dedup_key():
         with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
             mock_post.return_value.raise_for_status.return_value = None
             adapter.send(_msg(incident_id="INC-1234"))
+            _wait_for_threads()
             keys.append(mock_post.call_args.kwargs["json"]["dedup_key"])
 
     assert keys[0] == keys[1] == "aiops:incident:INC-1234"
@@ -167,35 +229,60 @@ def test_same_incident_id_produces_same_dedup_key():
 
 def test_no_incident_id_falls_back_to_service_title_hash():
     adapter = PagerDutyAdapter(_FAKE_KEY)
-    with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
-        mock_post.return_value.raise_for_status.return_value = None
-        adapter.send(_msg(incident_id=None, service="payment", title="A"))
-        key_a = mock_post.call_args.kwargs["json"]["dedup_key"]
-    with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
-        mock_post.return_value.raise_for_status.return_value = None
-        adapter.send(_msg(incident_id=None, service="payment", title="A"))
-        key_a_again = mock_post.call_args.kwargs["json"]["dedup_key"]
-    with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
-        mock_post.return_value.raise_for_status.return_value = None
-        adapter.send(_msg(incident_id=None, service="payment", title="B"))
-        key_b = mock_post.call_args.kwargs["json"]["dedup_key"]
+    captured: list[str] = []
+    for title in ("A", "A", "B"):
+        with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
+            mock_post.return_value.raise_for_status.return_value = None
+            adapter.send(_msg(incident_id=None, service="payment", title=title))
+            _wait_for_threads()
+            captured.append(mock_post.call_args.kwargs["json"]["dedup_key"])
 
+    key_a, key_a_again, key_b = captured
     assert key_a == key_a_again, "same service+title must dedup"
     assert key_a != key_b, "different titles must not collide"
     assert key_a.startswith("aiops:hash:")
 
 
-# ─── error path ────────────────────────────────────────────────────────────
+# ─── error path (non-blocking — failure stays inside the thread) ───────────
 
 
-def test_http_error_is_raised_so_chatops_client_can_isolate():
+def test_http_error_is_swallowed_at_caller_logged_inside_thread(caplog):
+    """The adapter fires on a daemon thread; an HTTP failure must be logged
+    inside the thread but never raise to the caller. This is the correct
+    semantic for paging: a slow / unreachable PD must not back-pressure
+    the chatops seam or block the API request that triggered the alert.
+    """
     import httpx
 
     adapter = PagerDutyAdapter(_FAKE_KEY)
     with patch("aiops.tools.chatops.adapters.pagerduty.httpx.post") as mock_post:
         mock_post.side_effect = httpx.ConnectError("dns is down")
-        with pytest.raises(httpx.HTTPError):
-            adapter.send(_msg())
+        adapter.send(_msg())  # must not raise
+        _wait_for_threads()
+
+    assert any("enqueue failed" in rec.message for rec in caplog.records)
+
+
+def test_send_returns_immediately_without_waiting_for_http():
+    """``send()`` should be fire-and-forget. Even with a 10-second
+    httpx.post, ``send`` should return in milliseconds."""
+    adapter = PagerDutyAdapter(_FAKE_KEY)
+
+    def slow_post(*_args, **_kwargs):
+        time.sleep(2.0)
+        m = MagicMock()
+        m.raise_for_status.return_value = None
+        return m
+
+    with patch(
+        "aiops.tools.chatops.adapters.pagerduty.httpx.post",
+        side_effect=slow_post,
+    ):
+        t0 = time.monotonic()
+        adapter.send(_msg())
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5, f"send() should return immediately but blocked for {elapsed:.2f}s"
+        _wait_for_threads(timeout=3.0)
 
 
 # ─── seam integration ──────────────────────────────────────────────────────
@@ -225,6 +312,7 @@ def test_plays_nicely_alongside_other_adapters():
         client.send(_msg())
         # Sev-3 chat-only
         client.send(_msg(severity=Severity.P3, actions=["post_to_chat"]))
+        _wait_for_threads()
 
     assert len(recorder.received) == 2, "recorder sees every message"
     assert mock_post.call_count == 1, "PD only fires on the page-worthy one"
@@ -235,3 +323,89 @@ def test_page_actions_set_is_extensible():
     without touching call-site code — they just go in PAGE_ACTIONS."""
     assert "page_oncall" in PAGE_ACTIONS
     assert isinstance(PAGE_ACTIONS, frozenset)  # immutable on purpose
+
+
+# ─── registration boundary (PR #96 CR #5) ──────────────────────────────────
+#
+# The wire-up between ``AIOPS_PAGERDUTY_INTEGRATION_KEY`` and the chatops
+# client lives in ``demo.ui.server._register_chatops_adapters``. A silent
+# regression there (typo in env var name, swapped condition, wrong adapter
+# class) would mean every deploy ships a non-paging build that looks fine
+# in CI. These tests exercise the actual function with a swapped-in
+# ChatOpsClient so the integration boundary is covered.
+
+
+@pytest.fixture
+def isolated_chatops_client(monkeypatch):
+    """Replace the process-wide chatops singleton with a fresh client so
+    each registration test starts from zero adapters and doesn't leak
+    into the next test.
+
+    Also imports ``demo.ui.server`` eagerly: that module calls
+    ``load_dotenv`` at import time, which would otherwise re-populate
+    ``AIOPS_PAGERDUTY_INTEGRATION_KEY`` from the dev's ``.env`` AFTER the
+    test's ``monkeypatch.delenv`` ran, defeating the test. By forcing the
+    import up here, dotenv runs first and per-test monkeypatching wins.
+    """
+    import demo.ui.server  # noqa: F401  — force load_dotenv before delenv
+    from aiops.tools.chatops import client as _chatops_client_mod
+
+    fresh = ChatOpsClient()
+    monkeypatch.setattr(_chatops_client_mod, "_CLIENT", fresh)
+    return fresh
+
+
+def _call_register_chatops_adapters() -> None:
+    from demo.ui.server import _register_chatops_adapters
+
+    _register_chatops_adapters()
+
+
+def test_register_skips_pagerduty_when_env_var_unset(monkeypatch, isolated_chatops_client):
+    """No PD env var → the adapter must not be registered. JSON-file
+    audit sink still registers (it's mandatory)."""
+    monkeypatch.delenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", raising=False)
+    _call_register_chatops_adapters()
+
+    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    assert pd_adapters == [], (
+        "PagerDutyAdapter must not register when AIOPS_PAGERDUTY_INTEGRATION_KEY is unset"
+    )
+
+
+def test_register_skips_pagerduty_when_env_var_blank(monkeypatch, isolated_chatops_client):
+    """Whitespace-only env var (common .env mistake — `KEY= `) must be
+    treated the same as unset."""
+    monkeypatch.setenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", "   ")
+    _call_register_chatops_adapters()
+
+    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    assert pd_adapters == []
+
+
+def test_register_attaches_pagerduty_when_env_var_valid(monkeypatch, isolated_chatops_client):
+    """Well-formed 32-char key → exactly one PagerDutyAdapter on the
+    client."""
+    monkeypatch.setenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", _FAKE_KEY)
+    _call_register_chatops_adapters()
+
+    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    assert len(pd_adapters) == 1, f"expected exactly one PagerDutyAdapter, got {len(pd_adapters)}"
+
+
+def test_register_skips_pagerduty_when_env_var_invalid(
+    monkeypatch, isolated_chatops_client, caplog
+):
+    """Misshapen key (placeholder text, truncated paste, etc.) must not
+    register — the adapter's ValueError is caught and logged as a
+    warning so server startup keeps going."""
+    monkeypatch.setenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", "NOT_A_REAL_KEY")
+    with caplog.at_level("WARNING"):
+        _call_register_chatops_adapters()
+
+    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    assert pd_adapters == [], "invalid key must not register a half-broken adapter"
+    assert any(
+        "AIOPS_PAGERDUTY_INTEGRATION_KEY" in rec.message and "invalid" in rec.message
+        for rec in caplog.records
+    ), "invalid key must surface a warning so operators see the misconfiguration"

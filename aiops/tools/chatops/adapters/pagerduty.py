@@ -15,6 +15,22 @@ Filter contract:
     :data:`PAGE_ACTIONS` rather than gating on severity here — that would
     move policy out of RA-005.
 
+Defence-in-depth on severity (addresses CR #3 on PR #96):
+    Even when ``page_oncall`` is present, we refuse to page on severities
+    below P2. A bug in RA-005 that incorrectly appends ``page_oncall`` to
+    a Sev-4 noise message would otherwise wake on-call at 3 AM. The cost
+    of a false page is high enough that the redundant check earns its keep.
+
+Non-blocking delivery (addresses CR #1 on PR #96):
+    The HTTP POST to PagerDuty runs on a daemon background thread, so
+    ``send()`` returns immediately. This is the correct semantic for paging:
+    the caller (the API request) should not block on PD round-trips, and a
+    failed page is logged but never propagated back to the request that
+    triggered the alert in the first place. The seam-level fix (making
+    ``ChatOpsClient`` async-aware so every adapter can be properly
+    non-blocking) is tracked separately — see PR #96 review and the
+    follow-up issue this PR's reviewer asked for.
+
 Setup (one-time, ~10 min, free):
 
 1. Sign up for a PagerDuty developer account at developer.pagerduty.com
@@ -29,16 +45,16 @@ The dev server's ``_register_chatops_adapters`` hook reads the env var
 and registers this adapter only when the key is set, so the demo runs
 fine without PagerDuty configured.
 
-Failure handling:
-    Per-message failures log + raise. ``ChatOpsClient.send`` catches
-    per-adapter exceptions so a PD outage / rate-limit / expired key can
-    never block the JSONL audit log or the dashboard from receiving the
-    same message.
-
 Secret hygiene:
     The integration key is never logged or returned in responses.
     ``__repr__`` is overridden to redact the key so an accidental
     ``logger.info("%r", adapter)`` cannot leak it.
+
+PII note:
+    ``custom_details.mentions`` may contain engineer emails (e.g.
+    ``oncall@payments.example.com``). PagerDuty already stores on-call
+    user identities for the service, so blast radius is bounded to the
+    PD tenant, but operators should know these strings leave our process.
 
 Dedup:
     Events API v2 auto-dedups on ``dedup_key``. We use ``incident_id``
@@ -52,6 +68,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
+import threading
 from typing import Any
 
 import httpx
@@ -66,6 +84,11 @@ logger = logging.getLogger(__name__)
 # call-site logic.
 PAGE_ACTIONS: frozenset[str] = frozenset({"page_oncall"})
 
+# Severities for which we'll honour a page_oncall action. P3 / INFO with
+# page_oncall is a contradiction that almost always indicates a routing
+# bug upstream — refuse rather than wake someone.
+PAGE_WORTHY_SEVERITIES: frozenset[Severity] = frozenset({Severity.P0, Severity.P1, Severity.P2})
+
 # Severity → PagerDuty event severity. PD only knows four levels; we
 # collapse our five-level scale onto theirs.
 _PD_SEVERITY_BY_CHAT: dict[Severity, str] = {
@@ -78,8 +101,14 @@ _PD_SEVERITY_BY_CHAT: dict[Severity, str] = {
 _PD_DEFAULT_SEVERITY = "error"
 
 _EVENTS_API_URL = "https://events.pagerduty.com/v2/enqueue"
-_TIMEOUT = float(os.environ.get("AIOPS_PAGERDUTY_TIMEOUT", "5"))
+_DEFAULT_TIMEOUT = 5.0
 _SOURCE = "adaptive-aiops/RA-005"
+
+# PagerDuty Events API v2 integration keys are exactly 32 alphanumeric
+# characters. A regex check at construction surfaces copy-paste errors
+# (truncation, accidentally pasting "API_KEY" placeholder text, leading
+# whitespace, etc.) at server startup rather than at the first Sev-1.
+_KEY_PATTERN = re.compile(r"[A-Za-z0-9]{32}")
 
 
 class PagerDutyAdapter:
@@ -92,37 +121,59 @@ class PagerDutyAdapter:
 
     name = "pagerduty"
 
-    def __init__(self, integration_key: str) -> None:
-        if not integration_key or len(integration_key.strip()) < 8:
-            # PD integration keys are 32 chars; reject obviously bad input
-            # at construction so misconfiguration surfaces at startup, not
-            # at the first Sev-1.
+    def __init__(
+        self,
+        integration_key: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        cleaned = (integration_key or "").strip()
+        if not _KEY_PATTERN.fullmatch(cleaned):
             raise ValueError(
-                "PagerDutyAdapter requires a non-empty integration key "
-                "(expect a 32-char Events API v2 key from the PD service)."
+                "PagerDutyAdapter requires a 32-character alphanumeric Events API v2 "
+                "integration key. The key from the PD service's Integrations tab is "
+                "the right shape; common mistakes are pasting placeholder text, "
+                "truncating, or copying the service id instead of the integration key."
             )
-        self._integration_key = integration_key.strip()
+        self._integration_key = cleaned
+        # Read timeout per-instance (CR nice-to-have): keeps it consistent
+        # with adapters that pick up env at construction, and lets tests
+        # inject a different timeout cleanly.
+        self._timeout = float(
+            timeout_seconds
+            if timeout_seconds is not None
+            else os.environ.get("AIOPS_PAGERDUTY_TIMEOUT", _DEFAULT_TIMEOUT)
+        )
 
     def send(self, msg: ChatMessage) -> None:
         if not PAGE_ACTIONS.intersection(msg.actions):
             # Not a page-worthy message. Silent skip is the correct
             # behaviour: the routing decision said don't page.
             return
-        payload = self._build_payload(msg)
-        try:
-            r = httpx.post(_EVENTS_API_URL, json=payload, timeout=_TIMEOUT)
-            r.raise_for_status()
-        except httpx.HTTPError as exc:
-            # Don't include the integration key. ChatOpsClient re-logs
-            # with adapter context for debuggability.
-            logger.error(
-                "pagerduty adapter: enqueue failed for %r (severity=%s, service=%s): %s",
-                msg.title,
+        if msg.severity not in PAGE_WORTHY_SEVERITIES:
+            # Defence in depth: the actions list says "page" but the
+            # severity disagrees. Refuse rather than wake someone on a
+            # contradiction. Log loudly so the upstream routing bug is
+            # surfaced.
+            logger.warning(
+                "pagerduty: refusing to page on severity=%s for %r "
+                "(actions=%r). RA-005 should not emit page_oncall below P2; "
+                "this indicates an upstream routing bug.",
                 msg.severity.value,
-                msg.service,
-                exc,
+                msg.title,
+                list(msg.actions),
             )
-            raise
+            return
+        payload = self._build_payload(msg)
+        # Fire-and-forget on a daemon thread: paging must not block the
+        # API request that produced the alert, and a slow / unreachable
+        # PD must not back-pressure the chatops seam.
+        threading.Thread(
+            target=self._post,
+            args=(payload, msg.title, msg.severity.value, msg.service),
+            name=f"pagerduty-{msg.severity.value}",
+            daemon=True,
+        ).start()
 
     def __repr__(self) -> str:
         return "PagerDutyAdapter(integration_key=***)"
@@ -164,6 +215,32 @@ class PagerDutyAdapter:
                 "custom_details": custom_details,
             },
         }
+
+    def _post(
+        self,
+        payload: dict[str, Any],
+        title: str,
+        severity: str,
+        service: str | None,
+    ) -> None:
+        """Daemon-thread target: do the actual HTTP POST + log failures.
+
+        Exceptions are logged but never raised — they have no live caller
+        to propagate to (we're on a background thread). The audit log +
+        WebSocket dashboard already reflect "the system intended to page";
+        PD-side failures show up in PD's own incident-status visibility.
+        """
+        try:
+            r = httpx.post(_EVENTS_API_URL, json=payload, timeout=self._timeout)
+            r.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error(
+                "pagerduty adapter: enqueue failed for %r (severity=%s, service=%s): %s",
+                title,
+                severity,
+                service,
+                exc,
+            )
 
     @staticmethod
     def _dedup_key(msg: ChatMessage) -> str:
