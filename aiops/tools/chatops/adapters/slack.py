@@ -17,11 +17,33 @@ The dev server's ``_register_chatops_adapters`` hook reads the env var and
 registers this adapter only when the URL is set, so the demo runs fine
 without Slack configured.
 
+Mention rewriting (CHAT-6, issue #86):
+    RA-005 emits vendor-neutral mentions like ``"@chinmay"`` or
+    ``"@oncall@payments.example.com"``. Slack renders those as literal
+    text — the real user does NOT get a native Slack notification.
+    Only the ``<@U12345>`` form pings someone for real.
+
+    This adapter loads a static JSON mapping from ``slack_users.json``
+    (next to this file) at construction and rewrites mapped mentions to
+    ``<@U_ID>`` form before posting. Unmapped names fall back to plain
+    text — the message still lands, the person just doesn't get pinged.
+
+    The rewrite happens only in the Slack-bound payload; the canonical
+    ``msg.mentions`` is untouched so other adapters (JSON file, WebSocket,
+    PagerDuty) still see the vendor-neutral form. Option B in the issue
+    (live ``users.lookupByEmail`` lookup) would need a bot token and is
+    deferred until [HITL-1] needs the bot install path anyway.
+
 Failure handling:
     Per-message failures log + raise. ``ChatOpsClient.send`` catches
     per-adapter exceptions so one broken sink (Slack rate-limited, DNS
     flap, expired webhook) can never block the JSONL audit log or the
     WebSocket dashboard from receiving the same message.
+
+    The user-map loader is intentionally permissive: a missing or
+    malformed ``slack_users.json`` degrades to "everyone unmapped" rather
+    than refusing to start. The cost of dropping a Slack notification is
+    higher than the cost of one un-mention-pinged message.
 
 Secret hygiene:
     The webhook URL is never logged or returned in responses. ``__repr__``
@@ -31,8 +53,10 @@ Secret hygiene:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -57,6 +81,10 @@ _FALLBACK_COLOR = "#94a3b8"
 _WEBHOOK_PREFIX = "https://hooks.slack.com/"
 _TIMEOUT = float(os.environ.get("AIOPS_SLACK_TIMEOUT", "5"))
 
+# Default location of the static name→Slack-user-id map. Lives next to
+# this adapter so the JSON is colocated with the only code that reads it.
+_DEFAULT_USER_MAP_PATH = Path(__file__).parent / "slack_users.json"
+
 # Slack hard limits (current as of 2026 Block Kit reference). We truncate
 # instead of failing because dropping a message is worse than dropping
 # trailing context.
@@ -78,7 +106,12 @@ class SlackWebhookAdapter:
 
     name = "slack"
 
-    def __init__(self, webhook_url: str) -> None:
+    def __init__(
+        self,
+        webhook_url: str,
+        *,
+        user_map_path: Path | None = None,
+    ) -> None:
         if not webhook_url or not webhook_url.startswith(_WEBHOOK_PREFIX):
             raise ValueError(
                 "SlackWebhookAdapter requires a Slack incoming webhook URL "
@@ -86,6 +119,14 @@ class SlackWebhookAdapter:
                 f"Got: {webhook_url[:30]!r}..."
             )
         self._webhook_url = webhook_url
+        # Load the static @name → U_ID map at construction so a malformed
+        # file fails fast at startup, not on the first Sev-1 alert. The
+        # loader is permissive (missing/bad file → empty map) so the demo
+        # still runs without grooming the map first — unmapped names just
+        # fall back to plain text per the issue's done-when criteria.
+        self._user_map: dict[str, str] = self._load_user_map(
+            user_map_path or _DEFAULT_USER_MAP_PATH
+        )
 
     def send(self, msg: ChatMessage) -> None:
         payload = self._build_payload(msg)
@@ -100,6 +141,65 @@ class SlackWebhookAdapter:
 
     def __repr__(self) -> str:
         return "SlackWebhookAdapter(webhook=https://hooks.slack.com/services/***)"
+
+    # ─── mention rewriting (CHAT-6) ──────────────────────────────────────
+
+    @staticmethod
+    def _load_user_map(path: Path) -> dict[str, str]:
+        """Read the static name→Slack-user-id map.
+
+        Returns an empty dict if the file is missing or malformed — Slack
+        notifications will still land, mentions just won't ping anyone.
+        That trade-off is intentional: demo continuity beats hard failure
+        on a config file most of the team doesn't touch.
+        """
+        if not path.exists():
+            logger.info(
+                "slack adapter: user map %s not found; mentions will render as plain text",
+                path,
+            )
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "slack adapter: user map %s unreadable (%s); falling back to plain text mentions",
+                path,
+                exc,
+            )
+            return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "slack adapter: user map %s must be a JSON object (got %s); using empty map",
+                path,
+                type(data).__name__,
+            )
+            return {}
+        # Filter out the documentation key + any non-string entries so
+        # downstream lookups stay total.
+        return {
+            k: v
+            for k, v in data.items()
+            if isinstance(k, str) and isinstance(v, str) and not k.startswith("_")
+        }
+
+    def _format_mention(self, raw: str) -> str:
+        """Rewrite ``"@chinmay"`` → ``"<@U01ABC123>"`` if mapped.
+
+        Slack's mention syntax is ``<@U_ID>``; anything else is rendered
+        as literal text and does not trigger a notification. We strip the
+        leading ``@`` before lookup so the JSON keys can be written
+        without it (more natural for hand-editing).
+
+        Unmapped names fall back to the raw string — the message still
+        sends, the recipient just doesn't get a native Slack ping. This
+        is the explicit done-when behavior from issue #86.
+        """
+        key = raw.lstrip("@")
+        slack_id = self._user_map.get(key)
+        if slack_id:
+            return f"<@{slack_id}>"
+        return raw
 
     # ─── payload ─────────────────────────────────────────────────────────
 
@@ -141,13 +241,14 @@ class SlackWebhookAdapter:
             )
 
         if msg.mentions:
+            rendered = [self._format_mention(m) for m in msg.mentions]
             blocks.append(
                 {
                     "type": "context",
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": "Notify: " + " ".join(msg.mentions),
+                            "text": "Notify: " + " ".join(rendered),
                         }
                     ],
                 }

@@ -1,0 +1,10 @@
+{
+  "_comment": "Maps the mention text RA-005 emits (sans leading '@') to Slack user IDs. The Slack adapter rewrites '@chinmay' to '<@U01ABC123>' before posting so the real engineer gets pinged. Unmapped names fall back to plain text — the message still sends, the person just doesn't get a native Slack notification. Find a user's Slack ID via Slack -> their profile -> '...' -> 'Copy member ID' (starts with U for users, W for guests). Keys here are example placeholders; replace with real IDs as teammates onboard. See aiops/tools/chatops/adapters/slack.py for details.",
+  "chinmay": "U01EXAMPLE0",
+  "alice": "U02EXAMPLE1",
+  "bob": "U03EXAMPLE2",
+  "carol": "U04EXAMPLE3",
+  "oncall@payments.example.com": "U01EXAMPLE0",
+  "oncall@order-experience.example.com": "U02EXAMPLE1",
+  "oncall@personalization.example.com": "U03EXAMPLE2"
+}
