@@ -78,7 +78,11 @@ def _find(client: httpx.Client, base_url: str, name: str) -> str | None:
     """Return sys_id if a group with this exact name exists, else None."""
     res = client.get(
         f"{base_url}/api/now/table/sys_user_group",
-        params={"sysparm_query": f"name={name}", "sysparm_fields": "sys_id,name", "sysparm_limit": "1"},
+        params={
+            "sysparm_query": f"name={name}",
+            "sysparm_fields": "sys_id,name",
+            "sysparm_limit": "1",
+        },
     )
     res.raise_for_status()
     rows = (res.json() or {}).get("result") or []
@@ -104,8 +108,10 @@ def main() -> int:
         return 1
     base_url, auth, verify = cfg
     teams = _team_names()
-    print(f"Seeding {len(teams)} groups into {base_url} as "
-          f"{os.environ.get('AIOPS_SERVICENOW_USER')} (verify_tls={verify})")
+    print(
+        f"Seeding {len(teams)} groups into {base_url} as "
+        f"{os.environ.get('AIOPS_SERVICENOW_USER')} (verify_tls={verify})"
+    )
     created = 0
     skipped = 0
     failed: list[str] = []
@@ -127,12 +133,13 @@ def main() -> int:
                 created += 1
             except httpx.HTTPStatusError as exc:
                 body = exc.response.text[:200]
-                print(f"  [FAIL]    {name:<22} HTTP {exc.response.status_code}: {body}",
-                      file=sys.stderr)
+                print(
+                    f"  [FAIL]    {name:<22} HTTP {exc.response.status_code}: {body}",
+                    file=sys.stderr,
+                )
                 failed.append(name)
             except Exception as exc:
-                print(f"  [FAIL]    {name:<22} {type(exc).__name__}: {exc}",
-                      file=sys.stderr)
+                print(f"  [FAIL]    {name:<22} {type(exc).__name__}: {exc}", file=sys.stderr)
                 failed.append(name)
     print(f"\nDone. created={created}, skipped={skipped}, failed={len(failed)}")
     if failed:
