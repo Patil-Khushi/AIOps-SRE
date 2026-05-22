@@ -416,6 +416,52 @@ def test_legacy_string_approver_still_works_via_shim():
         gate._levels.pop("test.hitl5.legacy_approve", None)
 
 
+def test_legacy_string_approver_emits_debug_log_for_migration_visibility(caplog):
+    """Review-follow-up nit #2: the shim must surface the migration debt
+    in logs so audit-log consumers don't silently get ``Decision.approval=None``
+    for a legacy approver without ever knowing why."""
+    import logging
+
+    from aiops.policy.gate import AutonomyLevel as AL
+
+    gate = get_gate()
+    original = gate.approver
+    try:
+        gate._levels["test.hitl5.legacy_log"] = AL.REQUIRED
+        gate.set_approver(lambda _action, _ctx: "legacy-bob")
+        with caplog.at_level(logging.DEBUG, logger="aiops.policy.gate"):
+            gate.check("test.hitl5.legacy_log", {})
+        matches = [r for r in caplog.records if "legacy approver returned bare str" in r.message]
+        assert matches, "shim should DEBUG-log when wrapping a legacy str return"
+        assert matches[0].levelno == logging.DEBUG
+    finally:
+        gate.set_approver(original)
+        gate._levels.pop("test.hitl5.legacy_log", None)
+
+
+def test_legacy_none_approver_does_not_emit_migration_debug_log(caplog):
+    """``None`` returns mean 'blocked', not 'pre-HITL-5 approval' — the
+    shim should stay quiet for them so DEBUG logs don't drown in
+    every fail-closed REQUIRED check."""
+    import logging
+
+    from aiops.policy.gate import AutonomyLevel as AL
+
+    gate = get_gate()
+    original = gate.approver
+    try:
+        gate._levels["test.hitl5.legacy_quiet"] = AL.REQUIRED
+        gate.set_approver(lambda _action, _ctx: None)
+        with caplog.at_level(logging.DEBUG, logger="aiops.policy.gate"):
+            gate.check("test.hitl5.legacy_quiet", {})
+        assert not any("legacy approver returned bare str" in r.message for r in caplog.records), (
+            "shim must not log on None (blocked) returns"
+        )
+    finally:
+        gate.set_approver(original)
+        gate._levels.pop("test.hitl5.legacy_quiet", None)
+
+
 def test_legacy_none_approver_still_works_via_shim():
     """``None`` from a legacy approver still maps to blocked — the shim
     must not turn a None into an unintended approval."""

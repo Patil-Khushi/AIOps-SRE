@@ -19,6 +19,7 @@ from .approvals import (
     install_default_approver,
 )
 from .gate import (
+    ApprovalOutcome,
     ApprovalSummary,
     ApproverResult,
     AutonomyLevel,
@@ -30,6 +31,7 @@ from .gate import (
 
 __all__ = [
     "ApprovalError",
+    "ApprovalOutcome",
     "ApprovalRegistry",
     "ApprovalRequest",
     "ApprovalRequester",

@@ -15,10 +15,13 @@ before OPA is wired in.
 from __future__ import annotations
 
 import enum
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 
 class AutonomyLevel(enum.StrEnum):
@@ -144,9 +147,26 @@ def _coerce_approver_result(value: ApproverResult | str | None) -> ApproverResul
 
     Lets pre-HITL-5 approvers — ``lambda action, ctx: "alice"``, ``_no_approver``
     callers in tests — keep working without touching the gate's logic.
+
+    When the wrapped value is a non-``None`` string we log at DEBUG: that
+    case means a legacy approver granted approval but didn't return a
+    structured :class:`ApprovalSummary`, so :attr:`Decision.approval`
+    will be ``None`` for this decision.  Audit-log consumers should
+    treat a ``None`` summary on an *allowed* decision as
+    "pre-HITL-5 approver, no structured metadata available" rather
+    than "no approval flow ran" — surfacing the migration debt in
+    logs so it doesn't silently rot.  ``None`` returns are *not*
+    logged: they mean "blocked", which has no missing-summary hazard.
     """
     if isinstance(value, ApproverResult):
         return value
+    if value is not None:
+        logger.debug(
+            "legacy approver returned bare str %r — Decision.approval will be None "
+            "for this decision; migrate to ApproverResult to get structured "
+            "approval metadata (HITL-5, #105)",
+            value,
+        )
     # ``value`` is either ``str`` (legacy approved) or ``None`` (legacy blocked).
     return ApproverResult(approver=value, summary=None)
 

@@ -42,7 +42,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from aiops.policy.gate import ApprovalSummary, ApproverResult
+from aiops.policy.gate import ApprovalOutcome, ApprovalSummary, ApproverResult
 
 logger = logging.getLogger(__name__)
 
@@ -467,7 +467,9 @@ class ApprovalRequester:
         # Denied or expired: carry the structured summary back via the
         # return shape (HITL-5).  The gate's _outcome_reason reads it
         # to render "denied by <approver>: <reason>" / "expired".
-        summary_status: Any = "denied" if resolved.status is ApprovalStatus.DENIED else "expired"
+        summary_status: ApprovalOutcome = (
+            "denied" if resolved.status is ApprovalStatus.DENIED else "expired"
+        )
         return ApproverResult(
             approver=None,
             summary=ApprovalSummary(
