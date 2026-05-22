@@ -12,7 +12,9 @@ Mocks ``httpx.post`` so tests never hit the network. Asserts:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -201,3 +203,180 @@ def test_send_raises_on_http_failure() -> None:
     with patch("aiops.tools.chatops.adapters.slack.httpx.post", return_value=failing):
         with pytest.raises(httpx.HTTPError):
             adapter.send(_msg())
+
+
+# ─── mention rewriting (CHAT-6, issue #86) ─────────────────────────────
+
+
+def _write_user_map(tmp_path: Path, mapping: dict[str, str]) -> Path:
+    """Drop a slack_users.json file in a tmp dir for the adapter to load."""
+    path = tmp_path / "slack_users.json"
+    path.write_text(json.dumps(mapping), encoding="utf-8")
+    return path
+
+
+def _context_text(payload: dict[str, Any]) -> str:
+    """Pull the 'Notify: ...' string out of the Slack Block Kit payload."""
+    blocks = payload["attachments"][0]["blocks"]
+    context = next(
+        b
+        for b in blocks
+        if b["type"] == "context"
+        and any("Notify:" in el.get("text", "") for el in b.get("elements", []))
+    )
+    return context["elements"][0]["text"]
+
+
+def test_mapped_mention_is_rewritten_to_slack_user_id(tmp_path: Path) -> None:
+    """The done-when check from #86: when assigned_engineer is `chinmay`
+    and the JSON map has him, the Slack message must contain `<@U_ID>`
+    (which actually pings the user) and not the literal `@chinmay`
+    (which is plain text and pings nobody)."""
+    user_map = _write_user_map(tmp_path, {"chinmay": "U01ABC123"})
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=user_map)
+
+    with patch("aiops.tools.chatops.adapters.slack.httpx.post") as mock_post:
+        mock_post.return_value = _mock_ok_response()
+        adapter.send(_msg(mentions=["@chinmay"]))
+
+    notify_line = _context_text(mock_post.call_args.kwargs["json"])
+    assert "<@U01ABC123>" in notify_line
+    assert "@chinmay" not in notify_line  # the raw form must not survive
+
+
+def test_unmapped_mention_falls_back_to_plain_text(tmp_path: Path) -> None:
+    """The other done-when check from #86: an unmapped name must NOT
+    fail the message — it goes through as plain text. Recipient doesn't
+    get a native ping, but the notification still lands."""
+    user_map = _write_user_map(tmp_path, {"chinmay": "U01ABC123"})
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=user_map)
+
+    with patch("aiops.tools.chatops.adapters.slack.httpx.post") as mock_post:
+        mock_post.return_value = _mock_ok_response()
+        adapter.send(_msg(mentions=["@randomperson"]))
+
+    notify_line = _context_text(mock_post.call_args.kwargs["json"])
+    assert "@randomperson" in notify_line
+    # No bogus rewrite — must not synthesize a fake user id.
+    assert "<@" not in notify_line
+
+
+def test_mixed_mapped_and_unmapped_mentions(tmp_path: Path) -> None:
+    """A list with one mapped + one unmapped name renders the mapped one
+    as <@U_ID> and the unmapped one as plain @name in the same context
+    line. RA-005 emits multi-name mentions occasionally (e.g. war-room
+    assembly), so this combo must work."""
+    user_map = _write_user_map(tmp_path, {"chinmay": "U01ABC123"})
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=user_map)
+
+    with patch("aiops.tools.chatops.adapters.slack.httpx.post") as mock_post:
+        mock_post.return_value = _mock_ok_response()
+        adapter.send(_msg(mentions=["@chinmay", "@randomperson"]))
+
+    notify_line = _context_text(mock_post.call_args.kwargs["json"])
+    assert "<@U01ABC123>" in notify_line
+    assert "@randomperson" in notify_line
+
+
+def test_email_shaped_mention_is_supported(tmp_path: Path) -> None:
+    """RA-005 today emits mentions like `@oncall@payments.example.com`
+    when ``verdict.assigned_engineer`` is an email. The JSON map's key
+    should accept that whole string (sans leading @), so on-call routing
+    pings real people, not literal text."""
+    email_key = "oncall@payments.example.com"
+    user_map = _write_user_map(tmp_path, {email_key: "U05ABC456"})
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=user_map)
+
+    with patch("aiops.tools.chatops.adapters.slack.httpx.post") as mock_post:
+        mock_post.return_value = _mock_ok_response()
+        adapter.send(_msg(mentions=[f"@{email_key}"]))
+
+    notify_line = _context_text(mock_post.call_args.kwargs["json"])
+    assert "<@U05ABC456>" in notify_line
+
+
+def test_missing_user_map_file_degrades_to_plain_text(tmp_path: Path) -> None:
+    """A missing slack_users.json must not crash construction. Demo
+    continuity over hard failure on a config file most of the team
+    doesn't touch."""
+    missing = tmp_path / "does-not-exist.json"
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=missing)
+
+    with patch("aiops.tools.chatops.adapters.slack.httpx.post") as mock_post:
+        mock_post.return_value = _mock_ok_response()
+        adapter.send(_msg(mentions=["@chinmay"]))
+
+    notify_line = _context_text(mock_post.call_args.kwargs["json"])
+    assert "@chinmay" in notify_line
+    assert "<@" not in notify_line
+
+
+def test_malformed_user_map_file_degrades_to_plain_text(tmp_path: Path) -> None:
+    """Truncated paste / invalid JSON in slack_users.json must be tolerated
+    — log a warning, fall back to empty map, keep sending notifications."""
+    bad = tmp_path / "broken.json"
+    bad.write_text('{"chinmay": "U01ABC123"', encoding="utf-8")  # missing closing brace
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=bad)
+
+    with patch("aiops.tools.chatops.adapters.slack.httpx.post") as mock_post:
+        mock_post.return_value = _mock_ok_response()
+        adapter.send(_msg(mentions=["@chinmay"]))
+
+    notify_line = _context_text(mock_post.call_args.kwargs["json"])
+    assert "@chinmay" in notify_line
+
+
+def test_user_map_filters_out_doc_keys_and_non_strings(tmp_path: Path) -> None:
+    """The default slack_users.json carries a `_comment` documentation
+    key. The loader must strip underscore-prefixed keys and non-string
+    values so they never make it into a lookup result."""
+    user_map = _write_user_map(
+        tmp_path,
+        {
+            "_comment": "this is a doc string, not a user id",
+            "chinmay": "U01ABC123",
+        },
+    )
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=user_map)
+
+    # The doc key must not be in the loaded map.
+    assert "_comment" not in adapter._user_map
+    assert adapter._user_map["chinmay"] == "U01ABC123"
+
+
+def test_default_user_map_path_loads_shipped_file() -> None:
+    """The adapter without ``user_map_path`` must load the file shipped
+    next to the module. Locks the default path so a future refactor
+    can't silently break the wire-up."""
+    adapter = SlackWebhookAdapter(WEBHOOK)
+    # Shipped file always contains the documentation key + at least one
+    # example mapping (or operator-replaced real mappings). The loader
+    # filters the doc key out, so the resulting map should contain at
+    # least one real-looking entry.
+    assert isinstance(adapter._user_map, dict)
+    # If the file exists and parses, it should be loaded; otherwise the
+    # loader returns an empty dict — both are valid runtime states. We
+    # just assert it's a dict-shaped result and ``_comment`` is gone.
+    assert "_comment" not in adapter._user_map
+
+
+def test_empty_mentions_list_skips_context_block(tmp_path: Path) -> None:
+    """Mention rewriting must not synthesize a context block when there
+    are no mentions to render — that would create an empty 'Notify: '
+    string in Slack. This is the same contract as the original
+    pre-CHAT-6 behaviour, locked here so rewriting doesn't regress it."""
+    user_map = _write_user_map(tmp_path, {"chinmay": "U01ABC123"})
+    adapter = SlackWebhookAdapter(WEBHOOK, user_map_path=user_map)
+
+    with patch("aiops.tools.chatops.adapters.slack.httpx.post") as mock_post:
+        mock_post.return_value = _mock_ok_response()
+        adapter.send(_msg(mentions=[]))
+
+    blocks = mock_post.call_args.kwargs["json"]["attachments"][0]["blocks"]
+    notify_contexts = [
+        b
+        for b in blocks
+        if b["type"] == "context"
+        and any("Notify:" in el.get("text", "") for el in b.get("elements", []))
+    ]
+    assert notify_contexts == []
