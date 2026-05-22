@@ -84,14 +84,54 @@ foreach ($fwd in $forwards) {
 Start-Sleep -Seconds 3   # let pf jobs bind their ports
 
 # --- 2.5 ensure SPA builds exist (React dashboard + standalone classifier UI) ---
+
+# Freshness check: returns the LastWriteTime of the newest file that contributes
+# to the build (src/**, plus the root config files Vite/Tailwind/TS consume).
+# Used to decide whether dist/ is stale relative to source.
+function Get-SpaSourceNewestMtime($dir) {
+    $sources = @()
+    $srcDir = Join-Path $dir 'src'
+    if (Test-Path $srcDir) {
+        $sources += Get-ChildItem -Path $srcDir -Recurse -File -ErrorAction SilentlyContinue
+    }
+    $configFiles = @(
+        'index.html', 'package.json', 'package-lock.json',
+        'tailwind.config.js', 'postcss.config.js',
+        'vite.config.ts', 'vite.config.js',
+        'tsconfig.json', 'tsconfig.node.json'
+    )
+    foreach ($name in $configFiles) {
+        $p = Join-Path $dir $name
+        if (Test-Path $p) { $sources += Get-Item $p }
+    }
+    if ($sources.Count -eq 0) { return $null }
+    return ($sources | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+}
+
 function Invoke-SpaBuild($name, $dir, $missingMsg) {
     $distIndex = Join-Path $dir 'dist\index.html'
     if (-not (Test-Path $dir)) { return }
-    if (Test-Path $distIndex) {
-        Write-Host "    $name already built" -ForegroundColor DarkGray
+
+    # Decide why (or whether) we're building. Three states:
+    #   missing — dist/index.html absent → first-run build
+    #   stale   — newest source mtime > dist mtime → incremental rebuild
+    #   fresh   — dist is up-to-date → skip
+    $reason = $null
+    if (-not (Test-Path $distIndex)) {
+        $reason = 'first run, ~30 s'
+    } else {
+        $distMtime = (Get-Item $distIndex).LastWriteTime
+        $srcMtime  = Get-SpaSourceNewestMtime $dir
+        if ($srcMtime -and $srcMtime -gt $distMtime) {
+            $reason = 'source changed since last build'
+        }
+    }
+    if (-not $reason) {
+        Write-Host "    $name already built (up-to-date)" -ForegroundColor DarkGray
         return
     }
-    Write-Step '2b' "building $name (first run, ~30 s)..."
+
+    Write-Step '2b' "building $name ($reason)..."
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
         Write-Warning "npm not found; skipping $name build. $missingMsg"
         return
