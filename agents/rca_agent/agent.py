@@ -45,6 +45,12 @@ logger = logging.getLogger(__name__)
 # section is explicit that pattern-matching to restart/scale is a failure mode).
 _LOCKED_SCENARIO = "slow-product-catalog"
 
+# Exact service identifiers that map to the locked scenario. Used so the
+# dashboard path (which may not pass scenario_id) still hits the confident
+# verdict for the actual broken service, without a loose substring match like
+# "product" in service that would also fire on unrelated product-* services.
+_LOCKED_SERVICES = frozenset({"product-catalog", "productcatalog", "productcatalogservice"})
+
 
 # ─── deterministic fallback ─────────────────────────────────────────────────
 
@@ -63,7 +69,7 @@ def _fallback_verdict(
     """
     service = triage.get("affected_service") or "productcatalogservice"
 
-    if scenario_id == _LOCKED_SCENARIO or "product" in service.lower():
+    if scenario_id == _LOCKED_SCENARIO or service.lower() in _LOCKED_SERVICES:
         decision_trace.append(
             "deterministic fallback: matched locked scenario slow-product-catalog"
         )

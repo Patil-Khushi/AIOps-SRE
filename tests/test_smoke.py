@@ -112,6 +112,32 @@ def test_hitl_gate_optional_respects_tenant_flag():
     assert not d2.allowed
 
 
+def test_rca_fix_step_rejects_requires_hitl_false():
+    """PRS-008 catalog invariant: every RCA fix step is Required-HITL. The
+    ``Literal[True]`` field type defends the invariant at the schema layer so
+    a future caller that bypasses ``_coerce_verdict`` and feeds raw LLM JSON
+    into ``RankedFixStep`` cannot smuggle ``requires_hitl=false`` through."""
+    from pydantic import ValidationError
+
+    from agents.rca_agent.models import BlastRadius, RankedFixStep
+
+    # Default path still works.
+    step = RankedFixStep(description="x", blast_radius=BlastRadius.LOW, rollback="y")
+    assert step.requires_hitl is True
+
+    # Explicit True is allowed.
+    step = RankedFixStep(
+        description="x", blast_radius=BlastRadius.LOW, rollback="y", requires_hitl=True
+    )
+    assert step.requires_hitl is True
+
+    # Explicit False is rejected at the schema layer.
+    with pytest.raises(ValidationError):
+        RankedFixStep(
+            description="x", blast_radius=BlastRadius.LOW, rollback="y", requires_hitl=False
+        )
+
+
 # --- truth files match scenarios ------------------------------------------
 
 

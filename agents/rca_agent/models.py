@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,7 +36,11 @@ class RankedFixStep(BaseModel):
     v0 invariant: ``requires_hitl`` is always ``True`` — the catalog marks
     every RCA fix step as Required-HITL (Solution Design slide 10). The
     platform gate (``aiops.policy``) enforces this at the action boundary; the
-    agent does not self-gate.
+    agent does not self-gate. The ``Literal[True]`` type on the field makes
+    the invariant uncircumventable at deserialization — an LLM-supplied
+    ``"requires_hitl": false`` is rejected by pydantic before any caller can
+    see it, even if a future caller skips ``_coerce_verdict`` and passes raw
+    LLM JSON straight to ``RCAVerdict.model_validate``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -44,7 +48,7 @@ class RankedFixStep(BaseModel):
     description: str = Field(min_length=1)
     blast_radius: BlastRadius
     rollback: str = Field(min_length=1)
-    requires_hitl: bool = True
+    requires_hitl: Literal[True] = True
 
 
 class RCAAuditMetadata(BaseModel):
