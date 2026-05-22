@@ -37,7 +37,6 @@ import logging
 import os
 import threading
 import uuid
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -131,9 +130,11 @@ class ApprovalRegistry:
     def add_listener(self, fn) -> None:
         """Register ``fn(event_name: str, request: ApprovalRequest) -> None``.
 
-        Listeners run inline under the registry lock — they must not call
-        back into the registry or do heavy I/O.  The chatops bridge submits
-        a ChatMessage to the in-process client, which is fast.
+        Listeners are dispatched *outside* the registry lock so a listener
+        that does network I/O (the chatops bridge can post to Slack) does
+        not serialize concurrent approvals.  Listeners may safely call back
+        into the registry, but each listener is otherwise responsible for
+        its own thread-safety.
         """
         with self._lock:
             self._listeners.append(fn)
@@ -142,10 +143,23 @@ class ApprovalRegistry:
         with self._lock:
             self._listeners.clear()
 
-    def _emit(self, event_name: str, req: ApprovalRequest) -> None:
-        # Called with self._lock held.  Copy the listener list so a listener
-        # that registers another listener can't mutate iteration.
-        for fn in list(self._listeners):
+    def _queue_event_locked(
+        self,
+        pending: list[tuple[Any, str, ApprovalRequest]],
+        event_name: str,
+        req: ApprovalRequest,
+    ) -> None:
+        """Snapshot the current listeners and append (fn, event, req) tuples to
+        ``pending``.  Must be called with ``self._lock`` held.  The caller
+        flushes ``pending`` via :meth:`_dispatch` after releasing the lock —
+        keeping listener I/O off the critical section."""
+        for fn in self._listeners:
+            pending.append((fn, event_name, req))
+
+    @staticmethod
+    def _dispatch(pending: list[tuple[Any, str, ApprovalRequest]]) -> None:
+        """Invoke queued listeners.  Never called under ``self._lock``."""
+        for fn, event_name, req in pending:
             try:
                 fn(event_name, req)
             except Exception:
@@ -172,11 +186,13 @@ class ApprovalRegistry:
             requested_at=now,
             expires_at=now + timedelta(seconds=ttl),
         )
+        pending: list[tuple[Any, str, ApprovalRequest]] = []
         with self._lock:
             if req.id in self._requests:
                 raise ApprovalError(f"approval id collision: {req.id!r}")
             self._requests[req.id] = req
-            self._emit("created", req)
+            self._queue_event_locked(pending, "created", req)
+        self._dispatch(pending)
         return req
 
     def decide(
@@ -195,12 +211,13 @@ class ApprovalRegistry:
         the rego policy, not here.
         """
         expired: list[ApprovalRequest] = []
+        pending: list[tuple[Any, str, ApprovalRequest]] = []
         try:
             with self._lock:
                 req = self._requests.get(request_id)
                 if req is None:
                     raise ApprovalError(f"unknown approval id: {request_id!r}")
-                if self._refresh_expiry_locked(req):
+                if self._refresh_expiry_locked(req, pending):
                     expired.append(req)
                 if req.status is not ApprovalStatus.PENDING:
                     # Allow idempotent re-decision when it agrees with current state.
@@ -216,7 +233,7 @@ class ApprovalRegistry:
                 req.reason = reason
                 req.decided_at = datetime.now(UTC)
                 event_name = "approved" if approved else "denied"
-                self._emit(event_name, req)
+                self._queue_event_locked(pending, event_name, req)
             # Wake any waiters AFTER releasing the lock — wait_for grabs the
             # lock to read the request, so signalling under the lock can
             # deadlock under asyncio.to_thread on some platforms.
@@ -224,9 +241,11 @@ class ApprovalRegistry:
             return req
         finally:
             self._signal_expired(expired)
+            self._dispatch(pending)
 
     def expire(self, request_id: str) -> ApprovalRequest:
         """Force-expire a pending request (used by tests + the sweeper)."""
+        pending: list[tuple[Any, str, ApprovalRequest]] = []
         with self._lock:
             req = self._requests.get(request_id)
             if req is None:
@@ -235,35 +254,42 @@ class ApprovalRegistry:
                 req.status = ApprovalStatus.EXPIRED
                 req.decided_at = datetime.now(UTC)
                 req.reason = req.reason or "expired"
-                self._emit("expired", req)
+                self._queue_event_locked(pending, "expired", req)
         req._event.set()
+        self._dispatch(pending)
         return req
 
     # ─── lookup ─────────────────────────────────────────────────────────
 
     def get(self, request_id: str) -> ApprovalRequest:
         expired: list[ApprovalRequest] = []
+        pending: list[tuple[Any, str, ApprovalRequest]] = []
         with self._lock:
             req = self._requests.get(request_id)
             if req is None:
                 raise ApprovalError(f"unknown approval id: {request_id!r}")
-            if self._refresh_expiry_locked(req):
+            if self._refresh_expiry_locked(req, pending):
                 expired.append(req)
         self._signal_expired(expired)
+        self._dispatch(pending)
         return req
 
     def list_pending(self) -> list[ApprovalRequest]:
+        pending_events: list[tuple[Any, str, ApprovalRequest]] = []
         with self._lock:
-            expired = self._sweep_expired_locked()
+            expired = self._sweep_expired_locked(pending_events)
             pending = [r for r in self._requests.values() if r.status is ApprovalStatus.PENDING]
         self._signal_expired(expired)
+        self._dispatch(pending_events)
         return pending
 
     def list_all(self) -> list[ApprovalRequest]:
+        pending_events: list[tuple[Any, str, ApprovalRequest]] = []
         with self._lock:
-            expired = self._sweep_expired_locked()
+            expired = self._sweep_expired_locked(pending_events)
             snapshot = list(self._requests.values())
         self._signal_expired(expired)
+        self._dispatch(pending_events)
         return snapshot
 
     # ─── waiting ────────────────────────────────────────────────────────
@@ -297,22 +323,29 @@ class ApprovalRegistry:
 
     # ─── housekeeping ───────────────────────────────────────────────────
 
-    def _refresh_expiry_locked(self, req: ApprovalRequest) -> bool:
-        """If ``req`` should be expired now, flip it and emit the listener
-        event.  Returns True when a transition happened so the caller can
-        signal waiters outside the lock."""
+    def _refresh_expiry_locked(
+        self,
+        req: ApprovalRequest,
+        pending: list[tuple[Any, str, ApprovalRequest]],
+    ) -> bool:
+        """If ``req`` should be expired now, flip it and queue the listener
+        event onto ``pending`` for post-lock dispatch.  Returns True when a
+        transition happened so the caller can signal waiters outside the lock."""
         if req.status is ApprovalStatus.PENDING and datetime.now(UTC) >= req.expires_at:
             req.status = ApprovalStatus.EXPIRED
             req.decided_at = datetime.now(UTC)
             req.reason = req.reason or "expired"
-            self._emit("expired", req)
+            self._queue_event_locked(pending, "expired", req)
             return True
         return False
 
-    def _sweep_expired_locked(self) -> list[ApprovalRequest]:
+    def _sweep_expired_locked(
+        self,
+        pending: list[tuple[Any, str, ApprovalRequest]],
+    ) -> list[ApprovalRequest]:
         expired: list[ApprovalRequest] = []
         for req in self._requests.values():
-            if self._refresh_expiry_locked(req):
+            if self._refresh_expiry_locked(req, pending):
                 expired.append(req)
         return expired
 
@@ -484,11 +517,3 @@ def install_chatops_listener(registry: ApprovalRegistry | None = None) -> None:
             if getattr(existing, "__aiops_listener_id__", None) == "chatops_bridge":
                 return
         reg._listeners.append(listener)
-
-
-def coerce_iterable(maybe_iter: Iterable[Any] | None) -> list[Any]:
-    """Tiny helper used by the web surface — pulled here so the FastAPI module
-    doesn't accumulate utility code that belongs near the data model."""
-    if maybe_iter is None:
-        return []
-    return list(maybe_iter)

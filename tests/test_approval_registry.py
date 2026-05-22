@@ -167,3 +167,71 @@ def test_to_record_is_json_friendly(registry: ApprovalRegistry):
     rec = registry.get(req.id).to_record()
     blob = json.dumps(rec)  # must not raise
     assert "alice" in blob and "approved" in blob
+
+
+def test_slow_listener_does_not_serialize_concurrent_operations(
+    registry: ApprovalRegistry,
+):
+    """Regression for the bug where listeners ran under self._lock: a Slack
+    HTTP post in the chatops listener would block every other registry call
+    for the duration of the round-trip.  Listeners now fire post-lock, so a
+    slow listener on thread A must not delay an independent decide() on
+    thread B."""
+    barrier = threading.Event()
+    release = threading.Event()
+
+    def slow_listener(event_name, req):
+        # Block on the FIRST event we see, until the test releases us.
+        if not barrier.is_set():
+            barrier.set()
+            release.wait(timeout=5)
+
+    registry.add_listener(slow_listener)
+
+    # Thread A creates a request — its "created" event will park inside the
+    # slow listener.  If listeners ran under the lock, the registry would be
+    # frozen until ``release`` is set.
+    req_a_box: dict = {}
+
+    def create_a():
+        req_a_box["req"] = registry.create("a.action", {}, timeout_seconds=60)
+
+    t_a = threading.Thread(target=create_a, daemon=True)
+    t_a.start()
+
+    # Wait for thread A to enter the slow listener.
+    assert barrier.wait(timeout=2), "slow listener never fired"
+
+    # Thread B must be able to create another request while A's listener is
+    # still blocked.  Wrap with our own timeout so a regression fails fast.
+    req_b_box: dict = {}
+
+    def create_b():
+        req_b_box["req"] = registry.create("b.action", {}, timeout_seconds=60)
+
+    t_b = threading.Thread(target=create_b, daemon=True)
+    t_b.start()
+    t_b.join(timeout=2)
+    assert not t_b.is_alive(), "thread B was blocked by thread A's slow listener"
+    assert req_b_box["req"].action == "b.action"
+
+    # Cleanup — let A finish.
+    release.set()
+    t_a.join(timeout=2)
+    assert not t_a.is_alive()
+
+
+def test_listener_may_call_back_into_registry(registry: ApprovalRegistry):
+    """Listeners run outside the lock, so it's now legal for a listener to
+    call back into the registry (e.g. .get()) without deadlocking."""
+    seen: list[str] = []
+
+    def reentrant_listener(event_name, req):
+        if event_name == "created":
+            # This used to deadlock when listeners ran under self._lock.
+            fetched = registry.get(req.id)
+            seen.append(fetched.id)
+
+    registry.add_listener(reentrant_listener)
+    req = registry.create("test.action", {}, timeout_seconds=60)
+    assert seen == [req.id]
