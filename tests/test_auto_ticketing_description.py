@@ -185,9 +185,7 @@ def test_assignment_group_and_category_passed_to_registry(monkeypatch):
         ("change_related", "software"),
     ],
 )
-def test_incident_type_maps_to_servicenow_category(
-    monkeypatch, incident_type, expected_category
-):
+def test_incident_type_maps_to_servicenow_category(monkeypatch, incident_type, expected_category):
     """Every RA-002 incident_type must produce a stock ServiceNow category."""
     captured = _last_create_payload(monkeypatch)
     c = _classification().model_copy(update={"incident_type": incident_type})

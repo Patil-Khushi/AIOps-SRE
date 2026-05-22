@@ -123,8 +123,7 @@ def _build_description(
         # variants. The route can patch the block in later via
         # itsm.incident.update once classification has run.
         sections.append(
-            "CLASSIFICATION (RA-002)\n"
-            "  Pending — classifier has not run for this incident yet."
+            "CLASSIFICATION (RA-002)\n  Pending — classifier has not run for this incident yet."
         )
 
     trace = list(verdict.audit_metadata.decision_trace or [])
