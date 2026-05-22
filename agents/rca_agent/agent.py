@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -33,7 +34,7 @@ from agents.rca_agent.models import (
     RCAInput,
     RCAVerdict,
 )
-from agents.rca_agent.prompts import RCA_PROMPT_USER_V1, SYSTEM_PROMPT_V1
+from agents.rca_agent.prompts import RCA_PROMPT_USER_V1, SYSTEM_PROMPT_V2
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
 
@@ -44,6 +45,18 @@ logger = logging.getLogger(__name__)
 # rather than a confident wrong answer (the truth file's "known_wrong_fixes"
 # section is explicit that pattern-matching to restart/scale is a failure mode).
 _LOCKED_SCENARIO = "slow-product-catalog"
+
+# Per-agent LLM choice. The platform default (AIOPS_LLM_PROVIDER=openai → Azure
+# OpenAI gpt-5) works for the lighter agents (alert_triage, classifier) but
+# Azure's content filter false-positives on the structural shape of RCA's
+# prompt — tagged alert IDs, parenthesized severity scores, and biomarker-
+# looking metric labels all read as clinical-lab content to the classifier and
+# trip `self_harm: severity=medium` deterministically. Routing this one agent
+# through Anthropic Claude (via the Foundry deployment on the same Azure
+# resource) sidesteps it. Override either env var to switch back if the
+# situation changes.
+_RCA_PROVIDER = os.environ.get("AIOPS_RCA_LLM_PROVIDER", "anthropic")
+_RCA_MODEL = os.environ.get("AIOPS_RCA_LLM_MODEL", "claude-sonnet-4-6")
 
 # Exact service identifiers that map to the locked scenario. Used so the
 # dashboard path (which may not pass scenario_id) still hits the confident
@@ -272,9 +285,11 @@ def analyze(triage_verdict: dict[str, Any], *, scenario_id: str | None = None) -
         # parse defensively. 1500 tokens covers reasoning + a 2-3 step plan.
         resp = llm_complete(
             messages=[
-                Message(role="system", content=SYSTEM_PROMPT_V1),
+                Message(role="system", content=SYSTEM_PROMPT_V2),
                 Message(role="user", content=user_prompt),
             ],
+            provider=_RCA_PROVIDER,
+            model=_RCA_MODEL,
             temperature=0.2,
             max_tokens=1500,
         )
