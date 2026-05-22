@@ -116,14 +116,26 @@ def get_hub() -> _ChatOpsHub:
     return _HUB
 
 
-def register_routes(app: FastAPI) -> None:
-    """Wire the WebSocket route + startup hook onto the given FastAPI app."""
+def bootstrap_websocket_adapter() -> None:
+    """Attach the running asyncio loop to the hub and register the WS adapter.
 
-    @app.on_event("startup")
-    def _attach_loop_and_adapter() -> None:
-        _HUB.attach_loop(asyncio.get_running_loop())
-        get_chatops_client().register(WebSocketChatOpsAdapter(_HUB))
-        logger.info("chatops: registered websocket adapter (/ws/chatops)")
+    Must be called from inside the asyncio event loop (i.e. from the FastAPI
+    lifespan context manager) so ``asyncio.get_running_loop()`` resolves to the
+    server's loop. Idempotent if the chatops client de-duplicates adapter
+    registrations; today it does not, so call exactly once at startup.
+    """
+    _HUB.attach_loop(asyncio.get_running_loop())
+    get_chatops_client().register(WebSocketChatOpsAdapter(_HUB))
+    logger.info("chatops: registered websocket adapter (/ws/chatops)")
+
+
+def register_routes(app: FastAPI) -> None:
+    """Wire the WebSocket route onto the given FastAPI app.
+
+    The companion ``bootstrap_websocket_adapter()`` runs from the parent app's
+    lifespan to perform the startup-time wiring (loop attach + adapter
+    registration).
+    """
 
     @app.websocket("/ws/chatops")
     async def ws_chatops(ws: WebSocket) -> None:

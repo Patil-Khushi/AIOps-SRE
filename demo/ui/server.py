@@ -31,6 +31,7 @@ import re
 import subprocess
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,7 @@ from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E4
 from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
+from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -87,37 +89,29 @@ FIXTURES_PATH = (
     Path(__file__).parent.parent.parent / "agents" / "alert_triage" / "evals" / "golden.json"
 )
 
-app = FastAPI(title="Adaptive AIOps — Alert Triage demo", version="0.1.0")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup wiring for the demo UI.
 
-@app.on_event("startup")
-def _bootstrap_state() -> None:
+    Replaces three previous ``@app.on_event("startup")`` hooks (deprecated
+    since FastAPI 0.104). Order matches the original declaration order:
+
+    1. ``init_db()`` so any later step that persists has somewhere to write.
+    2. HITL approval listener + default approver — the listener must register
+       before any approval is created so the "created" event reaches the
+       sinks registered in step 3.
+    3. Chatops adapters: JSONL audit log (always) + Slack webhook (opt-in via
+       ``AIOPS_SLACK_WEBHOOK_URL``).
+    4. WebSocket chatops adapter — must run inside the asyncio loop so
+       ``asyncio.get_running_loop()`` resolves to the server's loop. This is
+       why the lifespan is ``async``.
+    """
     init_db()
 
-
-@app.on_event("startup")
-def _wire_hitl_approval_flow() -> None:
-    """HITL UI v1 (#77): install the approval-requesting approver into the
-    gate and bridge approval lifecycle events into the chatops seam.
-
-    Order matters: the chatops listener must register BEFORE the first
-    approval is created so the "created" event reaches the Slack/JSONL/WS
-    sinks (which themselves register in ``_register_chatops_adapters``
-    below; FastAPI runs ``startup`` handlers in declaration order).
-    """
     install_chatops_listener()
     install_default_approver()
 
-
-@app.on_event("startup")
-def _register_chatops_adapters() -> None:
-    """JSON audit log (D3) + optional Slack webhook (CHAT-1). The WebSocket
-    sink (D2) registers itself via ``_register_chatops_ws_routes`` below.
-
-    Slack registration is opt-in: only happens when ``AIOPS_SLACK_WEBHOOK_URL``
-    is set in the environment. Without it the demo runs cleanly against the
-    JSONL audit log + WebSocket dashboard panel.
-    """
     audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
     get_chatops_client().register(JsonFileChatOpsAdapter(audit_path))
     logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
@@ -130,6 +124,16 @@ def _register_chatops_adapters() -> None:
         except ValueError as exc:
             logger.warning("chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping", exc)
 
+    bootstrap_websocket_adapter()
+
+    yield
+
+
+app = FastAPI(
+    title="Adaptive AIOps — Alert Triage demo",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 _register_chatops_ws_routes(app)
 
