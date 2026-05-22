@@ -18,7 +18,7 @@ import enum
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 
 class AutonomyLevel(enum.StrEnum):
@@ -27,12 +27,62 @@ class AutonomyLevel(enum.StrEnum):
     REQUIRED = "required"
 
 
+# Literal type for ApprovalSummary.status. Kept narrow so type-checkers
+# catch typos at call sites (avoids "appoved" vs "approved" landing in
+# audit logs).
+ApprovalOutcome = Literal["approved", "denied", "expired"]
+
+
+@dataclass
+class ApprovalSummary:
+    """Structured record of an approval flow that the approver carried out.
+
+    Returned by :class:`~aiops.policy.approvals.ApprovalRequester` and
+    surfaced on :attr:`Decision.approval` so callers (agents, UIs, audit
+    logs) can render rich "denied by alice@x.io: blast radius too large"
+    messages without scraping :class:`Decision.reason` strings.
+
+    HITL-5 (#105): this replaces the old "writeback into the caller's
+    ``hitl_context`` dict" back-channel — the gate is no longer spooky
+    action at a distance.
+    """
+
+    id: str
+    status: ApprovalOutcome
+    approver: str | None
+    reason: str
+
+
+@dataclass
+class ApproverResult:
+    """What an :data:`ApproverFn` returns.
+
+    ``approver`` is the canonical approval signal — non-``None`` means
+    the gate allows the action.  ``summary`` is optional metadata about
+    the flow (populated by :class:`~aiops.policy.approvals.ApprovalRequester`
+    on every outcome: approved, denied, expired).  Synchronous test
+    approvers can leave ``summary=None`` and return only ``approver``.
+
+    The legacy ``(action, ctx) -> str | None`` protocol is still accepted
+    by :meth:`HITLGate.check` via :func:`_coerce_approver_result`, so
+    code that hasn't migrated yet keeps working.
+    """
+
+    approver: str | None
+    summary: ApprovalSummary | None = None
+
+
 @dataclass
 class Decision:
     allowed: bool
     level: AutonomyLevel
     reason: str
     approver: str | None = None
+    # HITL-5 (#105): populated for REQUIRED-level (and tenant-gated
+    # OPTIONAL-level) decisions that went through the approval flow.
+    # ``None`` for NONE-level passes and for OPTIONAL with no tenant
+    # gate, since no human approver was consulted in those paths.
+    approval: ApprovalSummary | None = None
 
 
 class GateError(RuntimeError):
@@ -71,16 +121,34 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
 }
 
 
-ApproverFn = Callable[[str, dict[str, Any]], str | None]
-"""(action, context) -> approver id if approved, else None.
+ApproverFn = Callable[[str, dict[str, Any]], "ApproverResult | str | None"]
+"""``(action, context) -> ApproverResult`` (preferred) or legacy ``str | None``.
 
-In Phase 0 this is always ``_no_approver`` so REQUIRED actions block. Phase 1
-wires a real UI (Slack interaction, web approve screen) into here.
+In Phase 0 this is always :func:`_no_approver` so REQUIRED actions block.
+Phase 1 wires a real UI (Slack interaction, web approve screen) into here.
+
+HITL-5 (#105) introduced :class:`ApproverResult` so the gate can surface
+the structured approval outcome on :attr:`Decision.approval` without the
+approver mutating the caller's context dict.  Legacy approvers that
+still return a bare ``str | None`` are accepted via
+:func:`_coerce_approver_result`.
 """
 
 
-def _no_approver(_action: str, _ctx: dict[str, Any]) -> str | None:
-    return None
+def _no_approver(_action: str, _ctx: dict[str, Any]) -> ApproverResult:
+    return ApproverResult(approver=None, summary=None)
+
+
+def _coerce_approver_result(value: ApproverResult | str | None) -> ApproverResult:
+    """Wrap a legacy ``str | None`` approver return in an :class:`ApproverResult`.
+
+    Lets pre-HITL-5 approvers — ``lambda action, ctx: "alice"``, ``_no_approver``
+    callers in tests — keep working without touching the gate's logic.
+    """
+    if isinstance(value, ApproverResult):
+        return value
+    # ``value`` is either ``str`` (legacy approved) or ``None`` (legacy blocked).
+    return ApproverResult(approver=value, summary=None)
 
 
 class HITLGate:
@@ -126,7 +194,9 @@ class HITLGate:
     def check(self, action: str, context: dict[str, Any] | None = None) -> Decision:
         # Preserve the caller's dict identity (don't replace an empty dict with
         # a fresh one): ApprovalRequester writes ``pending_approval_id`` back
-        # into ``context`` so the agent can surface it to the user.
+        # into ``context`` so the agent can surface it to the user.  That
+        # remains the *only* writeback as of HITL-5 (#105) — all other
+        # approval metadata is returned via :class:`ApproverResult`.
         ctx = {} if context is None else context
         level = self.level_for(action)
         if level is AutonomyLevel.NONE:
@@ -143,20 +213,22 @@ class HITLGate:
                     level=level,
                     reason="tenant has not enabled HITL gate",
                 )
-            approver = self._approver(action, ctx)
+            result = _coerce_approver_result(self._approver(action, ctx))
             return Decision(
-                allowed=approver is not None,
+                allowed=result.approver is not None,
                 level=level,
-                reason=_outcome_reason(approver, ctx, prefix="tenant gate on; "),
-                approver=approver,
+                reason=_outcome_reason(result, prefix="tenant gate on; "),
+                approver=result.approver,
+                approval=result.summary,
             )
         # REQUIRED
-        approver = self._approver(action, ctx)
+        result = _coerce_approver_result(self._approver(action, ctx))
         return Decision(
-            allowed=approver is not None,
+            allowed=result.approver is not None,
             level=level,
-            reason=_outcome_reason(approver, ctx, prefix="required HITL; "),
-            approver=approver,
+            reason=_outcome_reason(result, prefix="required HITL; "),
+            approver=result.approver,
+            approval=result.summary,
         )
 
     def enforce(self, action: str, context: dict[str, Any] | None = None) -> Decision:
@@ -166,28 +238,24 @@ class HITLGate:
         return d
 
 
-def _outcome_reason(approver: str | None, ctx: dict[str, Any], *, prefix: str = "") -> str:
+def _outcome_reason(result: ApproverResult, *, prefix: str = "") -> str:
     """Build a human-readable reason for the gate's Decision.
 
-    ``ApprovalRequester`` annotates ``ctx`` with the resolved approval's
-    status / approver / reason before returning ``None`` on deny/expire.
-    Surfacing those here turns the gate's error from a generic "approver
-    missing" into the spec's "denied by <approver>" / "expired" wording,
-    which the agent + UI + audit log all reuse.
-
-    Falls back to the v0 wording when no approval flow was involved (the
-    approver function is the legacy stub or a custom synchronous approver).
+    Reads the structured :class:`ApprovalSummary` carried on
+    :class:`ApproverResult` (HITL-5, #105) — no more scraping ad-hoc
+    keys out of the caller's context dict.  Falls back to the v0
+    wording when the approver returned no summary (legacy synchronous
+    approvers, the default ``_no_approver`` stub).
     """
-    if approver is not None:
-        return f"{prefix}approved by {approver}"
-    decision = ctx.get("approval_decision")
-    decision_approver = ctx.get("approval_approver")
-    decision_reason = (ctx.get("approval_reason") or "").strip()
-    if decision == "denied" and decision_approver:
-        tail = f": {decision_reason}" if decision_reason else ""
-        return f"{prefix}denied by {decision_approver}{tail}"
-    if decision == "expired":
-        return f"{prefix}expired (no human response in time)"
+    if result.approver is not None:
+        return f"{prefix}approved by {result.approver}"
+    summary = result.summary
+    if summary is not None:
+        if summary.status == "denied" and summary.approver:
+            tail = f": {summary.reason.strip()}" if summary.reason.strip() else ""
+            return f"{prefix}denied by {summary.approver}{tail}"
+        if summary.status == "expired":
+            return f"{prefix}expired (no human response in time)"
     return f"{prefix}approver missing"
 
 

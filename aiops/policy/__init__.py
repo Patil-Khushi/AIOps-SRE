@@ -19,6 +19,8 @@ from .approvals import (
     install_default_approver,
 )
 from .gate import (
+    ApprovalSummary,
+    ApproverResult,
     AutonomyLevel,
     Decision,
     GateError,
@@ -32,6 +34,8 @@ __all__ = [
     "ApprovalRequest",
     "ApprovalRequester",
     "ApprovalStatus",
+    "ApprovalSummary",
+    "ApproverResult",
     "AutonomyLevel",
     "Decision",
     "GateError",
