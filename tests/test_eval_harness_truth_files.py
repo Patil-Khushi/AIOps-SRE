@@ -30,10 +30,29 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
-def _stub_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the stub LLM provider so harness tests run in <1s without
-    hitting Azure / Anthropic / Ollama. Matches test_smoke.py's pattern."""
+def _stub_llm_and_isolate_state(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the stub LLM provider so harness tests run in <1s without hitting
+    Azure / Anthropic / Ollama, AND give each test its own initialised
+    SQLite DB.
+
+    The DB isolation matters because ``run_truth_file`` calls into
+    ``alert_triage``, which queries the ``clusters`` table for embedding-based
+    dedup. Without ``init_db()``, the table never exists and tests fail with
+    ``sqlite3.OperationalError: no such table: clusters``. ``evals.harness.main``
+    calls ``init_db()`` for this reason, but the unit tests bypass ``main`` and
+    call ``run_truth_file`` directly."""
     monkeypatch.setenv("AIOPS_LLM_PROVIDER", "stub")
+    db_path = tmp_path_factory.mktemp("eval_state") / "test_state.db"
+    monkeypatch.setenv("AIOPS_STATE_DB_URL", f"sqlite:///{db_path.as_posix()}")
+
+    from aiops.state import init_db, reset_engine_for_tests
+
+    reset_engine_for_tests()
+    init_db()
+    yield
+    reset_engine_for_tests()
 
 
 # ─── discovery ─────────────────────────────────────────────────────────
