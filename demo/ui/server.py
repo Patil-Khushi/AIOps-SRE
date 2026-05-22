@@ -362,7 +362,9 @@ async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
             rca_analyze, req.triage_verdict, scenario_id=req.scenario_id
         )
     except Exception as exc:
-        logger.exception("RCA agent raised on payload for %s", req.triage_verdict.get("affected_service"))
+        logger.exception(
+            "RCA agent raised on payload for %s", req.triage_verdict.get("affected_service")
+        )
         raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
     return verdict.model_dump(mode="json")
 
