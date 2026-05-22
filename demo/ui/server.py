@@ -53,6 +53,8 @@ import re
 import subprocess
 import threading
 import uuid
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -462,7 +464,126 @@ def _uuid_hex() -> str:
     return uuid.uuid4().hex
 
 
-_HITL_OUTCOMES: dict[str, dict[str, Any]] = {}
+# ─── HITL-3 (#103): bounded outcome store + pooled agent threads ──────────
+
+
+class _BoundedOutcomeStore:
+    """LRU-evicted store for ``/api/demo/auto-heal/restart`` outcomes.
+
+    The prior implementation was a bare ``dict[str, dict[str, Any]]`` that
+    accumulated one entry per request for the lifetime of the process —
+    fine for a 10-minute demo, a slow leak for a server left running.
+    """
+
+    _MAX_ENTRIES = 100
+
+    def __init__(self) -> None:
+        self._data: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # Writes happen on pool workers, reads on the FastAPI handler thread.
+        self._lock = threading.Lock()
+
+    def __setitem__(self, key: str, value: dict[str, Any]) -> None:
+        with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
+            self._data[key] = value
+            while len(self._data) > self._MAX_ENTRIES:
+                self._data.popitem(last=False)
+
+    def __getitem__(self, key: str) -> dict[str, Any]:
+        with self._lock:
+            return self._data[key]
+
+    def __contains__(self, key: object) -> bool:
+        with self._lock:
+            return key in self._data
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+
+_HITL_OUTCOMES = _BoundedOutcomeStore()
+
+
+class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
+    """``ThreadPoolExecutor`` whose worker threads are daemons.
+
+    The old per-request ``threading.Thread(daemon=True)`` design let the
+    process exit even when an agent was blocked in a long HITL gate wait
+    (up to 900s). Stock ``ThreadPoolExecutor`` workers are non-daemon
+    and would otherwise block process exit until those waits expire.
+
+    ``threading.Thread.daemon`` is read-only after the thread starts, so
+    we can't simply chain ``super()._adjust_thread_count()`` and flip
+    the flag afterwards — the stock implementation starts the thread on
+    the same line that creates it. Instead we copy the body of
+    ``_adjust_thread_count`` and pass ``daemon=True`` at construction.
+    Couples us to a CPython internal (``_worker``, ``_threads_queues``)
+    that has been stable since 3.7.
+    """
+
+    def _adjust_thread_count(self) -> None:
+        import weakref
+        from concurrent.futures.thread import _threads_queues, _worker
+
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def _weakref_cb(_: Any, q: Any = self._work_queue) -> None:
+            q.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads < self._max_workers:
+            thread_name = f"{self._thread_name_prefix or self}_{num_threads}"
+            t = threading.Thread(
+                name=thread_name,
+                target=_worker,
+                args=(
+                    weakref.ref(self, _weakref_cb),
+                    self._work_queue,
+                    self._initializer,
+                    self._initargs,
+                ),
+                daemon=True,
+            )
+            t.start()
+            self._threads.add(t)
+            _threads_queues[t] = self._work_queue
+
+
+def _new_hitl_agent_pool() -> _DaemonThreadPoolExecutor:
+    return _DaemonThreadPoolExecutor(
+        max_workers=8,
+        thread_name_prefix="hitl-demo-",
+    )
+
+
+_HITL_AGENT_POOL: _DaemonThreadPoolExecutor = _new_hitl_agent_pool()
+
+
+@app.on_event("startup")
+def _ensure_hitl_agent_pool() -> None:
+    """HITL-3 (#103): recreate the demo agent pool if a prior FastAPI
+    shutdown closed it. Matters for tests that open more than one
+    ``TestClient`` context against the same module; in production this
+    is a no-op on the first (and only) startup."""
+    global _HITL_AGENT_POOL
+    if _HITL_AGENT_POOL._shutdown:
+        _HITL_AGENT_POOL = _new_hitl_agent_pool()
+
+
+@app.on_event("shutdown")
+def _shutdown_hitl_agent_pool() -> None:
+    """HITL-3 (#103): drain the demo agent pool on app shutdown rather
+    than relying on the ``concurrent.futures`` atexit hook.
+
+    ``wait=False`` because demo agents can be blocked on the HITL gate
+    for up to 900s, and we don't want shutdown to wait that long;
+    ``cancel_futures=True`` drops queued work that hasn't started.
+    Running workers are daemons, so they don't keep the process alive.
+    """
+    _HITL_AGENT_POOL.shutdown(wait=False, cancel_futures=True)
 
 
 class HitlDemoRestartRequest(BaseModel):
@@ -496,8 +617,10 @@ async def trigger_auto_heal_restart(req: HitlDemoRestartRequest) -> dict[str, An
         outcome = recommend_restart(rec, hitl_context=ctx)
         _HITL_OUTCOMES[approval_id] = outcome.model_dump(mode="json")
 
-    # Daemon thread: the server can exit cleanly without waiting for stuck approvals.
-    threading.Thread(target=_run_agent, daemon=True).start()
+    # Bounded pool (HITL-3, #103): a fast-clicking presenter or misbehaving
+    # client can't pile up unbounded in-flight threads, each holding a
+    # 900s registry-wait.
+    _HITL_AGENT_POOL.submit(_run_agent)
 
     return {
         "approval_id": approval_id,
@@ -512,8 +635,10 @@ async def trigger_auto_heal_restart(req: HitlDemoRestartRequest) -> dict[str, An
 def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
     """Return the agent's outcome dict once the approval has been resolved.
 
-    Returns ``{"status": "pending"}`` until the agent thread completes.
-    The dashboard polls this after the approval flips out of PENDING.
+    Returns ``{"status": "pending"}`` until the agent thread completes,
+    *or* once the outcome has been evicted from the bounded LRU store
+    (after 100 newer requests). The dashboard polls this after the
+    approval flips out of PENDING.
     """
     if approval_id in _HITL_OUTCOMES:
         return _HITL_OUTCOMES[approval_id]

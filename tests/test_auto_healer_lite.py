@@ -18,16 +18,16 @@ from aiops.policy import (
 
 @pytest.fixture(autouse=True)
 def _isolate_state():
-    original_approver = get_gate()._approver
+    original_approver = get_gate().approver
     get_approval_registry()._reset_for_tests()
     yield
-    get_gate()._approver = original_approver
+    get_gate().set_approver(original_approver)
     get_approval_registry()._reset_for_tests()
 
 
 def test_agent_executes_after_approver_says_yes():
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=5)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=5))
 
     def approver():
         for _ in range(50):
@@ -54,7 +54,7 @@ def test_agent_executes_after_approver_says_yes():
 
 def test_agent_reports_denied_when_approver_says_no():
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=5)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=5))
 
     def denier():
         for _ in range(50):
@@ -78,7 +78,7 @@ def test_agent_reports_denied_when_approver_says_no():
 
 def test_agent_reports_expired_when_nobody_responds():
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=1)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=1))
 
     outcome = recommend_restart(
         RestartRecommendation(deployment="product-catalog", reason="stuck pod")
@@ -95,7 +95,7 @@ def test_skip_approval_yields_blocked_outcome():
     deadlock.  Status is "blocked" not "denied" because we never opened a
     request to deny."""
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg)
+    get_gate().set_approver(ApprovalRequester(reg))
 
     outcome = recommend_restart(
         RestartRecommendation(deployment="product-catalog", reason="x"),

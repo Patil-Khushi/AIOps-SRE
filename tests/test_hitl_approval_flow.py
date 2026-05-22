@@ -27,10 +27,10 @@ from aiops.tools.chatops import ChatMessage, ChatOpsClient
 @pytest.fixture(autouse=True)
 def _isolate_state(monkeypatch):
     """Reset the singletons + restore the gate's original approver."""
-    original_approver = get_gate()._approver
+    original_approver = get_gate().approver
     get_approval_registry()._reset_for_tests()
     yield
-    get_gate()._approver = original_approver
+    get_gate().set_approver(original_approver)
     get_approval_registry()._reset_for_tests()
 
 
@@ -69,7 +69,7 @@ def test_required_action_blocks_when_approver_denies(monkeypatch, fake_chatops):
         return ToolResult(ok=True, data="should not run")
 
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=10)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=10))
 
     def denier():
         # Wait for the pending request to appear, then deny.
@@ -108,7 +108,7 @@ def test_required_action_runs_when_approver_approves(monkeypatch, fake_chatops):
         return ToolResult(ok=True, data="ran-after-approval")
 
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=10)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=10))
 
     def approver():
         for _ in range(50):
@@ -142,7 +142,7 @@ def test_required_action_expires_when_nobody_responds(monkeypatch, fake_chatops)
         return ToolResult(ok=True, data="should not run")
 
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=1)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=1))
     res = get_registry().call("test.hitl.expire")
 
     assert res.ok is False
@@ -165,7 +165,7 @@ def test_skip_approval_short_circuits_to_no_approver(monkeypatch):
         return ToolResult(ok=True, data="never")
 
     reg = ApprovalRegistry(default_timeout_seconds=5)
-    get_gate()._approver = ApprovalRequester(reg)
+    get_gate().set_approver(ApprovalRequester(reg))
     res = get_registry().call("test.hitl.skip", hitl_context={"skip_approval": True})
 
     # Skip means we behave like the original "no approver" path: blocked.
@@ -190,7 +190,7 @@ def test_denied_action_error_message_includes_approver_id(monkeypatch, fake_chat
         return ToolResult(ok=True, data="should not run")
 
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=10)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=10))
 
     def denier():
         for _ in range(50):
@@ -230,7 +230,7 @@ def test_expired_action_error_message_says_expired(monkeypatch, fake_chatops):
         return ToolResult(ok=True, data="should not run")
 
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=1)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=1))
     res = get_registry().call("test.hitl.expire_reason")
 
     assert res.ok is False
@@ -251,7 +251,7 @@ def test_pending_approval_id_is_surfaced_back_to_caller(monkeypatch, fake_chatop
         return ToolResult(ok=True, data="ok")
 
     reg = get_approval_registry()
-    get_gate()._approver = ApprovalRequester(reg, timeout_seconds=5)
+    get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=5))
     ctx: dict = {}
 
     def approver():

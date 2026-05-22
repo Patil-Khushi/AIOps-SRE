@@ -119,7 +119,10 @@ class ApprovalRegistry:
     def __init__(self, *, default_timeout_seconds: int | None = None) -> None:
         self._lock = threading.Lock()
         self._requests: dict[str, ApprovalRequest] = {}
-        self._listeners: list = []
+        # Each entry is (id, fn) — ``id`` is ``None`` for anonymous listeners
+        # (they always append) and a string for de-dup-tagged ones (re-adding
+        # with the same id replaces the existing entry rather than stacking).
+        self._listeners: list[tuple[str | None, Any]] = []
         self._default_timeout = max(
             _MIN_TIMEOUT_SECONDS,
             int(default_timeout_seconds or _DEFAULT_TIMEOUT_SECONDS),
@@ -127,17 +130,38 @@ class ApprovalRegistry:
 
     # ─── listener registration ──────────────────────────────────────────
 
-    def add_listener(self, fn) -> None:
+    def add_listener(self, fn, *, id: str | None = None) -> None:
         """Register ``fn(event_name: str, request: ApprovalRequest) -> None``.
+
+        When ``id`` is provided, the registration is **idempotent**: a
+        subsequent call with the *same* id replaces any existing listener
+        registered under that id (the most recent ``fn`` wins).  Tagged
+        registration is the supported way to wire long-lived bridges
+        (Slack, WebSocket fan-out, audit log) into a process that may
+        re-run startup hooks — e.g. tests that open multiple FastAPI
+        ``TestClient`` contexts. Without an id, every call stacks a new
+        listener (the legacy behaviour for anonymous fakes in tests).
 
         Listeners are dispatched *outside* the registry lock so a listener
         that does network I/O (the chatops bridge can post to Slack) does
-        not serialize concurrent approvals.  Listeners may safely call back
-        into the registry, but each listener is otherwise responsible for
-        its own thread-safety.
+        not serialize concurrent approvals.  Listeners may safely call
+        back into the registry, but each listener is otherwise responsible
+        for its own thread-safety.
         """
         with self._lock:
-            self._listeners.append(fn)
+            if id is not None:
+                self._listeners = [(lid, lfn) for (lid, lfn) in self._listeners if lid != id]
+            self._listeners.append((id, fn))
+
+    def remove_listener(self, *, id: str) -> bool:
+        """Remove the listener registered under ``id``.  Returns ``True`` if
+        a listener was removed, ``False`` if none matched.  Mostly a test
+        affordance; production code should rely on ``add_listener``'s
+        replace-on-duplicate-id semantics."""
+        with self._lock:
+            before = len(self._listeners)
+            self._listeners = [(lid, lfn) for (lid, lfn) in self._listeners if lid != id]
+            return len(self._listeners) != before
 
     def clear_listeners(self) -> None:
         with self._lock:
@@ -153,7 +177,7 @@ class ApprovalRegistry:
         ``pending``.  Must be called with ``self._lock`` held.  The caller
         flushes ``pending`` via :meth:`_dispatch` after releasing the lock —
         keeping listener I/O off the critical section."""
-        for fn in self._listeners:
+        for _lid, fn in self._listeners:
             pending.append((fn, event_name, req))
 
     @staticmethod
@@ -441,7 +465,7 @@ def install_default_approver(
     from aiops.policy.gate import get_gate
 
     requester = ApprovalRequester(registry, timeout_seconds=timeout_seconds)
-    get_gate()._approver = requester
+    get_gate().set_approver(requester)
 
 
 def chatops_listener_factory():
@@ -502,18 +526,14 @@ def chatops_listener_factory():
     return _listener
 
 
+_CHATOPS_BRIDGE_LISTENER_ID = "chatops_bridge"
+
+
 def install_chatops_listener(registry: ApprovalRegistry | None = None) -> None:
     """Wire :func:`chatops_listener_factory` into ``registry``.  Idempotent:
-    safe to call from multiple startup hooks (the listener identity check
-    prevents duplicates within a single process).
+    safe to call from multiple startup hooks because the registry's
+    ``add_listener(..., id=...)`` replaces any prior registration under
+    the same id rather than stacking duplicates.
     """
     reg = registry or get_approval_registry()
-    listener = chatops_listener_factory()
-    # The factory returns a fresh closure each call, so a string tag on the
-    # listener gives us a stable identity for dedup.
-    listener.__aiops_listener_id__ = "chatops_bridge"  # type: ignore[attr-defined]
-    with reg._lock:
-        for existing in reg._listeners:
-            if getattr(existing, "__aiops_listener_id__", None) == "chatops_bridge":
-                return
-        reg._listeners.append(listener)
+    reg.add_listener(chatops_listener_factory(), id=_CHATOPS_BRIDGE_LISTENER_ID)
