@@ -55,6 +55,31 @@ export interface TriageResult {
   ticket: TicketRecord;
 }
 
+// RCA Agent (PRS-008 ★) — mirrors agents/rca_agent/models.py.
+export type BlastRadius = 'low' | 'medium' | 'high';
+
+export interface RankedFixStep {
+  description: string;
+  blast_radius: BlastRadius;
+  rollback: string;
+  // Schema-enforced True by pydantic Literal[True]; included for completeness.
+  requires_hitl: true;
+}
+
+export interface RCAAuditMetadata {
+  created_at: string;
+  created_by: string;
+  decision_trace: string[];
+}
+
+export interface RCAVerdict {
+  affected_service: string;
+  root_cause: string;
+  ranked_fix_steps: RankedFixStep[];
+  confidence_score: number;
+  audit_metadata: RCAAuditMetadata;
+}
+
 export interface HealthResponse {
   status: string;
   llm_provider: string | null;       // probed provider (= request that succeeded), null on failure
