@@ -21,16 +21,40 @@ import {
 const POLL_INTERVAL_MS = 1500;
 const DEFAULT_APPROVER = 'demo-sre';
 
+// HITL-2 (#102): the approval token lives in sessionStorage so it disappears
+// when the operator closes the tab — never written to localStorage / disk.
+const TOKEN_STORAGE_KEY = 'aiops.hitl.approval_token';
+const readStoredToken = () => {
+  try {
+    return sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+};
+const writeStoredToken = (t: string) => {
+  try {
+    if (t) sessionStorage.setItem(TOKEN_STORAGE_KEY, t);
+    else sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // sessionStorage disabled (privacy mode, etc.) — fall back to memory only.
+  }
+};
+
 type Toast = { id: number; text: string; tone: 'good' | 'bad' };
 
 export default function App() {
   const [pending, setPending] = useState<ApprovalRecord[]>([]);
   const [recent, setRecent] = useState<ApprovalRecord[]>([]);
   const [approver, setApprover] = useState(DEFAULT_APPROVER);
+  const [approvalToken, setApprovalToken] = useState<string>(readStoredToken);
   const [outcomes, setOutcomes] = useState<Record<string, AgentOutcome>>({});
   const [triggering, setTriggering] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  useEffect(() => {
+    writeStoredToken(approvalToken);
+  }, [approvalToken]);
 
   const pushToast = (text: string, tone: 'good' | 'bad') => {
     const id = Date.now() + Math.random();
@@ -111,7 +135,7 @@ export default function App() {
     }
     setBusyId(req.id);
     try {
-      await approve(req.id, approver.trim(), reasonText.trim() || 'Approved via console');
+      await approve(req.id, approver.trim(), reasonText.trim() || 'Approved via console', approvalToken);
       pushToast(`Approved ${req.action}`, 'good');
     } catch (e: any) {
       pushToast(`Approve failed: ${e?.response?.data?.detail ?? e?.message}`, 'bad');
@@ -127,7 +151,7 @@ export default function App() {
     }
     setBusyId(req.id);
     try {
-      await deny(req.id, approver.trim(), reasonText.trim() || 'Denied via console');
+      await deny(req.id, approver.trim(), reasonText.trim() || 'Denied via console', approvalToken);
       pushToast(`Denied ${req.action}`, 'good');
     } catch (e: any) {
       pushToast(`Deny failed: ${e?.response?.data?.detail ?? e?.message}`, 'bad');
@@ -147,6 +171,7 @@ export default function App() {
       <PrincipleBanner />
       <TriggerPanel onClick={trigger} loading={triggering} />
       <ApproverIdRow approver={approver} setApprover={setApprover} />
+      <ApprovalTokenRow token={approvalToken} setToken={setApprovalToken} />
       <PendingList
         pending={pending}
         busyId={busyId}
@@ -227,6 +252,32 @@ function ApproverIdRow({
         className="rounded-md bg-slate-900 border border-slate-700 focus:border-pink-400 focus:outline-none px-3 py-1.5 text-slate-100 w-64"
       />
       <span className="text-slate-500 text-xs">recorded against every decision (audit trail)</span>
+    </div>
+  );
+}
+
+function ApprovalTokenRow({
+  token,
+  setToken,
+}: {
+  token: string;
+  setToken: (s: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 mb-6 text-sm">
+      <label className="text-slate-400">Approval token:</label>
+      <input
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="AIOPS_HITL_APPROVAL_TOKEN value (leave blank in demo mode)"
+        className="rounded-md bg-slate-900 border border-slate-700 focus:border-pink-400 focus:outline-none px-3 py-1.5 text-slate-100 w-96 font-mono"
+        autoComplete="off"
+        spellCheck={false}
+      />
+      <span className="text-slate-500 text-xs">
+        sent as <code className="text-slate-400">Authorization: Bearer</code>; kept in sessionStorage only
+      </span>
     </div>
   );
 }
