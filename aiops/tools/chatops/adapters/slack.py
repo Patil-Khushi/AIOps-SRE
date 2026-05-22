@@ -254,6 +254,59 @@ class SlackWebhookAdapter:
                 }
             )
 
+        # HITL-1: interactive approval prompt — renders two buttons whose
+        # ``value`` field encodes "<approval_id>|<verdict>".  Slack POSTs
+        # the user's click to the workspace's Interactivity URL
+        # (configured in api.slack.com → Interactivity & Shortcuts), which
+        # in this POC is ``/api/approvals/slack/callback`` on the demo
+        # server (signature-verified, see demo/ui/server.py).
+        if msg.interactive is not None:
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": (
+                                f"Approval id `{msg.interactive.approval_id}` — "
+                                f"expires {msg.interactive.expires_at.isoformat()}"
+                            ),
+                        }
+                    ],
+                }
+            )
+            blocks.append(
+                {
+                    "type": "actions",
+                    "block_id": f"hitl_approval::{msg.interactive.approval_id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "style": "primary",
+                            "action_id": "hitl_approve",
+                            "text": {"type": "plain_text", "text": "Approve"},
+                            "value": f"{msg.interactive.approval_id}|approve",
+                        },
+                        {
+                            "type": "button",
+                            "style": "danger",
+                            "action_id": "hitl_deny",
+                            "text": {"type": "plain_text", "text": "Deny"},
+                            "value": f"{msg.interactive.approval_id}|deny",
+                            "confirm": {
+                                "title": {"type": "plain_text", "text": "Deny this action?"},
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"This will block `{msg.interactive.action}`.",
+                                },
+                                "confirm": {"type": "plain_text", "text": "Deny"},
+                                "deny": {"type": "plain_text", "text": "Cancel"},
+                            },
+                        },
+                    ],
+                }
+            )
+
         return {
             # Top-level `text` is the fallback used by Slack's mobile push
             # notifications, screen-readers, and Slack-bot notifications.

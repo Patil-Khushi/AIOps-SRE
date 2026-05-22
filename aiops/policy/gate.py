@@ -100,7 +100,10 @@ class HITLGate:
         return AutonomyLevel(default)
 
     def check(self, action: str, context: dict[str, Any] | None = None) -> Decision:
-        ctx = context or {}
+        # Preserve the caller's dict identity (don't replace an empty dict with
+        # a fresh one): ApprovalRequester writes ``pending_approval_id`` back
+        # into ``context`` so the agent can surface it to the user.
+        ctx = {} if context is None else context
         level = self.level_for(action)
         if level is AutonomyLevel.NONE:
             return Decision(
@@ -120,7 +123,7 @@ class HITLGate:
             return Decision(
                 allowed=approver is not None,
                 level=level,
-                reason="tenant gate on; approver " + ("present" if approver else "missing"),
+                reason=_outcome_reason(approver, ctx, prefix="tenant gate on; "),
                 approver=approver,
             )
         # REQUIRED
@@ -128,7 +131,7 @@ class HITLGate:
         return Decision(
             allowed=approver is not None,
             level=level,
-            reason="required HITL; approver " + ("present" if approver else "missing"),
+            reason=_outcome_reason(approver, ctx, prefix="required HITL; "),
             approver=approver,
         )
 
@@ -137,6 +140,31 @@ class HITLGate:
         if not d.allowed:
             raise GateError(f"blocked: action={action!r} level={d.level.value} reason={d.reason}")
         return d
+
+
+def _outcome_reason(approver: str | None, ctx: dict[str, Any], *, prefix: str = "") -> str:
+    """Build a human-readable reason for the gate's Decision.
+
+    ``ApprovalRequester`` annotates ``ctx`` with the resolved approval's
+    status / approver / reason before returning ``None`` on deny/expire.
+    Surfacing those here turns the gate's error from a generic "approver
+    missing" into the spec's "denied by <approver>" / "expired" wording,
+    which the agent + UI + audit log all reuse.
+
+    Falls back to the v0 wording when no approval flow was involved (the
+    approver function is the legacy stub or a custom synchronous approver).
+    """
+    if approver is not None:
+        return f"{prefix}approved by {approver}"
+    decision = ctx.get("approval_decision")
+    decision_approver = ctx.get("approval_approver")
+    decision_reason = (ctx.get("approval_reason") or "").strip()
+    if decision == "denied" and decision_approver:
+        tail = f": {decision_reason}" if decision_reason else ""
+        return f"{prefix}denied by {decision_approver}{tail}"
+    if decision == "expired":
+        return f"{prefix}expired (no human response in time)"
+    return f"{prefix}approver missing"
 
 
 _GATE: HITLGate | None = None

@@ -26,6 +26,27 @@ class Severity(StrEnum):
 
 
 @dataclass
+class InteractivePrompt:
+    """Vendor-neutral interactive payload — currently used only by the HITL
+    approval flow (issue #77).
+
+    Adapters that support buttons / actions (Slack, the dashboard WebSocket)
+    render approve/deny controls keyed by ``approval_id``.  Adapters that
+    don't (the JSONL audit log) write the payload as data and treat the
+    message as informational.
+
+    ``prompt_kind`` exists so future interactive flows (e.g. runbook param
+    confirmation, knowledge-publish review) can reuse the seam without
+    overloading the approval semantics.
+    """
+
+    approval_id: str
+    action: str
+    expires_at: datetime
+    prompt_kind: str = "hitl_approval"
+
+
+@dataclass
 class ChatMessage:
     """A single notification routed through the chatops seam.
 
@@ -41,6 +62,7 @@ class ChatMessage:
     service: str | None = None
     mentions: list[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    interactive: InteractivePrompt | None = None
 
 
 def to_record(msg: ChatMessage) -> dict[str, Any]:
@@ -52,6 +74,14 @@ def to_record(msg: ChatMessage) -> dict[str, Any]:
     this one function shared also guarantees every sink sees the same
     wire shape — no silent divergence between adapters.
     """
+    interactive: dict[str, Any] | None = None
+    if msg.interactive is not None:
+        interactive = {
+            "approval_id": msg.interactive.approval_id,
+            "action": msg.interactive.action,
+            "expires_at": msg.interactive.expires_at.isoformat(),
+            "prompt_kind": msg.interactive.prompt_kind,
+        }
     return {
         "timestamp": msg.timestamp.isoformat(),
         "channel": msg.channel,
@@ -61,4 +91,5 @@ def to_record(msg: ChatMessage) -> dict[str, Any]:
         "incident_id": msg.incident_id,
         "service": msg.service,
         "mentions": list(msg.mentions),
+        "interactive": interactive,
     }
