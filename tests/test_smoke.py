@@ -141,9 +141,16 @@ def test_truth_template_is_valid_yaml():
 
 
 def test_eval_harness_phase0_passes_with_no_agents(capsys, monkeypatch):
+    """The harness emits a ``phase0: true`` shortcut when there's nothing to
+    score, so CI is green on a fresh checkout. Post-EVAL-1 (#75) truth files
+    are also discovered, so the test has to stub both sources to exercise the
+    real "nothing to run" branch — otherwise this asserts the harness's
+    error-path output instead of its empty-run output.
+    """
     from evals import harness
 
     monkeypatch.setattr(harness, "discover_agents", lambda: [])
+    monkeypatch.setattr(harness, "discover_truth_files", lambda: [])
     rc = harness.main(["--ci", "--min-pass-rate", "0.85"])
     assert rc == 0
     out = capsys.readouterr().out
