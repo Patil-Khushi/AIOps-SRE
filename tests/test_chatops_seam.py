@@ -125,4 +125,5 @@ def test_to_record_full_key_contract():
         "service",
         "mentions",
         "actions",
+        "interactive",
     }

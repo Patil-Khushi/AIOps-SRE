@@ -50,13 +50,15 @@ import logging
 import os
 import re
 import subprocess
+import threading
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
@@ -81,6 +83,12 @@ from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
+from aiops.policy import (  # noqa: E402
+    ApprovalError,
+    get_approval_registry,
+    install_chatops_listener,
+    install_default_approver,
+)
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import (  # noqa: E402
@@ -107,6 +115,20 @@ app = FastAPI(title="Adaptive AIOps — Alert Triage demo", version="0.1.0")
 @app.on_event("startup")
 def _bootstrap_state() -> None:
     init_db()
+
+
+@app.on_event("startup")
+def _wire_hitl_approval_flow() -> None:
+    """HITL UI v1 (#77): install the approval-requesting approver into the
+    gate and bridge approval lifecycle events into the chatops seam.
+
+    Order matters: the chatops listener must register BEFORE the first
+    approval is created so the "created" event reaches the Slack/JSONL/WS
+    sinks (which themselves register in ``_register_chatops_adapters``
+    below; FastAPI runs ``startup`` handlers in declaration order).
+    """
+    install_chatops_listener()
+    install_default_approver()
 
 
 @app.on_event("startup")
@@ -361,6 +383,250 @@ def list_verdicts_endpoint(
     return {"count": len(verdicts), "verdicts": verdicts}
 
 
+# ─── HITL demo agent trigger (issue #77) ───────────────────────────────────
+#
+# The standalone HITL approval UI at /hitl POSTs here to kick off the
+# auto_healer_lite agent in-process.  The agent blocks on the gate's
+# approver, which posts an interactive prompt through chatops.  When the
+# operator approves/denies via the UI or Slack, the agent thread unblocks
+# and the outcome is parked in ``_HITL_OUTCOMES`` for the UI to pick up.
+#
+# Storing the outcome in-memory (not the SQL state store) because this is
+# a demo path — restarts wipe it intentionally so each demo starts clean.
+
+
+def _uuid_hex() -> str:
+    """Short helper so the demo endpoint and tests share one id source."""
+    return uuid.uuid4().hex
+
+
+_HITL_OUTCOMES: dict[str, dict[str, Any]] = {}
+
+
+class HitlDemoRestartRequest(BaseModel):
+    deployment: str = Field("product-catalog")
+    namespace: str = Field("otel-demo")
+    reason: str = Field("Demo: agent recommends a restart to clear stuck state.")
+    timeout_seconds: int = Field(120, ge=5, le=900)
+
+
+@app.post("/api/demo/auto-heal/restart")
+async def trigger_auto_heal_restart(req: HitlDemoRestartRequest) -> dict[str, Any]:
+    """Fire the auto_healer_lite agent in a background thread and return
+    immediately with the approval id.
+
+    The agent blocks inside ``recommend_restart`` until the human resolves
+    the request — we don't wait for that here (browsers would time out).
+    Poll ``/api/demo/auto-heal/outcome/{approval_id}`` for the result.
+    """
+    from agents.auto_healer_lite import RestartRecommendation, recommend_restart
+
+    rec = RestartRecommendation(
+        deployment=req.deployment,
+        namespace=req.namespace,
+        reason=req.reason,
+    )
+    # Pre-mint the approval id so we can return it before the gate runs.
+    approval_id = _uuid_hex()
+    ctx = {"approval_id": approval_id, "approval_timeout_seconds": req.timeout_seconds}
+
+    def _run_agent() -> None:
+        outcome = recommend_restart(rec, hitl_context=ctx)
+        _HITL_OUTCOMES[approval_id] = outcome.model_dump(mode="json")
+
+    # Daemon thread: the server can exit cleanly without waiting for stuck approvals.
+    threading.Thread(target=_run_agent, daemon=True).start()
+
+    return {
+        "approval_id": approval_id,
+        "deployment": req.deployment,
+        "namespace": req.namespace,
+        "status": "pending",
+        "timeout_seconds": req.timeout_seconds,
+    }
+
+
+@app.get("/api/demo/auto-heal/outcome/{approval_id}")
+def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
+    """Return the agent's outcome dict once the approval has been resolved.
+
+    Returns ``{"status": "pending"}`` until the agent thread completes.
+    The dashboard polls this after the approval flips out of PENDING.
+    """
+    if approval_id in _HITL_OUTCOMES:
+        return _HITL_OUTCOMES[approval_id]
+    return {"status": "pending", "approval_id": approval_id}
+
+
+# ─── HITL approval surface (issue #77) ─────────────────────────────────────
+#
+# Two callback paths land here:
+#   1. Slack interactivity → POST /api/approvals/slack/callback (signed)
+#   2. Web dashboard → POST /api/approvals/{id}/approve|deny  (session id)
+# Both resolve the pending request via aiops.policy.get_approval_registry()
+# which unblocks the agent thread waiting inside ToolRegistry.call().
+
+
+class ApprovalDecisionRequest(BaseModel):
+    """Body for the web dashboard's approve/deny actions."""
+
+    approver: str = Field(..., min_length=1, description="Approver identity")
+    reason: str = Field("", description="Optional free-text justification")
+
+
+@app.get("/api/approvals")
+def list_approvals(include_resolved: bool = False) -> dict[str, Any]:
+    """List pending HITL approval requests (or every request when
+    ``include_resolved=true``).  Used by the dashboard's notifications panel
+    to render the approve/deny buttons."""
+    reg = get_approval_registry()
+    requests = reg.list_all() if include_resolved else reg.list_pending()
+    return {
+        "count": len(requests),
+        "approvals": [r.to_record() for r in requests],
+    }
+
+
+@app.get("/api/approvals/{approval_id}")
+def get_approval(approval_id: str) -> dict[str, Any]:
+    try:
+        req = get_approval_registry().get(approval_id)
+    except ApprovalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return req.to_record()
+
+
+@app.post("/api/approvals/{approval_id}/approve")
+def approve_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str, Any]:
+    try:
+        req = get_approval_registry().decide(
+            approval_id,
+            approved=True,
+            approver=body.approver,
+            reason=body.reason,
+        )
+    except ApprovalError as exc:
+        # The registry distinguishes unknown id (truly 404) from already-
+        # decided (409 conflict).  Read the message rather than introducing
+        # a typed exception hierarchy for a single distinction.
+        status = 404 if "unknown" in str(exc) else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return req.to_record()
+
+
+@app.post("/api/approvals/{approval_id}/deny")
+def deny_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str, Any]:
+    try:
+        req = get_approval_registry().decide(
+            approval_id,
+            approved=False,
+            approver=body.approver,
+            reason=body.reason or "denied via web",
+        )
+    except ApprovalError as exc:
+        status = 404 if "unknown" in str(exc) else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return req.to_record()
+
+
+# Slack's recommended replay window: reject requests >5 min old.
+_SLACK_SIG_MAX_AGE_SECONDS = 60 * 5
+
+
+def _verify_slack_signature(timestamp: str, body: bytes, signature: str) -> bool:
+    """Validate the Slack signing-secret HMAC.
+
+    The signing secret is read on every call (not captured at import) so the
+    operator can rotate ``AIOPS_SLACK_SIGNING_SECRET`` without restarting the
+    server, and tests can set it per-test without module reloads.
+
+    Returns False (rather than raising) for *every* failure mode so the
+    callback always returns the same 401 to remote clients regardless of
+    whether the failure was a stale timestamp, a missing secret, or a
+    mismatched HMAC — denying probers a side channel.
+    """
+    import hashlib
+    import hmac
+    import time
+
+    secret = os.environ.get("AIOPS_SLACK_SIGNING_SECRET", "").strip()
+    if not secret:
+        return False
+    try:
+        ts_int = int(timestamp)
+    except ValueError:
+        return False
+    if abs(time.time() - ts_int) > _SLACK_SIG_MAX_AGE_SECONDS:
+        return False
+    basestring = f"v0:{timestamp}:".encode() + body
+    digest = hmac.new(secret.encode(), basestring, hashlib.sha256).hexdigest()
+    expected = f"v0={digest}"
+    return hmac.compare_digest(expected, signature)
+
+
+@app.post("/api/approvals/slack/callback")
+async def slack_interactivity_callback(request: Request) -> dict[str, Any]:
+    """Slack Interactivity → approve/deny decision.
+
+    Slack POSTs ``payload=<urlencoded-json>``.  We validate the signing-secret
+    HMAC, parse the action, look up the approval, and call ``decide()``.
+    The waiting tool-call thread is unblocked by the registry.
+    """
+    raw = await request.body()
+    sig = request.headers.get("x-slack-signature", "")
+    ts = request.headers.get("x-slack-request-timestamp", "")
+    if not _verify_slack_signature(ts, raw, sig):
+        raise HTTPException(status_code=401, detail="invalid Slack signature")
+
+    # Slack sends ``payload=<json>`` URL-encoded.  Parse without bringing in
+    # a multipart dep — the body is just form-urlencoded with one key.
+    from urllib.parse import parse_qs
+
+    form = parse_qs(raw.decode("utf-8"))
+    payloads = form.get("payload") or []
+    if not payloads:
+        raise HTTPException(status_code=400, detail="missing payload")
+    try:
+        payload = json.loads(payloads[0])
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"bad payload json: {exc}") from exc
+
+    actions = payload.get("actions") or []
+    if not actions:
+        raise HTTPException(status_code=400, detail="no actions in payload")
+    action = actions[0]
+    value = str(action.get("value", ""))
+    if "|" not in value:
+        raise HTTPException(status_code=400, detail="malformed action value")
+    approval_id, verdict = value.split("|", 1)
+    approver = (
+        (payload.get("user") or {}).get("username")
+        or (payload.get("user") or {}).get("id")
+        or "slack-user"
+    )
+
+    try:
+        req = get_approval_registry().decide(
+            approval_id,
+            approved=(verdict == "approve"),
+            approver=f"slack:{approver}",
+            reason=f"via Slack action {action.get('action_id')}",
+        )
+    except ApprovalError as exc:
+        status = 404 if "unknown" in str(exc) else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    # Slack replaces the original message if we respond with one — keep the
+    # response short and to the point so the channel history stays readable.
+    return {
+        "response_type": "ephemeral",
+        "replace_original": False,
+        "text": (
+            f":white_check_mark: Recorded {req.status.value} for `{req.action}` by {req.approver}"
+        ),
+    }
+
+
 @app.get("/api/notifications")
 def list_notifications_endpoint(
     limit: int = 50,
@@ -519,6 +785,53 @@ def classifier_spa(path: str) -> FileResponse:
     if target.is_file():
         return FileResponse(target)
     return FileResponse(CLASSIFIER_DIST / "index.html")
+
+
+# ─── HITL Approver UI mount (standalone Vite app under demo/hitl-ui) ──────
+
+HITL_DIST = Path(__file__).parent.parent / "hitl-ui" / "dist"
+
+
+@app.get("/hitl")
+def hitl_root() -> FileResponse:
+    """Serve the standalone HITL approver console (issue #77)."""
+    index = HITL_DIST / "index.html"
+    if not index.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "hitl approver console not built — "
+                "run `cd demo/hitl-ui && npm install && npm run build`"
+            ),
+        )
+    return FileResponse(index)
+
+
+@app.get("/hitl/{path:path}", response_model=None)
+def hitl_spa(path: str) -> FileResponse:
+    """SPA-friendly catch-all for the HITL approver console.
+
+    Real assets (``assets/*.js``, ``assets/*.css``) are served as-is;
+    everything else falls back to ``index.html`` so the SPA boots and
+    React Router (if any) can take over.
+    """
+    if not HITL_DIST.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "hitl approver console not built — "
+                "run `cd demo/hitl-ui && npm install && npm run build`"
+            ),
+        )
+    root = HITL_DIST.resolve()
+    target = (HITL_DIST / path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid hitl path") from exc
+    if target.is_file():
+        return FileResponse(target)
+    return FileResponse(HITL_DIST / "index.html")
 
 
 # ─── scenarios (flagd flip + matching alert rule) ──────────────────────────

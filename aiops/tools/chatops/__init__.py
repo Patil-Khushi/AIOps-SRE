@@ -15,12 +15,13 @@ adapters land later without touching agent code.
 from __future__ import annotations
 
 from .client import ChatOpsAdapter, ChatOpsClient, get_client
-from .models import ChatMessage, Severity, to_record
+from .models import ChatMessage, InteractivePrompt, Severity, to_record
 
 __all__ = [
     "ChatMessage",
     "ChatOpsAdapter",
     "ChatOpsClient",
+    "InteractivePrompt",
     "Severity",
     "get_client",
     "to_record",
