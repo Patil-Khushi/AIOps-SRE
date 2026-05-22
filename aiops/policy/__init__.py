@@ -8,6 +8,16 @@ Phase 0 ships an in-process gate with hard-coded defaults. Phase 1+ wires this
 to OPA so the rules in ``policies/hitl.rego`` are the source of truth.
 """
 
+from .approvals import (
+    ApprovalError,
+    ApprovalRegistry,
+    ApprovalRequest,
+    ApprovalRequester,
+    ApprovalStatus,
+    get_approval_registry,
+    install_chatops_listener,
+    install_default_approver,
+)
 from .gate import (
     AutonomyLevel,
     Decision,
@@ -16,4 +26,18 @@ from .gate import (
     get_gate,
 )
 
-__all__ = ["AutonomyLevel", "Decision", "GateError", "HITLGate", "get_gate"]
+__all__ = [
+    "ApprovalError",
+    "ApprovalRegistry",
+    "ApprovalRequest",
+    "ApprovalRequester",
+    "ApprovalStatus",
+    "AutonomyLevel",
+    "Decision",
+    "GateError",
+    "HITLGate",
+    "get_approval_registry",
+    "get_gate",
+    "install_chatops_listener",
+    "install_default_approver",
+]

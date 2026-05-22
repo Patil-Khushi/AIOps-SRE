@@ -164,6 +164,41 @@ _DEPENDENCIES_MAPPING: dict[str, list[str]] = {
 
 
 @tool(
+    name="mock.automation.runbook.execute",
+    capability="automation.runbook.execute",
+    provider="mock",
+    description="Pretend to execute a runbook step. Used by the HITL-1 demo path.",
+)
+def mock_runbook_execute(
+    runbook: str = "",
+    target: str = "",
+    namespace: str = "",
+    dry_run: bool = True,
+) -> ToolResult:
+    """Used by the auto_healer_lite demo agent (HITL-1).
+
+    Real Phase-2 swap target: an Ansible AWX / kubectl shell-out / Argo
+    workflow.  For the POC the action only needs to *prove* that the gate
+    physically blocked it without an approver — the side-effect itself is
+    irrelevant.  Returns a deterministic dict so the demo can assert on it.
+    """
+    return ToolResult(
+        ok=True,
+        data={
+            "runbook": runbook or "restart-deployment",
+            "target": target,
+            "namespace": namespace or "default",
+            "dry_run": dry_run,
+            "exit_code": 0,
+            "stdout": (
+                f"[dry-run] would restart {target or '<unspecified>'} in {namespace or 'default'}"
+            ),
+        },
+        metadata={"provider": "mock"},
+    )
+
+
+@tool(
     name="mock.itsm.cmdb.dependencies",
     capability="itsm.cmdb.dependencies",
     provider="mock",
