@@ -70,6 +70,7 @@ import logging
 import os
 import re
 import threading
+import time
 from typing import Any
 
 import httpx
@@ -103,6 +104,15 @@ _PD_DEFAULT_SEVERITY = "error"
 _EVENTS_API_URL = "https://events.pagerduty.com/v2/enqueue"
 _DEFAULT_TIMEOUT = 5.0
 _SOURCE = "adaptive-aiops/RA-005"
+
+# One short retry on transient HTTP failures (DNS blip, connection reset,
+# PD enqueue 5xx during deploy). Page-worthy alerts are by definition
+# expensive to drop; a single retry recovers most "just had a network
+# burp" cases at ~0.5s extra latency on the daemon thread. Doesn't help
+# the "process killed mid-flight" failure mode — that needs graceful
+# shutdown, tracked separately (follow-up issue).
+_RETRY_COUNT = 1
+_RETRY_BACKOFF_SECONDS = 0.5
 
 # PagerDuty Events API v2 integration keys are exactly 32 alphanumeric
 # characters. A regex check at construction surfaces copy-paste errors
@@ -229,18 +239,32 @@ class PagerDutyAdapter:
         to propagate to (we're on a background thread). The audit log +
         WebSocket dashboard already reflect "the system intended to page";
         PD-side failures show up in PD's own incident-status visibility.
+
+        One retry with a short backoff covers the common transient-fail
+        case (DNS blip, connection reset, PD 5xx during deploy) without
+        turning this into a real retry queue. The "process killed
+        mid-flight" failure mode is out of scope here — graceful shutdown
+        belongs with the async-seam refactor.
         """
-        try:
-            r = httpx.post(_EVENTS_API_URL, json=payload, timeout=self._timeout)
-            r.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.error(
-                "pagerduty adapter: enqueue failed for %r (severity=%s, service=%s): %s",
-                title,
-                severity,
-                service,
-                exc,
-            )
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(_RETRY_COUNT + 1):
+            try:
+                r = httpx.post(_EVENTS_API_URL, json=payload, timeout=self._timeout)
+                r.raise_for_status()
+                return
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt < _RETRY_COUNT:
+                    time.sleep(_RETRY_BACKOFF_SECONDS)
+        logger.error(
+            "pagerduty adapter: enqueue failed for %r (severity=%s, service=%s) "
+            "after %d attempt(s): %s",
+            title,
+            severity,
+            service,
+            _RETRY_COUNT + 1,
+            last_exc,
+        )
 
     @staticmethod
     def _dedup_key(msg: ChatMessage) -> str:

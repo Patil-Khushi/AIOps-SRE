@@ -11,6 +11,7 @@ from aiops.tools.chatops import (
     ChatOpsClient,
     Severity,
     get_client,
+    to_record,
 )
 
 
@@ -85,3 +86,43 @@ def test_severity_serializes_as_string():
     # custom encoder — D3 (JSON adapter) relies on this.
     assert Severity.P2.value == "p2"
     assert Severity("p2") is Severity.P2
+
+
+def test_to_record_includes_actions_field():
+    """``actions`` was added to ChatMessage in CHAT-5 (#85) so adapters can
+    filter on routing intent (e.g. PagerDuty only fires on ``page_oncall``).
+    Locking the serialized contract here keeps the audit log, the WebSocket
+    feed, and the dashboard JSON from silently dropping the field on a
+    future model change."""
+    msg = ChatMessage(
+        channel="incidents",
+        severity=Severity.P1,
+        title="payment down",
+        actions=["page_oncall", "post_to_chat"],
+        mentions=["@chinmay"],
+    )
+    record = to_record(msg)
+
+    assert record["actions"] == ["page_oncall", "post_to_chat"]
+    assert record["mentions"] == ["@chinmay"]
+    # `to_record` should hand back a fresh list (defensive copy), not the
+    # adapter-observable underlying list — mutating one must not bleed.
+    record["actions"].append("mutate")
+    assert msg.actions == ["page_oncall", "post_to_chat"]
+
+
+def test_to_record_full_key_contract():
+    """The exact set of keys emitted by to_record is the wire contract for
+    every chatops sink. Pin it so additions are reviewed deliberately."""
+    msg = ChatMessage(channel="ops", severity=Severity.INFO, title="x")
+    assert set(to_record(msg).keys()) == {
+        "timestamp",
+        "channel",
+        "severity",
+        "title",
+        "body",
+        "incident_id",
+        "service",
+        "mentions",
+        "actions",
+    }

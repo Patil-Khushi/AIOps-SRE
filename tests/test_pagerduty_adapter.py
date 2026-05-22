@@ -367,7 +367,7 @@ def test_register_skips_pagerduty_when_env_var_unset(monkeypatch, isolated_chato
     monkeypatch.delenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", raising=False)
     _call_register_chatops_adapters()
 
-    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    pd_adapters = [a for a in isolated_chatops_client.adapters if isinstance(a, PagerDutyAdapter)]
     assert pd_adapters == [], (
         "PagerDutyAdapter must not register when AIOPS_PAGERDUTY_INTEGRATION_KEY is unset"
     )
@@ -379,7 +379,7 @@ def test_register_skips_pagerduty_when_env_var_blank(monkeypatch, isolated_chato
     monkeypatch.setenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", "   ")
     _call_register_chatops_adapters()
 
-    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    pd_adapters = [a for a in isolated_chatops_client.adapters if isinstance(a, PagerDutyAdapter)]
     assert pd_adapters == []
 
 
@@ -389,7 +389,7 @@ def test_register_attaches_pagerduty_when_env_var_valid(monkeypatch, isolated_ch
     monkeypatch.setenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", _FAKE_KEY)
     _call_register_chatops_adapters()
 
-    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    pd_adapters = [a for a in isolated_chatops_client.adapters if isinstance(a, PagerDutyAdapter)]
     assert len(pd_adapters) == 1, f"expected exactly one PagerDutyAdapter, got {len(pd_adapters)}"
 
 
@@ -403,9 +403,78 @@ def test_register_skips_pagerduty_when_env_var_invalid(
     with caplog.at_level("WARNING"):
         _call_register_chatops_adapters()
 
-    pd_adapters = [a for a in isolated_chatops_client._adapters if isinstance(a, PagerDutyAdapter)]
+    pd_adapters = [a for a in isolated_chatops_client.adapters if isinstance(a, PagerDutyAdapter)]
     assert pd_adapters == [], "invalid key must not register a half-broken adapter"
     assert any(
         "AIOPS_PAGERDUTY_INTEGRATION_KEY" in rec.message and "invalid" in rec.message
         for rec in caplog.records
     ), "invalid key must surface a warning so operators see the misconfiguration"
+
+
+def test_register_is_idempotent_no_duplicate_adapters(monkeypatch, isolated_chatops_client):
+    """Calling _register_chatops_adapters twice must not double-register any
+    adapter kind. FastAPI today only fires startup hooks once, but a future
+    hot-reload path or a test that exercises startup twice would silently
+    duplicate every audit log line without this guard."""
+    monkeypatch.setenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", _FAKE_KEY)
+    monkeypatch.delenv("AIOPS_SLACK_WEBHOOK_URL", raising=False)
+
+    _call_register_chatops_adapters()
+    first_kinds = [type(a).__name__ for a in isolated_chatops_client.adapters]
+    _call_register_chatops_adapters()
+    second_kinds = [type(a).__name__ for a in isolated_chatops_client.adapters]
+
+    assert first_kinds == second_kinds, (
+        f"second call registered duplicates: {set(second_kinds) - set(first_kinds)}"
+    )
+    # Specifically: at most one PagerDutyAdapter regardless of call count.
+    assert sum(1 for a in isolated_chatops_client.adapters if isinstance(a, PagerDutyAdapter)) == 1
+
+
+# ─── transient retry (PR #96 follow-up review note #1) ─────────────────────
+
+
+def test_post_retries_once_on_transient_http_error(caplog):
+    """One transient HTTP failure followed by a success must result in a
+    successfully-delivered page — no warning, one retry. Page-worthy
+    alerts are expensive to drop on a network blip."""
+    import httpx
+
+    adapter = PagerDutyAdapter(_FAKE_KEY)
+
+    ok_response = MagicMock()
+    ok_response.raise_for_status.return_value = None
+    side_effects = [httpx.ConnectError("blip"), ok_response]
+
+    with patch(
+        "aiops.tools.chatops.adapters.pagerduty.httpx.post",
+        side_effect=side_effects,
+    ) as mock_post:
+        adapter.send(_msg())
+        _wait_for_threads(timeout=3.0)
+
+    assert mock_post.call_count == 2, "must retry once after a transient failure"
+    assert not any("enqueue failed" in rec.message for rec in caplog.records), (
+        "successful retry must not log the final-failure error"
+    )
+
+
+def test_post_gives_up_after_one_retry_and_logs(caplog):
+    """Two consecutive failures exhaust the single retry budget and the
+    final error is logged with the attempt count, so operators can tell a
+    one-off blip apart from a sustained PD outage."""
+    import httpx
+
+    adapter = PagerDutyAdapter(_FAKE_KEY)
+
+    with patch(
+        "aiops.tools.chatops.adapters.pagerduty.httpx.post",
+        side_effect=httpx.ConnectError("dns dead"),
+    ) as mock_post:
+        adapter.send(_msg())
+        _wait_for_threads(timeout=3.0)
+
+    assert mock_post.call_count == 2, "must attempt original + one retry, then give up"
+    assert any(
+        "enqueue failed" in rec.message and "2 attempt" in rec.message for rec in caplog.records
+    ), "must log a final failure that names the attempt count"

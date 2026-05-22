@@ -30,12 +30,19 @@ from __future__ import annotations
 # TLS-inspecting proxy — the OS already trusts the corporate CA, but
 # Python's bundled certifi store doesn't. Must run BEFORE any module that
 # opens an SSL connection (httpx, openai, etc.).
+#
+# truststore is a hard dep in pyproject.toml, so the ImportError branch is
+# theoretically unreachable. Kept defensive intentionally: if a future
+# slim/container build trims optional deps or a fresh checkout runs the
+# server before `uv sync`, the demo should still boot (with stock certifi)
+# instead of crashing the FastAPI startup. The try/except also keeps this
+# block a single self-contained import for ruff's E402 rule.
 try:
     import truststore
 
     truststore.inject_into_ssl()
 except ImportError:
-    pass  # truststore is optional; only needed in MITM-proxy environments
+    pass
 
 import asyncio
 import json
@@ -111,23 +118,32 @@ def _register_chatops_adapters() -> None:
     Slack and PagerDuty are both opt-in: they only register when their
     respective env vars are set. Without them the demo runs cleanly
     against the JSONL audit log + WebSocket dashboard panel.
+
+    Idempotent by adapter class: re-calling this function (e.g. from a
+    test that triggers FastAPI startup twice, or a future hot-reload
+    path) won't register duplicate sinks of the same kind. Without this
+    guard the same audit JSON line lands twice per ``send()``.
     """
-    audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
-    get_chatops_client().register(JsonFileChatOpsAdapter(audit_path))
-    logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
+    client = get_chatops_client()
+    registered_kinds = {type(a) for a in client.adapters}
+
+    if JsonFileChatOpsAdapter not in registered_kinds:
+        audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
+        client.register(JsonFileChatOpsAdapter(audit_path))
+        logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
 
     slack_url = os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip()
-    if slack_url:
+    if slack_url and SlackWebhookAdapter not in registered_kinds:
         try:
-            get_chatops_client().register(SlackWebhookAdapter(slack_url))
+            client.register(SlackWebhookAdapter(slack_url))
             logger.info("chatops: registered slack webhook adapter")
         except ValueError as exc:
             logger.warning("chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping", exc)
 
     pd_key = os.environ.get("AIOPS_PAGERDUTY_INTEGRATION_KEY", "").strip()
-    if pd_key:
+    if pd_key and PagerDutyAdapter not in registered_kinds:
         try:
-            get_chatops_client().register(PagerDutyAdapter(pd_key))
+            client.register(PagerDutyAdapter(pd_key))
             logger.info("chatops: registered pagerduty adapter (page_oncall actions only)")
         except ValueError as exc:
             logger.warning(
