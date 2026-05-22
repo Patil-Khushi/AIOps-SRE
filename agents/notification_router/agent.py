@@ -179,6 +179,10 @@ def _decision_to_chat_message(
         incident_id=verdict.incident_id,
         service=verdict.affected_service,
         mentions=list(decision.mentions),
+        # CHAT-5 prep: the PagerDuty adapter filters on this list (only
+        # acts when "page_oncall" is present). Other adapters can also
+        # inspect it to react differently for paging vs. chat-only sends.
+        actions=list(decision.actions),
         timestamp=decision.decided_at,
     )
 

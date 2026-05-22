@@ -143,7 +143,13 @@ def test_truth_template_is_valid_yaml():
 def test_eval_harness_phase0_passes_with_no_agents(capsys, monkeypatch):
     from evals import harness
 
+    # Stub both discovery functions: the harness now emits phase0=true only
+    # when neither agents nor truth files exist. EVAL-1 (#75) added the
+    # truth-file pass; DEMO-12 (#64) backfilled 15 real truth files into
+    # demo/truth_files/, so without this second stub the harness sees them
+    # and skips the phase0 short-circuit.
     monkeypatch.setattr(harness, "discover_agents", lambda: [])
+    monkeypatch.setattr(harness, "discover_truth_files", lambda: [])
     rc = harness.main(["--ci", "--min-pass-rate", "0.85"])
     assert rc == 0
     out = capsys.readouterr().out

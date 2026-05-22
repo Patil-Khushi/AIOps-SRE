@@ -23,6 +23,20 @@ import Prometheus / Jaeger / Kubernetes clients directly.
 
 from __future__ import annotations
 
+# Make Python's ssl module use the OS trust store (Windows / macOS) so HTTPS
+# calls from httpx, openai SDK, etc. accept corporate-proxy re-signed certs
+# (Zscaler / Netskope / etc.). Without this, every outbound HTTPS from the
+# demo server fails with "CERTIFICATE_VERIFY_FAILED" on machines behind a
+# TLS-inspecting proxy — the OS already trusts the corporate CA, but
+# Python's bundled certifi store doesn't. Must run BEFORE any module that
+# opens an SSL connection (httpx, openai, etc.).
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except ImportError:
+    pass  # truststore is optional; only needed in MITM-proxy environments
+
 import asyncio
 import json
 import logging
@@ -69,6 +83,7 @@ from aiops.tools import (  # noqa: E402
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
+from aiops.tools.chatops.adapters.pagerduty import PagerDutyAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
@@ -89,12 +104,13 @@ def _bootstrap_state() -> None:
 
 @app.on_event("startup")
 def _register_chatops_adapters() -> None:
-    """JSON audit log (D3) + optional Slack webhook (CHAT-1). The WebSocket
-    sink (D2) registers itself via ``_register_chatops_ws_routes`` below.
+    """JSON audit log (D3) + optional Slack webhook (CHAT-1) + optional
+    PagerDuty Events API v2 (CHAT-5). The WebSocket sink (D2) registers
+    itself via ``_register_chatops_ws_routes`` below.
 
-    Slack registration is opt-in: only happens when ``AIOPS_SLACK_WEBHOOK_URL``
-    is set in the environment. Without it the demo runs cleanly against the
-    JSONL audit log + WebSocket dashboard panel.
+    Slack and PagerDuty are both opt-in: they only register when their
+    respective env vars are set. Without them the demo runs cleanly
+    against the JSONL audit log + WebSocket dashboard panel.
     """
     audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
     get_chatops_client().register(JsonFileChatOpsAdapter(audit_path))
@@ -107,6 +123,16 @@ def _register_chatops_adapters() -> None:
             logger.info("chatops: registered slack webhook adapter")
         except ValueError as exc:
             logger.warning("chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping", exc)
+
+    pd_key = os.environ.get("AIOPS_PAGERDUTY_INTEGRATION_KEY", "").strip()
+    if pd_key:
+        try:
+            get_chatops_client().register(PagerDutyAdapter(pd_key))
+            logger.info("chatops: registered pagerduty adapter (page_oncall actions only)")
+        except ValueError as exc:
+            logger.warning(
+                "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping", exc
+            )
 
 
 _register_chatops_ws_routes(app)
