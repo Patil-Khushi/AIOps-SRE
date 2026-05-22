@@ -11,12 +11,12 @@ import {
 import { clsx } from '@/lib/format';
 
 const NAV = [
-  { to: '/',              label: 'Overview',      icon: LayoutDashboard, end: true },
-  { to: '/alerts',        label: 'Alert Stream',  icon: BellRing,        end: false },
-  { to: '/notifications', label: 'Notifications', icon: Bell,            end: false },
-  { to: '/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
-  { to: '/topology',      label: 'Topology',      icon: Network,         end: false },
-  { to: '/health',        label: 'System Health', icon: HeartPulse,      end: false },
+  { to: '/console',               label: 'Overview',      icon: LayoutDashboard, end: true },
+  { to: '/console/alerts',        label: 'Alert Stream',  icon: BellRing,        end: false },
+  { to: '/console/notifications', label: 'Notifications', icon: Bell,            end: false },
+  { to: '/console/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
+  { to: '/console/topology',      label: 'Topology',      icon: Network,         end: false },
+  { to: '/console/health',        label: 'System Health', icon: HeartPulse,      end: false },
 ];
 
 export default function Sidebar() {

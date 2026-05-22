@@ -31,19 +31,41 @@ export default {
         ok:   '#22c55e',
         warn: '#f59e0b',
         bad:  '#ef4444',
+        // Portal / boot-curtain palette — maps to the four maturity phases.
+        portal: {
+          bg:           '#050505',
+          reactive:     '#4f46e5', // indigo  — Reactive-Active
+          proactive:    '#7c3aed', // violet  — Proactive
+          predictive:   '#f59e0b', // amber   — Predictive
+          prescriptive: '#db2777', // pink    — Prescriptive-Adaptive
+        },
       },
       fontFamily: {
-        sans: ['"Inter"', '"Segoe UI"', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        sans:    ['"Inter"', '"Segoe UI"', 'system-ui', '-apple-system', 'sans-serif'],
+        mono:    ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        display: ['"Cabinet Grotesk"', '"Inter"', 'system-ui', 'sans-serif'],
+        body:    ['"Satoshi"', '"Inter"', 'system-ui', 'sans-serif'],
+      },
+      letterSpacing: {
+        tightest: '-0.05em',
+        wider5:   '0.4em',
       },
       boxShadow: {
         card: '0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.06)',
         'card-dark': '0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.25)',
       },
+      transitionTimingFunction: {
+        // Weighted cubic for the boot curtain zoom.
+        'portal-zoom': 'cubic-bezier(0.77, 0, 0.175, 1)',
+        // General-purpose ease-in-out cubic for reveals.
+        'portal-cubic': 'cubic-bezier(0.65, 0, 0.35, 1)',
+      },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         'fade-in':    'fadeIn 0.2s ease-out',
         'slide-up':   'slideUp 0.25s ease-out',
+        'vibrant':    'vibrantFlow 15s ease-in-out infinite',
+        'scroll-bounce': 'scrollBounce 2s cubic-bezier(0.65, 0, 0.35, 1) infinite',
       },
       keyframes: {
         fadeIn: {
@@ -53,6 +75,14 @@ export default {
         slideUp: {
           '0%': { opacity: '0', transform: 'translateY(8px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        vibrantFlow: {
+          '0%, 100%': { backgroundPosition: '0% 50%' },
+          '50%':      { backgroundPosition: '100% 50%' },
+        },
+        scrollBounce: {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%':      { transform: 'translateY(5px)' },
         },
       },
     },
