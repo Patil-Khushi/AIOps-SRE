@@ -1,0 +1,11 @@
+# git-crypt — encrypt the team-shared secrets file at rest in the repo.
+#
+# Workflow: see SECRETS.md.
+#
+# .env.shared is the team-shared values file. It's tracked in the repo,
+# encrypted via git-crypt, and decrypted on checkout for trusted users.
+# Each developer copies .env.shared -> .env locally (.env is gitignored)
+# so per-developer overrides (KUBECONFIG, etc.) stay local-only.
+#
+# To add another encrypted file, add a line here matching its path.
+.env.shared      filter=git-crypt diff=git-crypt
