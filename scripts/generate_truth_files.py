@@ -50,7 +50,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "PaymentErrorRateHigh alert firing",
-            "rate(traces_span_metrics_calls_total{service_name=\"payment\",status_code=\"STATUS_CODE_ERROR\"}[2m]) > 0",
+            'rate(traces_span_metrics_calls_total{service_name="payment",status_code="STATUS_CODE_ERROR"}[2m]) > 0',
             "flagd config: paymentFailure variant `100%` active",
         ],
         "hypotheses": [
@@ -61,8 +61,14 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip paymentFailure variant to `off` in flagd configmap.",
         "fix_med": "Restart payment pods if the flag flip doesn't recover within 60s.",
         "wrong_fixes": [
-            ("Scale up payment pods", "Capacity is not the bottleneck — every request still fails 100%."),
-            ("Restart the database", "DB is healthy; the error originates in the application layer."),
+            (
+                "Scale up payment pods",
+                "Capacity is not the bottleneck — every request still fails 100%.",
+            ),
+            (
+                "Restart the database",
+                "DB is healthy; the error originates in the application layer.",
+            ),
         ],
         "rca_must_include": ["paymentFailure", "feature flag"],
     },
@@ -82,7 +88,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "PaymentErrorRateHigh alert firing on the calling side",
-            "checkout span error.message contains \"connection refused\"",
+            'checkout span error.message contains "connection refused"',
             "flagd config: paymentUnreachable=on",
         ],
         "hypotheses": [
@@ -93,7 +99,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip paymentUnreachable to `off` in flagd configmap.",
         "fix_med": "If unreachable persists after the flag flip, restart frontend-proxy.",
         "wrong_fixes": [
-            ("Restart payment pods", "Payment is healthy; restarting it would not change the simulated network failure."),
+            (
+                "Restart payment pods",
+                "Payment is healthy; restarting it would not change the simulated network failure.",
+            ),
         ],
         "rca_must_include": ["paymentUnreachable", "feature flag"],
     },
@@ -141,7 +150,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "ProductCatalogErrorRateHigh alert firing",
-            "rate(traces_span_metrics_calls_total{service_name=\"product-catalog\",status_code=\"STATUS_CODE_ERROR\"}[1m]) > 0",
+            'rate(traces_span_metrics_calls_total{service_name="product-catalog",status_code="STATUS_CODE_ERROR"}[1m]) > 0',
             "flagd config: productCatalogFailure=on",
         ],
         "hypotheses": [
@@ -169,7 +178,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "AdErrorRateHigh alert firing",
-            "rate(traces_span_metrics_calls_total{service_name=\"ad\",status_code=\"STATUS_CODE_ERROR\"}[1m]) > 0",
+            'rate(traces_span_metrics_calls_total{service_name="ad",status_code="STATUS_CODE_ERROR"}[1m]) > 0',
             "flagd config: adFailure=on",
         ],
         "hypotheses": [
@@ -197,7 +206,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "RecommendationLatencyP95High alert firing",
-            "histogram_quantile(0.95, ...service_name=\"recommendation\") rising",
+            'histogram_quantile(0.95, ...service_name="recommendation") rising',
             "flagd config: recommendationCacheFailure=on",
         ],
         "hypotheses": [
@@ -208,7 +217,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip recommendationCacheFailure to `off` in flagd configmap.",
         "fix_med": "Once flag is off, warm the cache by issuing a handful of GetRecommendations requests.",
         "wrong_fixes": [
-            ("Increase recommendation pod CPU limits", "Latency is from cache miss, not CPU saturation."),
+            (
+                "Increase recommendation pod CPU limits",
+                "Latency is from cache miss, not CPU saturation.",
+            ),
         ],
         "rca_must_include": ["recommendationCacheFailure", "cache"],
     },
@@ -237,7 +249,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip adManualGc to `off` in flagd configmap.",
         "fix_med": "If spikes persist, increase ad pod heap size as a temporary mitigation.",
         "wrong_fixes": [
-            ("Switch ad-service GC algorithm via env var", "Won't help — the GC is synthetic, triggered by the flag, not by real allocation pressure."),
+            (
+                "Switch ad-service GC algorithm via env var",
+                "Won't help — the GC is synthetic, triggered by the flag, not by real allocation pressure.",
+            ),
         ],
         "rca_must_include": ["adManualGc", "GC"],
     },
@@ -266,7 +281,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip imageSlowLoad to `off` in flagd configmap.",
         "fix_med": "If the delay persists, check image-provider pod (`kubectl -n otel-demo logs deploy/image-provider`).",
         "wrong_fixes": [
-            ("Scale image-provider", "Image-provider is healthy; the delay is injected on the frontend side."),
+            (
+                "Scale image-provider",
+                "Image-provider is healthy; the delay is injected on the frontend side.",
+            ),
         ],
         "rca_must_include": ["imageSlowLoad", "frontend"],
     },
@@ -285,7 +303,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "FrontendTrafficSurge alert firing",
-            "sum(rate(...service_name=\"frontend\")) > 10 req/s",
+            'sum(rate(...service_name="frontend")) > 10 req/s',
             "flagd config: loadGeneratorFloodHomepage=on",
         ],
         "hypotheses": [
@@ -296,7 +314,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip loadGeneratorFloodHomepage to `off` in flagd configmap.",
         "fix_med": "If real traffic is the cause, scale frontend HPA min replicas up.",
         "wrong_fixes": [
-            ("Block frontend ingress in NetworkPolicy", "Would also block legitimate traffic; the cause here is internal load generator, not external traffic."),
+            (
+                "Block frontend ingress in NetworkPolicy",
+                "Would also block legitimate traffic; the cause here is internal load generator, not external traffic.",
+            ),
         ],
         "rca_must_include": ["loadGeneratorFloodHomepage", "traffic"],
     },
@@ -327,7 +348,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip kafkaQueueProblems to `off` in flagd configmap.",
         "fix_med": "If consumer lag persists, restart accounting + shipping deployments to reset offsets.",
         "wrong_fixes": [
-            ("Increase Kafka broker memory", "Brokers are healthy; the bottleneck is at the consumer side, not the broker."),
+            (
+                "Increase Kafka broker memory",
+                "Brokers are healthy; the bottleneck is at the consumer side, not the broker.",
+            ),
         ],
         "rca_must_include": ["kafkaQueueProblems", "consumer"],
     },
@@ -345,7 +369,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "EmailMemoryHigh alert firing",
-            "container_memory_rss_bytes{service_name=\"email\"} rising monotonically",
+            'container_memory_rss_bytes{service_name="email"} rising monotonically',
             "flagd config: emailMemoryLeak variant `100x`",
         ],
         "hypotheses": [
@@ -356,7 +380,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip emailMemoryLeak to `off` in flagd configmap.",
         "fix_med": "Restart email pod (`kubectl -n otel-demo rollout restart deploy/email`) to reclaim leaked memory.",
         "wrong_fixes": [
-            ("Increase email pod memory limit", "Treats the symptom, not the cause; the leak will fill any limit."),
+            (
+                "Increase email pod memory limit",
+                "Treats the symptom, not the cause; the leak will fill any limit.",
+            ),
         ],
         "rca_must_include": ["emailMemoryLeak", "memory"],
     },
@@ -375,7 +402,7 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "evidence": [
             "AdCpuHigh alert firing",
-            "container_cpu_usage{service_name=\"ad\"} > 0.8 sustained",
+            'container_cpu_usage{service_name="ad"} > 0.8 sustained',
             "flagd config: adHighCpu=on",
         ],
         "hypotheses": [
@@ -386,7 +413,10 @@ SCENARIO_OVERRIDES: dict[str, dict[str, Any]] = {
         "fix_low": "Flip adHighCpu to `off` in flagd configmap.",
         "fix_med": "If CPU stays high after flag-off, restart ad pods to clear any in-process accumulated work.",
         "wrong_fixes": [
-            ("Increase ad pod CPU limit", "Won't help — the synthetic CPU consumption scales to whatever limit is set."),
+            (
+                "Increase ad pod CPU limit",
+                "Won't help — the synthetic CPU consumption scales to whatever limit is set.",
+            ),
         ],
         "rca_must_include": ["adHighCpu", "CPU"],
     },
