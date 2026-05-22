@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Search, Filter, RefreshCw, Inbox } from 'lucide-react';
+import { Search, Filter, RefreshCw, Inbox, Sparkles, ShieldAlert } from 'lucide-react';
 import { useAlertsSocket } from '@/lib/ws';
 import { SeverityBadge } from '@/components/SeverityBadge';
 import { EmptyState } from '@/components/states';
 import { api } from '@/lib/api';
-import type { Severity, PrometheusAlert, TriageVerdict } from '@/types/api';
+import type { Severity, PrometheusAlert, TriageVerdict, RCAVerdict, BlastRadius } from '@/types/api';
 import { timeAgo, clsx } from '@/lib/format';
 
 function inferSeverity(hint: string | null | undefined): Severity {
@@ -28,6 +28,11 @@ export default function AlertStream() {
   const [verdict, setVerdict] = useState<TriageVerdict | null>(null);
   const [triageBusy, setTriageBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // RCA state lives alongside the triage verdict — generated on demand, cleared
+  // when a new alert is picked so we never show an RCA for a stale verdict.
+  const [rca, setRca] = useState<RCAVerdict | null>(null);
+  const [rcaBusy, setRcaBusy] = useState(false);
+  const [rcaError, setRcaError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const lc = q.toLowerCase();
@@ -53,6 +58,8 @@ export default function AlertStream() {
     setPicked(alert);
     setVerdict(null);
     setError(null);
+    setRca(null);
+    setRcaError(null);
     setTriageBusy(true);
     try {
       const result = await api.triage(alert);
@@ -61,6 +68,21 @@ export default function AlertStream() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setTriageBusy(false);
+    }
+  };
+
+  const runRca = async () => {
+    if (!verdict) return;
+    setRca(null);
+    setRcaError(null);
+    setRcaBusy(true);
+    try {
+      const result = await api.rca(verdict);
+      setRca(result);
+    } catch (e) {
+      setRcaError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRcaBusy(false);
     }
   };
 
@@ -181,11 +203,121 @@ export default function AlertStream() {
                 </div>
               )}
               {error && <p className="text-sm text-bad">{error}</p>}
-              {verdict && !triageBusy && <VerdictView v={verdict} />}
+              {verdict && !triageBusy && (
+                <>
+                  <VerdictView v={verdict} />
+                  <div className="!mt-4 border-t border-ink-200 pt-3 dark:border-ink-700">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="card-title !text-[10px]">RCA Agent · PRS-008 ★</p>
+                      <button
+                        type="button"
+                        onClick={runRca}
+                        disabled={rcaBusy}
+                        className={clsx(
+                          'inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1',
+                          'text-xs font-medium text-accent transition hover:bg-accent/20',
+                          'disabled:cursor-not-allowed disabled:opacity-50',
+                        )}
+                      >
+                        {rcaBusy ? (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-3.5 w-3.5" />
+                        )}
+                        {rca ? 'Re-generate RCA' : 'Generate RCA'}
+                      </button>
+                    </div>
+                    {rcaBusy && !rca && (
+                      <div className="mt-3 space-y-2 animate-pulse">
+                        <div className="h-3 w-3/4 rounded bg-ink-200 dark:bg-ink-700" />
+                        <div className="h-3 w-5/6 rounded bg-ink-200 dark:bg-ink-700" />
+                        <div className="h-12 w-full rounded bg-ink-200 dark:bg-ink-700" />
+                        <div className="h-12 w-full rounded bg-ink-200 dark:bg-ink-700" />
+                      </div>
+                    )}
+                    {rcaError && <p className="mt-2 text-sm text-bad">{rcaError}</p>}
+                    {rca && !rcaBusy && <RcaView v={rca} />}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </aside>
       </div>
+    </div>
+  );
+}
+
+const BLAST_RADIUS_STYLE: Record<BlastRadius, string> = {
+  low: '!border-ok/40 !text-ok',
+  medium: '!border-warn/40 !text-warn',
+  high: '!border-bad/40 !text-bad',
+};
+
+function RcaView({ v }: { v: RCAVerdict }) {
+  return (
+    <div className="mt-3 space-y-3 text-sm">
+      <div>
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="card-title !text-[10px]">Root cause</p>
+          <span className="font-mono text-[11px] text-ink-500 dark:text-ink-400">
+            confidence {(v.confidence_score * 100).toFixed(0)}%
+          </span>
+        </div>
+        <p className="mt-1.5 text-sm leading-relaxed text-ink-900 dark:text-ink-50">
+          {v.root_cause}
+        </p>
+      </div>
+
+      <div>
+        <p className="card-title !text-[10px]">
+          Ranked fix steps ({v.ranked_fix_steps.length})
+        </p>
+        <ol className="mt-2 space-y-2">
+          {v.ranked_fix_steps.map((step, i) => (
+            <li
+              key={i}
+              className="rounded-md border border-ink-200 bg-ink-50/50 p-2.5 dark:border-ink-700 dark:bg-ink-800/30"
+            >
+              <div className="flex items-start gap-2">
+                <span className="flex-shrink-0 rounded bg-ink-200 px-1.5 text-[10px] font-bold text-ink-700 dark:bg-ink-700 dark:text-ink-200">
+                  {i + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm leading-snug text-ink-900 dark:text-ink-50">
+                    {step.description}
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <span className={clsx('chip', BLAST_RADIUS_STYLE[step.blast_radius])}>
+                      blast: {step.blast_radius}
+                    </span>
+                    <span className="chip !border-accent/40 !text-accent">
+                      <ShieldAlert className="mr-1 inline h-3 w-3" />
+                      HITL required
+                    </span>
+                  </div>
+                  <div className="mt-1.5 rounded bg-ink-100 px-2 py-1 font-mono text-[11px] text-ink-700 dark:bg-ink-900 dark:text-ink-200">
+                    <span className="text-ink-500 dark:text-ink-400">rollback:</span> {step.rollback}
+                  </div>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      <details>
+        <summary className="cursor-pointer text-xs text-ink-500 hover:text-accent dark:text-ink-400">
+          RCA decision trace ({v.audit_metadata.decision_trace.length} steps)
+        </summary>
+        <ol className="mt-2 space-y-1 border-l border-ink-200 pl-3 font-mono text-[11px] text-ink-600 dark:border-ink-700 dark:text-ink-300">
+          {v.audit_metadata.decision_trace.map((line, i) => (
+            <li key={i} className="leading-relaxed">
+              {i + 1}. {line}
+            </li>
+          ))}
+        </ol>
+      </details>
     </div>
   );
 }

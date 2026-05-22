@@ -61,6 +61,13 @@ class ChatMessage:
     incident_id: str | None = None
     service: str | None = None
     mentions: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
+    """Routing intents the agent attached (e.g. ``"page_oncall"``,
+    ``"post_to_chat"``). Adapters filter on these to decide whether they
+    should act on a given message. CHAT-5 (#85): the PagerDuty adapter
+    only fires when ``"page_oncall"`` is present; CHAT-1 Slack posts
+    everything. Keeps routing policy in RA-005 and out of adapters.
+    """
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     interactive: InteractivePrompt | None = None
 
@@ -91,5 +98,6 @@ def to_record(msg: ChatMessage) -> dict[str, Any]:
         "incident_id": msg.incident_id,
         "service": msg.service,
         "mentions": list(msg.mentions),
+        "actions": list(msg.actions),
         "interactive": interactive,
     }

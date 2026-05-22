@@ -39,6 +39,17 @@ class ChatOpsClient:
     def adapter_count(self) -> int:
         return len(self._adapters)
 
+    @property
+    def adapters(self) -> tuple[ChatOpsAdapter, ...]:
+        """Read-only snapshot of registered adapters.
+
+        Tests previously reached into ``_adapters`` directly, which coupled
+        them to the list-storage implementation. Returning a tuple keeps
+        the snapshot immutable so callers can't accidentally mutate the
+        client's internal state.
+        """
+        return tuple(self._adapters)
+
     def send(self, msg: ChatMessage) -> None:
         if not self._adapters:
             logger.debug("chatops: no adapters registered; dropping %r", msg.title)
