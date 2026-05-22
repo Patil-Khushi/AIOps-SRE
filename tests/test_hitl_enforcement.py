@@ -7,6 +7,8 @@ boundary, not in agent code. Every ``ToolRegistry.call()`` consults
 
 from __future__ import annotations
 
+import pytest
+
 from aiops.policy import get_gate
 from aiops.policy.gate import AutonomyLevel
 from aiops.tools import ToolResult, get_registry, tool
@@ -41,15 +43,51 @@ def test_none_level_action_passes_through(monkeypatch):
     assert "blocked_by" not in res.metadata
 
 
+# ─── HITL-4 (#104) public approver setter / getter ────────────────────────
+
+
+def test_gate_set_approver_replaces_current_function():
+    """``HITLGate.set_approver`` is the supported way to swap approvers;
+    the old private-attribute poke (``gate._approver = ...``) was the
+    workaround it replaces."""
+    gate = get_gate()
+    original = gate.approver
+
+    def custom(_action, _ctx):
+        return "manual-approver"
+
+    gate.set_approver(custom)
+    try:
+        assert gate.approver is custom
+    finally:
+        gate.set_approver(original)
+    assert gate.approver is original
+
+
+def test_gate_approver_property_is_read_only():
+    """``HITLGate.approver`` exposes the current function for save/restore
+    in tests; assigning to it must not silently shadow the real slot —
+    if it did, ``gate.set_approver(saved)`` would restore a stale value."""
+    gate = get_gate()
+    original = gate.approver
+    with pytest.raises(AttributeError):
+        gate.approver = lambda *_a, **_k: None  # type: ignore[misc]
+    assert gate.approver is original
+
+
 def test_required_level_action_runs_with_approver(monkeypatch):
     gate = get_gate()
     monkeypatch.setitem(gate._levels, "test.hitl.approved", AutonomyLevel.REQUIRED)
-    monkeypatch.setattr(gate, "_approver", lambda action, ctx: "test-approver@example.com")
+    original_approver = gate.approver
+    gate.set_approver(lambda action, ctx: "test-approver@example.com")
 
     @tool(name="test_required_approved", capability="test.hitl.approved", provider="test")
     def fake(**_kwargs):
         return ToolResult(ok=True, data="approved-and-ran")
 
-    res = get_registry().call("test.hitl.approved")
-    assert res.ok is True
-    assert res.data == "approved-and-ran"
+    try:
+        res = get_registry().call("test.hitl.approved")
+        assert res.ok is True
+        assert res.data == "approved-and-ran"
+    finally:
+        gate.set_approver(original_approver)

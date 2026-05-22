@@ -36,7 +36,7 @@ def client(monkeypatch):
     from aiops.tools.chatops import client as chat_client_mod
     from demo.ui import chatops_ws as ws_mod
 
-    original_approver = get_gate()._approver
+    original_approver = get_gate().approver
     saved_adapters = list(chat_client_mod._CLIENT._adapters)
     saved_history = list(ws_mod._HUB._history)
     get_approval_registry()._reset_for_tests()
@@ -44,7 +44,7 @@ def client(monkeypatch):
         with TestClient(srv.app) as c:
             yield c
     finally:
-        get_gate()._approver = original_approver
+        get_gate().set_approver(original_approver)
         get_approval_registry()._reset_for_tests()
         chat_client_mod._CLIENT._adapters[:] = saved_adapters
         ws_mod._HUB._history.clear()
