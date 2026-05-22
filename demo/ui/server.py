@@ -91,6 +91,7 @@ from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
+from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
     ApprovalError,
@@ -389,6 +390,46 @@ async def triage_live() -> dict[str, Any]:
     tasks = [asyncio.to_thread(_triage_one, c) for c in candidates]
     results = list(await asyncio.gather(*tasks)) if tasks else []
     return {"count": len(results), "results": results}
+
+
+class RcaRequest(BaseModel):
+    triage_verdict: dict[str, Any] = Field(
+        ..., description="The RA-001 TriageVerdict dict (as emitted by POST /api/triage)."
+    )
+    scenario_id: str | None = Field(
+        None,
+        description=(
+            "Optional locked-scenario hint (e.g. 'slow-product-catalog'). When the "
+            "LLM provider is unavailable, the agent uses this + the verdict's "
+            "affected_service to pick the deterministic fallback verdict. Safe to omit."
+        ),
+    )
+
+
+@app.post("/api/rca", response_model=None)
+async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
+    """Run the RCA Agent (PRS-008) against a prior triage verdict.
+
+    Body: ``{"triage_verdict": {<TriageVerdict dict>}, "scenario_id"?: str}``.
+    Returns an ``RCAVerdict`` with ``root_cause``, ``ranked_fix_steps`` (each
+    with ``blast_radius`` + ``rollback``), and ``confidence_score``. Every
+    fix step is tagged ``requires_hitl=true``; the platform HITL gate enforces
+    approval at the action boundary — this endpoint does NOT execute the fix.
+
+    The agent's LLM call can take 5–15 s (Claude via Foundry); ``rca_analyze``
+    is sync + blocking, so we wrap it in ``asyncio.to_thread`` to keep the
+    event loop free.
+    """
+    try:
+        verdict = await asyncio.to_thread(
+            rca_analyze, req.triage_verdict, scenario_id=req.scenario_id
+        )
+    except Exception as exc:
+        logger.exception(
+            "RCA agent raised on payload for %s", req.triage_verdict.get("affected_service")
+        )
+        raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
+    return verdict.model_dump(mode="json")
 
 
 @app.get("/api/verdicts")
