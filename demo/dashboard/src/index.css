@@ -18,44 +18,120 @@
   ::-webkit-scrollbar-thumb:hover { background: rgba(139,149,168,0.55); }
 }
 
+/* ────────────────────────────────────────────────────────────────
+   Portal / boot-curtain styles — v2 "Cinematic Boot Sequence".
+   See DESIGN_PROMPT in chat history for the source of truth.
+   ──────────────────────────────────────────────────────────────── */
 @layer components {
-  .card {
-    @apply rounded-xl border border-ink-200 bg-white shadow-card transition-colors
-           dark:border-ink-700 dark:bg-ink-800 dark:shadow-card-dark;
+  /* Deep-space backdrop — radial warm-cool tension instead of flat black. */
+  .portal-deepspace {
+    background: radial-gradient(
+      ellipse at 30% 60%,
+      #0d0a1a 0%,
+      #050505 55%,
+      #0a0505 100%
+    );
   }
-  .card-header {
-    @apply flex items-center justify-between border-b border-ink-200 px-5 py-3
-           dark:border-ink-700;
+
+  /* Subliminal scanline overlay — barely perceptible "system display" feel. */
+  .portal-scanlines {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 2px,
+      rgba(255, 255, 255, 0.03) 2px,
+      rgba(255, 255, 255, 0.03) 3px
+    );
   }
-  .card-body { @apply p-5; }
-  .card-title {
-    @apply text-sm font-semibold uppercase tracking-wider text-ink-500
-           dark:text-ink-400;
+
+  /* Vibrant phase-gradient: ignites from flat to flowing during burn-off. */
+  .vibrant-bg {
+    background: linear-gradient(135deg, #4f46e5, #7c3aed, #f59e0b, #db2777);
+    background-size: 100% 100%;
+    background-position: 0% 50%;
   }
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-ink-200 bg-white
-           px-3.5 py-1.5 text-sm font-medium text-ink-700 transition-colors
-           hover:border-accent hover:text-accent
-           disabled:cursor-not-allowed disabled:opacity-50
-           dark:border-ink-700 dark:bg-ink-800 dark:text-ink-200
-           dark:hover:border-accent dark:hover:text-accent;
+  .vibrant-bg.ignited {
+    animation:
+      vibrantIgnite 2s cubic-bezier(0.65, 0, 0.35, 1) forwards,
+      vibrantFlow 15s ease-in-out 2s infinite;
   }
-  .btn-primary {
-    @apply border-accent bg-accent text-white
-           hover:bg-accent-hover hover:text-white
-           dark:border-accent dark:bg-accent dark:text-white
-           dark:hover:bg-accent-hover dark:hover:text-white;
+
+  .glass-card {
+    background: rgba(255, 255, 255, 0.10);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
+    border: 1px solid rgba(255, 255, 255, 0.20);
   }
-  .chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-ink-200 bg-ink-50
-           px-2.5 py-0.5 font-mono text-[11px] font-medium text-ink-600
-           dark:border-ink-700 dark:bg-ink-800 dark:text-ink-300;
-  }
-  .input {
-    @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-sm
-           text-ink-900 placeholder:text-ink-400
-           focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent
-           dark:border-ink-700 dark:bg-ink-900 dark:text-ink-100
-           dark:placeholder:text-ink-500;
-  }
+
+  .font-display { font-family: "Cabinet Grotesk", "Inter", system-ui, sans-serif; }
+  .font-body    { font-family: "Satoshi", "Inter", system-ui, sans-serif; }
 }
+
+/* ── Idle breathing on the SVG mask glow layers. Prime-number cycle
+       offsets keep indigo + amber desynced for organic life. ─────── */
+@keyframes indigoBreathe {
+  0%, 100% { stroke-opacity: 0.40; }
+  50%      { stroke-opacity: 0.90; }
+}
+.indigo-breathe { animation: indigoBreathe 3s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
+
+@keyframes amberPulse {
+  0%, 100% { opacity: 0.10; }
+  50%      { opacity: 0.25; }
+}
+.amber-pulse { animation: amberPulse 4.7s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
+
+/* ── Phase status dots (1.2s pulse, staggered via animation-delay). ── */
+@keyframes phaseDotPulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1.0; }
+}
+.phase-dot { animation: phaseDotPulse 1.2s ease-in-out infinite; }
+
+/* ── The one-frame muzzle-flash at the boot-ignition moment. ──────── */
+@keyframes portalFlash {
+  0%   { opacity: 0; }
+  40%  { opacity: 0.6; }
+  100% { opacity: 0; }
+}
+
+/* ── Background flow — runs after ignite completes the size expand. ── */
+@keyframes vibrantFlow {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+@keyframes vibrantIgnite {
+  from { background-size: 100% 100%; }
+  to   { background-size: 400% 400%; }
+}
+
+/* ── Hero burn-off — fog → clarity over 1.4s in three timed bands. ── */
+@keyframes heroBurnoff {
+  0%   { filter: blur(60px) brightness(0.3) saturate(0); }
+  28%  { filter: blur(20px) brightness(0.7) saturate(0); }
+  64%  { filter: blur(4px)  brightness(1.0) saturate(0.6); }
+  100% { filter: blur(0)    brightness(1.0) saturate(1.0); }
+}
+.hero-burnoff {
+  filter: blur(60px) brightness(0.3) saturate(0);
+  animation: heroBurnoff 1.4s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+
+/* ── Nav letters appearing left-to-right once boot is ~complete. ──── */
+@keyframes navLetterIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.nav-letter-pending { opacity: 0; }
+.nav-letter-reveal  { opacity: 0; animation: navLetterIn 0.4s cubic-bezier(0.65, 0, 0.35, 1) forwards; }
+
+/* ── Scroll-glyph bounce + a glowing dot, not a flat outline. ──────── */
+@keyframes scrollDotBounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(5px); }
+}
+.scroll-dot { animation: scrollDotBounce 2s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
+
+/* ── Typewriter caret. ───────────────────────────────────────────── */
+@keyframes caretBlink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+.typewriter-caret { animation: caretBlink 1s steps(2, end) infinite; }

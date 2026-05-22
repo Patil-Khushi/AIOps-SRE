@@ -1,0 +1,44 @@
+{
+  "agent": "rca_agent",
+  "catalog_id": "PRS-008",
+  "version": "v0",
+  "description": "Locked-scope v0 covers the slow-product-catalog scenario only. W2 will add multi-scenario cases per the truth-file matrix.",
+  "cases": [
+    {
+      "id": "slow_product_catalog_root_cause",
+      "description": "RCA identifies productCatalogFailure feature flag as the root cause when given the slow-product-catalog triage verdict.",
+      "scenario": "slow-product-catalog",
+      "tags": ["v0", "locked-scope", "feature-flag"],
+      "input": {
+        "scenario_id": "slow-product-catalog",
+        "triage_verdict": {
+          "affected_service": "product-catalog",
+          "severity": "Sev-2",
+          "confidence_score": 0.75,
+          "alert_summary": "product-catalog latency_p95_seconds at 5.2 above threshold 1.0 (source: Prometheus).",
+          "assigned_team": "Platform On-Call",
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-21T10:00:30Z",
+            "created_by": "RA-001",
+            "source_alerts": ["ALT-product-catalog-latency-p95-high"],
+            "decision_trace": [
+              "received alert_id=ALT-product-catalog-latency-p95-high service=product-catalog source=Prometheus",
+              "new alert cluster",
+              "fetched metric bundle: latency_p95_ms=5200, error_rate_5xx=0.0",
+              "severity from rule-based mapping (Sev-2, confidence=0.75)",
+              "assigned to Platform On-Call via CMDB lookup",
+              "generated incident summary"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "affected_service": "product-catalog",
+        "root_cause_contains": "productCatalogFailure",
+        "min_confidence_score": 0.5
+      }
+    }
+  ]
+}
