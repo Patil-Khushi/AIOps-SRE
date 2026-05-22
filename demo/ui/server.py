@@ -45,6 +45,7 @@ except ImportError:
     pass
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -58,7 +59,15 @@ from typing import Any
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
@@ -115,6 +124,18 @@ app = FastAPI(title="Adaptive AIOps — Alert Triage demo", version="0.1.0")
 @app.on_event("startup")
 def _bootstrap_state() -> None:
     init_db()
+
+
+@app.on_event("startup")
+def _warn_if_approval_token_unset() -> None:
+    """HITL-2 (#102): web approve/deny endpoints are gated by
+    ``AIOPS_HITL_APPROVAL_TOKEN``. When unset, anyone reachable by the
+    FastAPI server can resolve any pending Required-HITL request — which
+    would violate CLAUDE.md principle #3. Log a single loud line so the
+    operator knows demo mode is on.
+    """
+    if not os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip():
+        logger.warning("HITL web endpoints are unauthenticated")
 
 
 @app.on_event("startup")
@@ -474,6 +495,36 @@ class ApprovalDecisionRequest(BaseModel):
     reason: str = Field("", description="Optional free-text justification")
 
 
+def _require_approval_token(request: Request) -> None:
+    """Authenticate the web approve/deny endpoints against
+    ``AIOPS_HITL_APPROVAL_TOKEN``.
+
+    Phase 1 of HITL-2 (#102): a lightweight shared-secret bearer-token
+    check.  When the env var is **unset** we accept every request so the
+    current localhost-only demo flow keeps working (the startup hook
+    above logs a loud warning).  When **set**, callers must present
+    ``Authorization: Bearer <token>`` and we compare it with
+    ``hmac.compare_digest`` for constant-time matching.
+
+    All failure modes raise the *same* 401 with the *same* detail so a
+    prober can't tell a missing header from a wrong token.  Phase 2
+    will replace this with OPA-gated identity verification once
+    ``policies/hitl.rego`` is wired up.
+
+    The env var is read on every call (not captured at import) so the
+    operator can rotate the token without restarting the server, and
+    tests can set it per-test without module reloads — matching the
+    pattern used by ``_verify_slack_signature``.
+    """
+    token = os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip()
+    if not token:
+        return
+    auth = request.headers.get("authorization", "")
+    presented = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
+    if not hmac.compare_digest(presented, token):
+        raise HTTPException(status_code=401, detail="invalid approval token")
+
+
 @app.get("/api/approvals")
 def list_approvals(include_resolved: bool = False) -> dict[str, Any]:
     """List pending HITL approval requests (or every request when
@@ -497,7 +548,11 @@ def get_approval(approval_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/approvals/{approval_id}/approve")
-def approve_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str, Any]:
+def approve_request(
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    _auth: None = Depends(_require_approval_token),
+) -> dict[str, Any]:
     try:
         req = get_approval_registry().decide(
             approval_id,
@@ -515,7 +570,11 @@ def approve_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str
 
 
 @app.post("/api/approvals/{approval_id}/deny")
-def deny_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str, Any]:
+def deny_request(
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    _auth: None = Depends(_require_approval_token),
+) -> dict[str, Any]:
     try:
         req = get_approval_registry().decide(
             approval_id,

@@ -190,6 +190,31 @@ If a teammate previously received `.env` through chat:
 
 ---
 
+## Secrets reference
+
+Beyond LLM and ServiceNow credentials, `.env.shared` also carries a small set of
+seam-specific secrets. Keep these in `.env.shared` (encrypted) rather than
+`.env.example` (plaintext) when the value is real:
+
+| Variable | Purpose | Set in |
+|---|---|---|
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM provider auth | `.env.shared` |
+| `AIOPS_SERVICENOW_USER` / `..._PASSWORD` | ServiceNow PDI basic-auth | `.env.shared` |
+| `AIOPS_SLACK_WEBHOOK_URL` | One-way Slack notifications (CHAT-1) | `.env.shared` |
+| `AIOPS_SLACK_SIGNING_SECRET` | Verifies the Slack interactivity callback HMAC | `.env.shared` |
+| `AIOPS_HITL_APPROVAL_TOKEN` | Shared bearer token for `POST /api/approvals/{id}/approve\|deny` (HITL-2, issue #102). When unset, the demo server logs a loud WARNING and accepts every request — only acceptable for a localhost-only demo. When set, the React approver console attaches it as `Authorization: Bearer <token>`; constant-time matched via `hmac.compare_digest`. | `.env.shared` |
+
+Generate a fresh approval token with:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Rotate it the same way as any other shared secret (edit `.env.shared`, commit,
+push, tell teammates to pull and refresh their `.env`).
+
+---
+
 ## Alternative we considered: SOPS + age
 
 For larger teams or stricter compliance, [SOPS](https://github.com/getsops/sops) + [age](https://age-encryption.org/) is the modern equivalent — encrypts per-key (you can re-key without rewriting history) and integrates with cloud KMS. git-crypt is simpler for a 4-person POC and was the explicit ask; revisit SOPS post-POC if the secret count grows or auditors get involved.
