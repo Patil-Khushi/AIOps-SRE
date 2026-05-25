@@ -23,9 +23,6 @@ from __future__ import annotations
 
 import pytest
 
-from aiops.policy import get_gate
-from aiops.tools.observability import jaeger as _jaeger
-
 # Disable embeddings in the test suite by default (#113).
 #
 # Multiple agents (``alert_triage``, ``incident_classifier``) lazily
@@ -50,8 +47,10 @@ from aiops.tools.observability import jaeger as _jaeger
 # monkeypatch ``_get_embed_model`` back to a fake (see
 # ``test_alert_triage_embedding_persistence``); ``monkeypatch.setattr``
 # undoes the override per-test without disturbing this default.
-from agents.alert_triage import agent as _alert_triage_agent  # noqa: E402
-from agents.incident_classifier import agent as _incident_classifier_agent  # noqa: E402
+from agents.alert_triage import agent as _alert_triage_agent
+from agents.incident_classifier import agent as _incident_classifier_agent
+from aiops.policy import get_gate
+from aiops.tools.observability import jaeger as _jaeger
 
 
 def _no_embed_model() -> None:
