@@ -62,6 +62,21 @@ _incident_classifier_agent._get_embed_model = _no_embed_model
 
 
 @pytest.fixture(autouse=True)
+def _disable_auto_triage(monkeypatch):
+    """Disable the auto-triage loop in tests (#130).
+
+    ``demo/ui/server.py`` spawns an asyncio background task on startup
+    that polls Prometheus every 3s and triages new alerts. In tests
+    that boot FastAPI via ``TestClient``, the startup hook would
+    otherwise spawn a real background task, generate test noise, and
+    keep the loop alive for the full test duration. Tests that
+    specifically exercise the loop instantiate ``_AutoTriageLoop``
+    directly rather than going through the startup hook.
+    """
+    monkeypatch.setenv("AIOPS_AUTO_TRIAGE_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_gate_approver():
     """Reset ``HITLGate._approver`` to the fail-closed default around every test.
 
