@@ -49,9 +49,43 @@ agent → registry.call(capability, hitl_context={...})
           ← human approves via Slack callback / web POST
               → ApprovalRegistry.decide → ChatOpsClient.send (audit)
           ← request returned
-      ← approver id (or None on deny / expire)
-   ← Decision(allowed=...) → tool runs or returns ToolResult(ok=False, ...)
+      ← ApproverResult(approver, summary)   (HITL-5, #105)
+   ← Decision(allowed=..., approval=ApprovalSummary | None)
+        → tool runs or returns ToolResult(ok=False, ...)
 ```
+
+## Reading the structured approval outcome (HITL-5)
+
+`Decision.approval` is the canonical place to read structured approval
+metadata. It carries an `ApprovalSummary(id, status, approver, reason)`
+for every REQUIRED-level (and tenant-gated OPTIONAL-level) decision that
+went through the approval flow, and is `None` for NONE-level passes:
+
+```python
+decision = get_gate().check("rca.fix_step.execute", {...})
+if decision.approval is not None:
+    audit_log.write({
+        "approval_id": decision.approval.id,
+        "status":      decision.approval.status,    # "approved" | "denied" | "expired"
+        "approver":    decision.approval.approver,
+        "reason":      decision.approval.reason,
+    })
+```
+
+The pre-HITL-5 back-channel — writing `approval_decision` / `approval_approver` /
+`approval_reason` into the caller's `hitl_context` dict — is **gone**. The
+only writeback into the caller's dict is `pending_approval_id` (intentional
+surface so the agent can render "approval pending: <id>" while the flow
+is in flight).
+
+Legacy approvers that still return a bare `str | None` keep working
+through `_coerce_approver_result` — but `Decision.approval` will be
+`None` for those decisions (the legacy approver didn't supply the
+structured payload). Audit-log consumers should treat `None` on an
+*allowed* decision as "pre-HITL-5 approver, no structured metadata
+available", not as "no approval flow ran". The shim emits a DEBUG log
+whenever it wraps a legacy approval so the migration debt is visible
+in logs.
 
 ## Demo it
 
