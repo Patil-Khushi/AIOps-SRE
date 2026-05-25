@@ -45,6 +45,7 @@ except ImportError:
     pass
 
 import asyncio
+import contextlib
 import hmac
 import json
 import logging
@@ -392,6 +393,122 @@ async def triage_live() -> dict[str, Any]:
     tasks = [asyncio.to_thread(_triage_one, c) for c in candidates]
     results = list(await asyncio.gather(*tasks)) if tasks else []
     return {"count": len(results), "results": results}
+
+
+# ─── DEMO-AUTO-TRIAGE (#130) ─────────────────────────────────────────────
+#
+# Background loop that auto-fires the triage pipeline on any alert that
+# appears in /api/live-alerts and hasn't been triaged yet. Without this,
+# the 6-minute demo path stalls after Inject — alerts sit in /api/live-
+# alerts until the presenter manually clicks "Triage". With it, the
+# chain (alert → triage → classify → ticket → notify → RCA gate) fires
+# automatically.
+
+
+class _AutoTriageLoop:
+    """Periodic poller that triages new alerts as they appear.
+
+    Dedup is by ``alert_id`` against a process-local set. The triage
+    agent has its own idempotency window (see
+    ``agents.alert_triage._IDEMPOTENCY_WINDOW``), so even if the same
+    id slips through, the verdict is suppressed at the agent layer.
+
+    Disabled by default in tests (``AIOPS_AUTO_TRIAGE_ENABLED=false``)
+    so the test suite doesn't generate background traffic.
+    """
+
+    def __init__(self, interval_seconds: float = 3.0) -> None:
+        self._interval = interval_seconds
+        self._task: asyncio.Task[None] | None = None
+        self._seen: set[str] = set()
+
+    def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._task = asyncio.create_task(self._run(), name="auto-triage")
+
+    async def stop(self) -> None:
+        if self._task is None or self._task.done():
+            return
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+    def forget(self, alert_id: str) -> None:
+        """Drop an id from the seen set so the next poll re-triages it.
+
+        Hook for ``/api/scenarios/reset-all`` — when a scenario is reset
+        and re-injected, we want the new alert to flow through even
+        though its id may match the previous one.
+        """
+        self._seen.discard(alert_id)
+
+    def forget_all(self) -> None:
+        self._seen.clear()
+
+    async def _run(self) -> None:
+        logger.info("auto-triage loop started (interval=%.1fs)", self._interval)
+        while True:
+            try:
+                payload = await asyncio.to_thread(live_alerts)
+                candidates = payload.get("alerts", [])
+                fresh = [c for c in candidates if c.get("alert_id") not in self._seen]
+                if fresh:
+                    for c in fresh:
+                        aid = c.get("alert_id")
+                        if aid:
+                            self._seen.add(aid)
+                    tasks = [asyncio.to_thread(self._safe_triage, c) for c in fresh]
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    logger.info(
+                        "auto-triage processed %d new alert(s); seen=%d",
+                        len(fresh),
+                        len(self._seen),
+                    )
+            except asyncio.CancelledError:
+                logger.info("auto-triage loop cancelled")
+                raise
+            except Exception:
+                logger.exception("auto-triage loop iteration failed")
+            try:
+                await asyncio.sleep(self._interval)
+            except asyncio.CancelledError:
+                logger.info("auto-triage loop cancelled")
+                return
+
+    @staticmethod
+    def _safe_triage(candidate: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return triage_alert(TriageRequest(alert=candidate))
+        except HTTPException as exc:
+            logger.warning(
+                "auto-triage skipped alert %s: %s",
+                candidate.get("alert_id"),
+                exc.detail,
+            )
+            return {"error": exc.detail, "alert": candidate}
+        except Exception:
+            logger.exception("auto-triage failed on alert %s", candidate.get("alert_id"))
+            return {"error": "internal", "alert": candidate}
+
+
+_AUTO_TRIAGE = _AutoTriageLoop(
+    interval_seconds=float(os.environ.get("AIOPS_AUTO_TRIAGE_INTERVAL_SECONDS", "3"))
+)
+
+
+@app.on_event("startup")
+async def _start_auto_triage() -> None:
+    enabled = os.environ.get("AIOPS_AUTO_TRIAGE_ENABLED", "true").lower() == "true"
+    if not enabled:
+        logger.info("auto-triage loop disabled via AIOPS_AUTO_TRIAGE_ENABLED")
+        return
+    _AUTO_TRIAGE.start()
+
+
+@app.on_event("shutdown")
+async def _stop_auto_triage() -> None:
+    await _AUTO_TRIAGE.stop()
 
 
 class RcaRequest(BaseModel):
@@ -1235,6 +1352,12 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
     result = _toggle_flagd_flag(s["flag"], "off")
+    # DEMO-AUTO-TRIAGE (#130): drop this scenario's alert ids from the
+    # auto-triage seen set so a re-inject of the same scenario fires the
+    # chain again. The Prometheus alert_id is stable per (alertname,
+    # instance) so the previous id is the same — without this, the loop
+    # would silently dedupe the re-inject.
+    _AUTO_TRIAGE.forget_all()
     return {**s, "scenario_id": scenario_id, **result}
 
 
@@ -1247,6 +1370,8 @@ def reset_all_scenarios() -> dict[str, Any]:
     res = get_registry().call("feature_flags.reset_all", flags=flag_names)
     if not res.ok:
         raise HTTPException(status_code=502, detail=res.error or "reset_all failed")
+    # DEMO-AUTO-TRIAGE (#130): see comment in reset_scenario above.
+    _AUTO_TRIAGE.forget_all()
     data = res.data or {}
     return {
         "reset_count": data.get("reset_count", 0),
