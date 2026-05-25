@@ -325,6 +325,7 @@ def save_notification(decision: Any, verdict_id: int) -> int:
 
     row = NotificationRow(
         verdict_id=verdict_id,
+        target=f"chatops:{decision.channel}",
         routed_at=getattr(decision, "decided_at", None) or datetime.now(UTC),
         channel=decision.channel,
         # ``chat_severity`` is the chatops enum — accept either the enum or
