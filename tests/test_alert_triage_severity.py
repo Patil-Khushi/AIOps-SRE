@@ -220,9 +220,7 @@ def test_scenario_active_payment_failure_forces_sev1(clean_state):
     assert v["confidence_score"] >= 0.9
 
 
-def test_scenario_active_unknown_flag_falls_through_to_default_logic(
-    clean_state, monkeypatch
-):
+def test_scenario_active_unknown_flag_falls_through_to_default_logic(clean_state, monkeypatch):
     """An unmapped flag (not in the demo-critical list) must NOT take the
     override path — it should drop through to the normal classifier so
     we don't accidentally page on every synthetic alert."""
