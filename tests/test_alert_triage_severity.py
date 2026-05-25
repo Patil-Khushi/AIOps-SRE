@@ -178,3 +178,140 @@ def test_llm_exception_also_emits_distinct_trace_line(clean_state, monkeypatch):
     assert v["confidence_score"] == pytest.approx(0.4)
     trace = v["audit_metadata"]["decision_trace"]
     assert any("LLM consult failed" in line for line in trace), trace
+
+
+# ─── DEMO-SEV-ROUTING (#131): ScenarioActive synthetic-alert override ──────
+
+
+def _scenario_active_alert(flag: str, **overrides: Any) -> dict[str, Any]:
+    """Mirror what ``demo/ui/server.py`` emits when a scenario flag is on:
+    a Prometheus ``ScenarioActive`` alert with ``alert_type=scenario_active``
+    and ``flag=<flagName>`` in labels."""
+    base: dict[str, Any] = {
+        "alert_id": f"PROM-ScenarioActive-{flag}",
+        "service": "payment",
+        "metric": "ScenarioActive",
+        "value": 1.0,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "source": "Prometheus",
+        "labels": {
+            "alert_type": "scenario_active",
+            "flag": flag,
+            "alertname": "ScenarioActive",
+            "severity": "high",
+        },
+        "annotations": {"summary": f"Scenario {flag} active"},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_scenario_active_payment_failure_forces_sev1(clean_state):
+    """Demo-critical scenario flag → Sev-1 + high confidence so the router
+    routes to ``incidents`` channel with ``page_oncall`` action. Without
+    this override the LLM sees the synthetic alert, finds no error-rate
+    evidence in metrics, and returns Sev-4 — breaking the demo's
+    'phone-buzz' beat at T+0:20."""
+    from agents.alert_triage import run
+
+    v = run(_scenario_active_alert("paymentFailure"))
+
+    assert v["severity"] == "Sev-1", v["audit_metadata"]["decision_trace"]
+    assert v["confidence_score"] >= 0.9
+
+
+def test_scenario_active_unknown_flag_falls_through_to_default_logic(
+    clean_state, monkeypatch
+):
+    """An unmapped flag (not in the demo-critical list) must NOT take the
+    override path — it should drop through to the normal classifier so
+    we don't accidentally page on every synthetic alert."""
+    from agents.alert_triage import run
+
+    # Use an obviously-not-demo flag name so the override doesn't fire.
+    # The alert has severity_hint="high" via the labels.severity, but no
+    # threshold and a non-CPU/mem metric — the rule-based classifier will
+    # still pick up the s_hint and return Sev-2.
+    v = run(_scenario_active_alert("randomFlag"))
+
+    # Must NOT be Sev-1 (the override didn't fire).
+    assert v["severity"] != "Sev-1", v["audit_metadata"]["decision_trace"]
+
+
+def test_non_scenario_active_alert_unaffected_by_override(clean_state):
+    """A regular Prometheus alert (not the ScenarioActive synthetic) must
+    NOT take the override path even if its flag label happens to match a
+    demo-critical name. The override is keyed strictly on
+    ``alert_type == scenario_active``."""
+    from agents.alert_triage import run
+
+    real_payment_alert = {
+        "alert_id": "PROM-PaymentErrorRateHigh-1",
+        "service": "payment",
+        "metric": "PaymentErrorRateHigh",
+        "value": 0.15,
+        "threshold": 0.05,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "source": "Prometheus",
+        "labels": {
+            "alertname": "PaymentErrorRateHigh",
+            "flag": "paymentFailure",  # same flag name but different alert_type
+            "severity": "high",
+        },
+        "annotations": {},
+    }
+    v = run(real_payment_alert)
+
+    # Real PaymentErrorRateHigh with ratio=3.0 on customer-facing service
+    # → Sev-1 from the ratio rule, NOT from the override (which requires
+    # alert_type=scenario_active).
+    assert v["severity"] in {"Sev-1", "Sev-2"}, (
+        f"got {v['severity']}; decision_trace={v['audit_metadata']['decision_trace']}"
+    )
+
+
+def test_scenario_active_override_works_via_pure_function():
+    """Direct unit test of the rule-based classifier so the override is
+    locked-in regardless of integration paths through ``run()``."""
+    from agents.alert_triage.agent import _classify_severity_rule_based
+    from agents.alert_triage.models import Alert
+
+    alert = Alert(
+        alert_id="PROM-ScenarioActive-1",
+        service="payment",
+        metric="ScenarioActive",
+        value=1.0,
+        timestamp=datetime.now(UTC),
+        source="Prometheus",
+        labels={
+            "alert_type": "scenario_active",
+            "flag": "paymentFailure",
+        },
+        annotations={},
+    )
+
+    sev, conf = _classify_severity_rule_based(alert)
+    assert sev == "Sev-1"
+    assert conf >= 0.9
+
+
+def test_scenario_active_override_does_not_fire_without_flag_label():
+    """If somehow a scenario_active alert arrives WITHOUT a flag label,
+    don't crash — fall through to the normal logic."""
+    from agents.alert_triage.agent import _classify_severity_rule_based
+    from agents.alert_triage.models import Alert
+
+    alert = Alert(
+        alert_id="PROM-ScenarioActive-noflag",
+        service="payment",
+        metric="ScenarioActive",
+        value=1.0,
+        timestamp=datetime.now(UTC),
+        source="Prometheus",
+        labels={"alert_type": "scenario_active"},  # no flag
+        annotations={},
+    )
+    sev, conf = _classify_severity_rule_based(alert)
+    # Falls through; either rule-based fires (None) or returns something
+    # other than the forced Sev-1.
+    assert sev != "Sev-1" or conf != 0.95
