@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import httpx
@@ -14,14 +15,38 @@ _API_PREFIX = os.environ.get("AIOPS_JAEGER_API_PREFIX", "/jaeger/ui")
 # The OTel demo's Jaeger v2 config sets ``base_path: /jaeger/ui`` so query
 # endpoints live at ``/jaeger/ui/api/*``. Override to ``""`` for vanilla Jaeger.
 _TIMEOUT = float(os.environ.get("AIOPS_JAEGER_TIMEOUT", "10"))
+# Connect-phase cap (#113). When the kubectl port-forward to Jaeger is down
+# — common during tests and CI — a long default connect timeout cascades
+# across multiple Jaeger calls per triage and can stall the full pytest
+# suite. Keep it short so an unreachable Jaeger degrades gracefully.
+_CONNECT_TIMEOUT = float(os.environ.get("AIOPS_JAEGER_CONNECT_TIMEOUT", "2"))
+
+# Process-local circuit breaker (#113). The connect timeout above is not
+# enforced reliably on every platform (notably Windows, where a refused
+# localhost connect can stall longer than ``connect=...`` suggests). After
+# one failure, short-circuit subsequent calls for ``_CIRCUIT_OPEN_SECONDS``
+# so a single triage that fans out to N Jaeger calls doesn't multiply the
+# wall-clock cost by N. The triage agent already handles ``ToolResult.ok=False``
+# gracefully, so callers see a fast "trace_ctx: error" rather than a hang.
+_CIRCUIT_OPEN_SECONDS = float(os.environ.get("AIOPS_JAEGER_CIRCUIT_OPEN_SECONDS", "30"))
+_circuit_open_until: float = 0.0
 
 
 def _get(path: str, params: dict[str, str] | None = None) -> ToolResult:
+    global _circuit_open_until
+    now = time.monotonic()
+    if now < _circuit_open_until:
+        return ToolResult(ok=False, error="HTTPError: circuit open (Jaeger unreachable)")
     try:
-        r = httpx.get(f"{_URL}{_API_PREFIX}{path}", params=params, timeout=_TIMEOUT)
+        r = httpx.get(
+            f"{_URL}{_API_PREFIX}{path}",
+            params=params,
+            timeout=httpx.Timeout(_TIMEOUT, connect=_CONNECT_TIMEOUT),
+        )
         r.raise_for_status()
         body = r.json()
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, OSError) as exc:
+        _circuit_open_until = now + _CIRCUIT_OPEN_SECONDS
         return ToolResult(ok=False, error=f"HTTPError: {exc}")
     return ToolResult(ok=True, data=body, metadata={"provider": "jaeger", "url": _URL})
 
