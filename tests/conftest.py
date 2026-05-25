@@ -12,8 +12,11 @@ rely on the fail-closed default — `test_hitl_enforcement` and a smoke
 test in `test_smoke.py` are the two known cases — block for the full
 600s budget instead of failing immediately, stalling the whole suite.
 
-Snapshotting and restoring per-test makes the gate's approver hermetic
-without forcing every test to write its own setup/teardown.
+Resetting the gate to ``_no_approver`` at both ends of every test makes
+the gate's approver hermetic without forcing every test to write its
+own setup/teardown.  Unconditional reset (rather than snapshot/restore)
+keeps the fixture simple and side-steps the ordering hazard of trying
+to capture and replay whatever the previous test left behind.
 """
 
 from __future__ import annotations
@@ -33,24 +36,24 @@ from aiops.tools.observability import jaeger as _jaeger
 # walks every agent and would otherwise pay the load cost per agent.
 #
 # Each agent already has a documented fallback (rule-based dedup /
-# classification) for the "embeddings extra not installed" path. We
-# pin that fallback by pre-setting each agent's module-level
-# ``_EMBED_MODEL = False`` at conftest load time — the package may
-# be installed (test env has the embeddings extra) but each agent
-# treats ``False`` as "unavailable" and never tries to load.
+# classification) when ``_get_embed_model()`` returns ``None``. We
+# pin that fallback by replacing the ``_get_embed_model`` function
+# on each agent module at conftest load time so it unconditionally
+# returns ``None`` — the package may be installed (test env has the
+# embeddings extra) but each agent treats ``None`` as "unavailable"
+# and never tries to load. We override the function rather than the
+# ``_EMBED_MODEL`` cache sentinel because ``reset_state()`` paths in
+# incident_classifier reset ``_EMBED_MODEL = None`` between cases and
+# would otherwise re-trigger a load.
 #
-# Tests that specifically need to exercise the embeddings path can
-# monkeypatch the sentinel back to ``None`` and pay the cost explicitly
-# with their own ``@pytest.mark.timeout(120)``.
+# Tests that specifically need to exercise the embeddings path
+# monkeypatch ``_get_embed_model`` back to a fake (see
+# ``test_alert_triage_embedding_persistence``); ``monkeypatch.setattr``
+# undoes the override per-test without disturbing this default.
 from agents.alert_triage import agent as _alert_triage_agent  # noqa: E402
 from agents.incident_classifier import agent as _incident_classifier_agent  # noqa: E402
 
 
-# Override the function itself (not just the module variable) so callers
-# like the incident_classifier's ``reset_state()`` — which resets
-# ``_EMBED_MODEL = None`` between eval cases — can't re-trigger a model
-# load. Returning None is the documented sentinel for "embeddings
-# unavailable; use the rule-based fallback".
 def _no_embed_model() -> None:
     return None
 
