@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from agents.alert_triage import AuditMetadata, TriageVerdict
-from agents.notification_router import RoutingDecision, decide, route
+from agents.notification_router import RoutingDecision, RoutingOutcome, decide, route
 from aiops.tools.chatops import ChatOpsClient, Severity, get_client
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -156,7 +156,7 @@ def test_route_sends_one_chatmessage_through_the_seam(_isolated_chatops: ChatOps
     sink = _RecordingAdapter()
     _isolated_chatops.register(sink)
 
-    route(_verdict(severity="Sev-1"), now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC))
+    outcome = route(_verdict(severity="Sev-1"), now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC))
 
     assert len(sink.received) == 1
     msg = sink.received[0]
@@ -165,17 +165,42 @@ def test_route_sends_one_chatmessage_through_the_seam(_isolated_chatops: ChatOps
     assert "Payment" in msg.body or "payment" in msg.body
     assert msg.service == "payment"
 
+    assert list(outcome.deliveries) == ["_RecordingAdapter"]
+    delivery = outcome.deliveries["_RecordingAdapter"]
+    assert delivery.ok is True
+    assert delivery.error is None
+
 
 def test_route_propagates_incident_id(_isolated_chatops: ChatOpsClient):
     sink = _RecordingAdapter()
     _isolated_chatops.register(sink)
 
-    route(
+    outcome = route(
         _verdict(severity="Sev-2", incident_id="INC-1234"),
         now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC),
     )
 
     assert sink.received[0].incident_id == "INC-1234"
+    assert outcome.deliveries["_RecordingAdapter"].ok is True
+
+
+def test_route_records_adapter_failures_and_continues(_isolated_chatops: ChatOpsClient):
+    sink = _RecordingAdapter()
+
+    class BadAdapter:
+        def send(self, msg):
+            raise RuntimeError("boom")
+
+    _isolated_chatops.register(sink)
+    _isolated_chatops.register(BadAdapter())
+
+    outcome = route(_verdict(severity="Sev-1"), now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC))
+
+    assert len(sink.received) == 1
+    assert outcome.deliveries["_RecordingAdapter"].ok is True
+    assert outcome.deliveries["_RecordingAdapter"].error is None
+    assert outcome.deliveries["BadAdapter"].ok is False
+    assert "RuntimeError: boom" in outcome.deliveries["BadAdapter"].error
 
 
 def test_suppressed_verdict_does_not_reach_chatops(_isolated_chatops: ChatOpsClient):
@@ -186,11 +211,12 @@ def test_suppressed_verdict_does_not_reach_chatops(_isolated_chatops: ChatOpsCli
     v = _verdict(severity="Sev-2")
     v = v.model_copy(update={"status": "Suppressed"})
 
-    decision = route(v, now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC))
+    outcome = route(v, now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC))
 
     assert sink.received == []
-    assert decision.actions == []
-    assert decision.channel == "suppressed"
+    assert outcome.decision.actions == []
+    assert outcome.decision.channel == "suppressed"
+    assert outcome.deliveries == {}
 
 
 # ─── golden.json regression ────────────────────────────────────────────────

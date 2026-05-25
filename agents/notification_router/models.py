@@ -16,11 +16,12 @@ Why a separate decision object instead of just returning ``ChatMessage``:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from aiops.tools.chatops import Severity
+from aiops.tools.chatops import DeliveryResult, Severity
 
 
 class RoutingDecision(BaseModel):
@@ -50,3 +51,9 @@ class RoutingDecision(BaseModel):
     reason: str
     audit_trace: list[str] = Field(default_factory=list)
     decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass
+class RoutingOutcome:
+    decision: RoutingDecision
+    deliveries: dict[str, "DeliveryResult"]

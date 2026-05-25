@@ -26,8 +26,11 @@ def main() -> None:
         print("RA-005: expected TriageVerdict JSON on stdin", file=sys.stderr)
         sys.exit(2)
     verdict = TriageVerdict.model_validate_json(raw)
-    decision = route(verdict) if send else decide(verdict)
-    print(decision.model_dump_json(indent=2))
+    if send:
+        outcome = route(verdict)
+        print(outcome.decision.model_dump_json(indent=2))
+    else:
+        print(decide(verdict).model_dump_json(indent=2))
 
 
 if __name__ == "__main__":

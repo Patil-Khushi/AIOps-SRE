@@ -10,6 +10,6 @@ Public surface::
 """
 
 from .agent import decide, route, run
-from .models import RoutingDecision
+from .models import RoutingDecision, RoutingOutcome
 
-__all__ = ["RoutingDecision", "decide", "route", "run"]
+__all__ = ["RoutingDecision", "RoutingOutcome", "decide", "route", "run"]

@@ -72,6 +72,14 @@ class ChatMessage:
     interactive: InteractivePrompt | None = None
 
 
+@dataclass
+class DeliveryResult:
+    adapter: str
+    ok: bool
+    error: str | None = None
+    latency_ms: int | None = None
+
+
 def to_record(msg: ChatMessage) -> dict[str, Any]:
     """Serialize a ``ChatMessage`` to a JSON-friendly dict.
 
