@@ -126,10 +126,10 @@ def test_embedding_similarity_match_suppresses_paraphrase(clean_state, monkeypat
     test reinstalls a fake so the embedding path is exercised end-to-end
     without the real model.
     """
+    import numpy as np
+
     from agents.alert_triage import agent as agent_mod
     from agents.alert_triage import run
-
-    import numpy as np
 
     class _FakeEmbedModel:
         @staticmethod
