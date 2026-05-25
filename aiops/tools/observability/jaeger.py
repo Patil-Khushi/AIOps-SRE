@@ -32,6 +32,19 @@ _CIRCUIT_OPEN_SECONDS = float(os.environ.get("AIOPS_JAEGER_CIRCUIT_OPEN_SECONDS"
 _circuit_open_until: float = 0.0
 
 
+def _reset_circuit_for_tests() -> None:
+    """Reset the circuit breaker. Test seam only (#113).
+
+    The breaker is process-local module state, so it survives across pytest
+    test boundaries — a test that trips it (e.g. on a mocked socket failure)
+    would cause the next 30s of tests to short-circuit even when their own
+    httpx mocks are set to succeed.  ``tests/conftest.py`` calls this in an
+    autouse fixture so the breaker is fresh per-test.
+    """
+    global _circuit_open_until
+    _circuit_open_until = 0.0
+
+
 def _get(path: str, params: dict[str, str] | None = None) -> ToolResult:
     global _circuit_open_until
     now = time.monotonic()
@@ -45,6 +58,13 @@ def _get(path: str, params: dict[str, str] | None = None) -> ToolResult:
         )
         r.raise_for_status()
         body = r.json()
+    # Catch OSError as well as httpx errors so socket-level failures
+    # (ConnectionRefusedError, OSError on Windows when no listener is
+    # bound) also trip the breaker.  Intentionally aggressive for the
+    # demo path: a transient hiccup blocks Jaeger for 30s, which is
+    # cheaper than the alternative of stalling every triage on a real
+    # outage.  Tune ``AIOPS_JAEGER_CIRCUIT_OPEN_SECONDS`` if a real
+    # eval run needs continuous access.
     except (httpx.HTTPError, OSError) as exc:
         _circuit_open_until = now + _CIRCUIT_OPEN_SECONDS
         return ToolResult(ok=False, error=f"HTTPError: {exc}")

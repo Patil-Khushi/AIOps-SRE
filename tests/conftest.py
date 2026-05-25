@@ -21,7 +21,42 @@ from __future__ import annotations
 import pytest
 
 from aiops.policy import get_gate
-from aiops.policy.gate import _no_approver
+from aiops.tools.observability import jaeger as _jaeger
+
+# Disable embeddings in the test suite by default (#113).
+#
+# Multiple agents (``alert_triage``, ``incident_classifier``) lazily
+# load an 80MB ``sentence-transformers`` model the first time a method
+# that needs embeddings runs. The load is a hefty HTTPS download on
+# cold cache and a multi-second mmap on warm cache, blowing past the
+# 60s pytest-timeout in either case. The eval harness in particular
+# walks every agent and would otherwise pay the load cost per agent.
+#
+# Each agent already has a documented fallback (rule-based dedup /
+# classification) for the "embeddings extra not installed" path. We
+# pin that fallback by pre-setting each agent's module-level
+# ``_EMBED_MODEL = False`` at conftest load time — the package may
+# be installed (test env has the embeddings extra) but each agent
+# treats ``False`` as "unavailable" and never tries to load.
+#
+# Tests that specifically need to exercise the embeddings path can
+# monkeypatch the sentinel back to ``None`` and pay the cost explicitly
+# with their own ``@pytest.mark.timeout(120)``.
+from agents.alert_triage import agent as _alert_triage_agent  # noqa: E402
+from agents.incident_classifier import agent as _incident_classifier_agent  # noqa: E402
+
+
+# Override the function itself (not just the module variable) so callers
+# like the incident_classifier's ``reset_state()`` — which resets
+# ``_EMBED_MODEL = None`` between eval cases — can't re-trigger a model
+# load. Returning None is the documented sentinel for "embeddings
+# unavailable; use the rule-based fallback".
+def _no_embed_model() -> None:
+    return None
+
+
+_alert_triage_agent._get_embed_model = _no_embed_model
+_incident_classifier_agent._get_embed_model = _no_embed_model
 
 
 @pytest.fixture(autouse=True)
@@ -39,8 +74,26 @@ def _hermetic_gate_approver():
     test that escaped its own cleanup can't taint the next test's setup.
     """
     gate = get_gate()
-    gate.set_approver(_no_approver)
+    gate.reset_approver()
     try:
         yield
     finally:
-        gate.set_approver(_no_approver)
+        gate.reset_approver()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_jaeger_circuit():
+    """Reset the Jaeger circuit breaker around every test (#113).
+
+    The breaker is module-level process state that survives test
+    boundaries. A test that trips it (real socket failure or a mocked
+    one) would otherwise short-circuit Jaeger calls in the next 30s of
+    tests — including any test that monkeypatches ``httpx.get`` to
+    succeed. Reset at both ends so the breaker can't leak in either
+    direction.
+    """
+    _jaeger._reset_circuit_for_tests()
+    try:
+        yield
+    finally:
+        _jaeger._reset_circuit_for_tests()

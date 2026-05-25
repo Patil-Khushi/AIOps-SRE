@@ -195,9 +195,21 @@ class HITLGate:
         Used by :func:`aiops.policy.install_default_approver` to wire the
         chatops-bridged ``ApprovalRequester`` into the gate at startup.
         Tests use it to install fakes/stubs without reaching into private
-        state.  Passing ``_no_approver`` restores the fail-closed default.
+        state.  Passing :func:`_no_approver` restores the fail-closed default;
+        prefer :meth:`reset_approver` for that case so callers don't need
+        to import the private symbol.
         """
         self._approver = fn
+
+    def reset_approver(self) -> None:
+        """Restore the fail-closed default approver (#113).
+
+        Tests use this to wipe global gate state between cases without
+        importing :func:`_no_approver` directly.  Production code rarely
+        needs this — the demo server installs its real approver at
+        startup and keeps it for the lifetime of the process.
+        """
+        self._approver = _no_approver
 
     @property
     def approver(self) -> ApproverFn:
