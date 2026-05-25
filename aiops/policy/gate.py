@@ -92,6 +92,30 @@ class HITLGate:
         self._levels = dict(DEFAULT_LEVELS, **(levels or {}))
         self._approver = approver
 
+    # ─── public approver accessors (HITL-4, #104) ───────────────────────
+    #
+    # Phase 1 wired the chatops-bridging approver into the gate by poking
+    # ``gate._approver = ...`` from a module-level installer.  Pragmatic
+    # at the time, but it tied the installer to private state and made
+    # the gate awkward to subclass / mock from tests.  The setter below
+    # is the supported way to swap the approver; the legacy attribute is
+    # still readable so any not-yet-migrated callers don't break.
+
+    def set_approver(self, fn: ApproverFn) -> None:
+        """Replace the gate's approver function.
+
+        Used by :func:`aiops.policy.install_default_approver` to wire the
+        chatops-bridged ``ApprovalRequester`` into the gate at startup.
+        Tests use it to install fakes/stubs without reaching into private
+        state.  Passing ``_no_approver`` restores the fail-closed default.
+        """
+        self._approver = fn
+
+    @property
+    def approver(self) -> ApproverFn:
+        """The currently installed approver function (read-only)."""
+        return self._approver
+
     def level_for(self, action: str) -> AutonomyLevel:
         if action in self._levels:
             return self._levels[action]

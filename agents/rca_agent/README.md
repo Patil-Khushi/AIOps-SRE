@@ -14,18 +14,42 @@ itself).
 | HITL level | **Required** for every fix step (per catalog + Solution Design slide 10) |
 | Inputs | `RCAInput` = `{ triage_verdict: <RA-001 dict>, scenario_id?: str }` |
 | Outputs | `RCAVerdict` — see [models.py](models.py) |
-| LLM | via `aiops.llm.complete` (provider-agnostic) |
+| LLM | via `aiops.llm.complete` — pinned to **Anthropic Claude Sonnet 4.6** through the Azure AI Foundry deployment (see "Why not Azure OpenAI" below) |
 | Deterministic fallback | yes — slow-product-catalog truth-file-derived verdict |
 
 ## v0 scope (locked — see [DEMO_PLAN.md](../../DEMO_PLAN.md))
 
 - Single scenario: `slow-product-catalog`
-- Single prompt template (`SYSTEM_PROMPT_V1` in [prompts.py](prompts.py))
+- Single prompt template (`SYSTEM_PROMPT_V2` in [prompts.py](prompts.py))
 - One golden case ([evals/golden.json](evals/golden.json))
 - Pass-rate target: ≥ 0.6 in W1, ≥ 0.85 in W2 after prompt tuning
 - **No retrieval phase** (W2)
 - **No safety.py command allow-list** (W2)
 - **No fix-step execution** (post-POC — that's Auto-Healer / Runbook Executor)
+
+## Why not Azure OpenAI for this agent
+
+The platform default is Azure OpenAI (`gpt-5`) and that works fine for the
+lighter agents (alert_triage, classifier). The RCA agent gets the **full**
+decision-trace from RA-001 fed into its prompt, which has the structural
+shape of clinical-lab report content — tagged IDs, parenthesized severity
+scores, biomarker-shaped metric labels. Azure's content filter (tuned for
+regulated tenants) classifies that as `self_harm: severity=medium` and
+deterministically rejects the call.
+
+Per-agent provider override solves it. The agent calls
+`aiops.llm.complete(provider="anthropic", model="claude-sonnet-4-6", ...)`,
+routed through the same Foundry endpoint your Azure resource already hosts.
+Two env vars exposed for switching back if needed:
+
+```bash
+AIOPS_RCA_LLM_PROVIDER  # default: anthropic
+AIOPS_RCA_LLM_MODEL     # default: claude-sonnet-4-6
+```
+
+The `ANTHROPIC_BASE_URL` (Foundry endpoint) carries forward from the global
+`.env`. The Anthropic SDK is installed via `uv sync --extra llm-anthropic`
+(included in `--extra dev`).
 
 ## Run locally
 

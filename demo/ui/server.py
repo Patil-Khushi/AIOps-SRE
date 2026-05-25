@@ -23,7 +23,29 @@ import Prometheus / Jaeger / Kubernetes clients directly.
 
 from __future__ import annotations
 
+# Make Python's ssl module use the OS trust store (Windows / macOS) so HTTPS
+# calls from httpx, openai SDK, etc. accept corporate-proxy re-signed certs
+# (Zscaler / Netskope / etc.). Without this, every outbound HTTPS from the
+# demo server fails with "CERTIFICATE_VERIFY_FAILED" on machines behind a
+# TLS-inspecting proxy — the OS already trusts the corporate CA, but
+# Python's bundled certifi store doesn't. Must run BEFORE any module that
+# opens an SSL connection (httpx, openai, etc.).
+#
+# truststore is a hard dep in pyproject.toml, so the ImportError branch is
+# theoretically unreachable. Kept defensive intentionally: if a future
+# slim/container build trims optional deps or a fresh checkout runs the
+# server before `uv sync`, the demo should still boot (with stock certifi)
+# instead of crashing the FastAPI startup. The try/except also keeps this
+# block a single self-contained import for ruff's E402 rule.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -31,6 +53,8 @@ import re
 import subprocess
 import threading
 import uuid
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +62,15 @@ from typing import Any
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
@@ -62,6 +94,7 @@ from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
+from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
     ApprovalError,
@@ -78,6 +111,7 @@ from aiops.tools import (  # noqa: E402
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
+from aiops.tools.chatops.adapters.pagerduty import PagerDutyAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
@@ -90,43 +124,100 @@ FIXTURES_PATH = (
 )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup wiring for the demo UI.
+def _warn_if_approval_token_unset() -> None:
+    """HITL-2 (#102): web approve/deny endpoints are gated by
+    AIOPS_HITL_APPROVAL_TOKEN. When unset, anyone reachable by the FastAPI
+    server can resolve any pending Required-HITL request — which would
+    violate CLAUDE.md principle #3. Log a single loud line so the operator
+    knows demo mode is on."""
+    if not os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip():
+        logger.warning("HITL web endpoints are unauthenticated")
 
-    Replaces three previous ``@app.on_event("startup")`` hooks (deprecated
-    since FastAPI 0.104). Order matches the original declaration order:
 
-    1. ``init_db()`` so any later step that persists has somewhere to write.
-    2. HITL approval listener + default approver — the listener must register
-       before any approval is created so the "created" event reaches the
-       sinks registered in step 3.
-    3. Chatops adapters: JSONL audit log (always) + Slack webhook (opt-in via
-       ``AIOPS_SLACK_WEBHOOK_URL``).
-    4. WebSocket chatops adapter — must run inside the asyncio loop so
-       ``asyncio.get_running_loop()`` resolves to the server's loop. This is
-       why the lifespan is ``async``.
-    """
-    init_db()
+def _register_chatops_adapters() -> None:
+    """Register the chatops sinks (JSONL audit log + Slack + PagerDuty).
+    Idempotent by adapter class so re-running startup (tests, hot-reload)
+    does not register duplicate sinks of the same kind. Without this guard
+    the same audit JSON line lands twice per send()."""
+    client = get_chatops_client()
+    registered_kinds = {type(a) for a in client.adapters}
 
-    install_chatops_listener()
-    install_default_approver()
-
-    audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
-    get_chatops_client().register(JsonFileChatOpsAdapter(audit_path))
-    logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
+    if JsonFileChatOpsAdapter not in registered_kinds:
+        audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
+        client.register(JsonFileChatOpsAdapter(audit_path))
+        logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
 
     slack_url = os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip()
-    if slack_url:
+    if slack_url and SlackWebhookAdapter not in registered_kinds:
         try:
-            get_chatops_client().register(SlackWebhookAdapter(slack_url))
+            client.register(SlackWebhookAdapter(slack_url))
             logger.info("chatops: registered slack webhook adapter")
         except ValueError as exc:
             logger.warning("chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping", exc)
 
+    pd_key = os.environ.get("AIOPS_PAGERDUTY_INTEGRATION_KEY", "").strip()
+    if pd_key and PagerDutyAdapter not in registered_kinds:
+        try:
+            client.register(PagerDutyAdapter(pd_key))
+            logger.info("chatops: registered pagerduty adapter (page_oncall actions only)")
+        except ValueError as exc:
+            logger.warning(
+                "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping", exc
+            )
+
+
+def _ensure_hitl_agent_pool() -> None:
+    """HITL-3 (#103): recreate the demo agent pool if a prior FastAPI
+    shutdown closed it. Matters for tests that open more than one
+    TestClient context against the same module; in production this is a
+    no-op on the first (and only) startup."""
+    global _HITL_AGENT_POOL
+    if _HITL_AGENT_POOL._shutdown:
+        _HITL_AGENT_POOL = _new_hitl_agent_pool()
+
+
+def _shutdown_hitl_agent_pool() -> None:
+    """HITL-3 (#103): drain the demo agent pool on app shutdown rather
+    than relying on the concurrent.futures atexit hook. ``wait=False``
+    because demo agents can be blocked on the HITL gate for up to 900s;
+    ``cancel_futures`` drops queued work that hasn't started. Running
+    workers are daemons, so they don't keep the process alive."""
+    _HITL_AGENT_POOL.shutdown(wait=False, cancel_futures=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup + shutdown wiring for the demo UI.
+
+    Replaces six previous ``@app.on_event`` hooks (five startup + one
+    shutdown, all deprecated since FastAPI 0.104). Order matters:
+
+    1. ``init_db()`` so any later step that persists has somewhere to write.
+    2. ``_warn_if_approval_token_unset()`` — HITL-2 (#102).
+    3. HITL approval listener + default approver — the listener must register
+       before any approval is created so the "created" event reaches the
+       sinks registered in step 4.
+    4. ``_register_chatops_adapters()`` — JSONL audit log (always) + Slack
+       webhook + PagerDuty (both opt-in via env). Idempotent.
+    5. ``bootstrap_websocket_adapter()`` — must run inside the asyncio loop
+       so ``asyncio.get_running_loop()`` resolves to the server's loop.
+       This is why the lifespan is ``async``.
+    6. ``_ensure_hitl_agent_pool()`` — HITL-3 (#103).
+
+    Teardown (post-yield):
+    - ``_shutdown_hitl_agent_pool()`` — HITL-3 (#103).
+    """
+    init_db()
+    _warn_if_approval_token_unset()
+    install_chatops_listener()
+    install_default_approver()
+    _register_chatops_adapters()
     bootstrap_websocket_adapter()
+    _ensure_hitl_agent_pool()
 
     yield
+
+    _shutdown_hitl_agent_pool()
 
 
 app = FastAPI(
@@ -332,6 +423,46 @@ async def triage_live() -> dict[str, Any]:
     return {"count": len(results), "results": results}
 
 
+class RcaRequest(BaseModel):
+    triage_verdict: dict[str, Any] = Field(
+        ..., description="The RA-001 TriageVerdict dict (as emitted by POST /api/triage)."
+    )
+    scenario_id: str | None = Field(
+        None,
+        description=(
+            "Optional locked-scenario hint (e.g. 'slow-product-catalog'). When the "
+            "LLM provider is unavailable, the agent uses this + the verdict's "
+            "affected_service to pick the deterministic fallback verdict. Safe to omit."
+        ),
+    )
+
+
+@app.post("/api/rca", response_model=None)
+async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
+    """Run the RCA Agent (PRS-008) against a prior triage verdict.
+
+    Body: ``{"triage_verdict": {<TriageVerdict dict>}, "scenario_id"?: str}``.
+    Returns an ``RCAVerdict`` with ``root_cause``, ``ranked_fix_steps`` (each
+    with ``blast_radius`` + ``rollback``), and ``confidence_score``. Every
+    fix step is tagged ``requires_hitl=true``; the platform HITL gate enforces
+    approval at the action boundary — this endpoint does NOT execute the fix.
+
+    The agent's LLM call can take 5–15 s (Claude via Foundry); ``rca_analyze``
+    is sync + blocking, so we wrap it in ``asyncio.to_thread`` to keep the
+    event loop free.
+    """
+    try:
+        verdict = await asyncio.to_thread(
+            rca_analyze, req.triage_verdict, scenario_id=req.scenario_id
+        )
+    except Exception as exc:
+        logger.exception(
+            "RCA agent raised on payload for %s", req.triage_verdict.get("affected_service")
+        )
+        raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
+    return verdict.model_dump(mode="json")
+
+
 @app.get("/api/verdicts")
 def list_verdicts_endpoint(
     limit: int = 50,
@@ -362,7 +493,102 @@ def _uuid_hex() -> str:
     return uuid.uuid4().hex
 
 
-_HITL_OUTCOMES: dict[str, dict[str, Any]] = {}
+# ─── HITL-3 (#103): bounded outcome store + pooled agent threads ──────────
+
+
+class _BoundedOutcomeStore:
+    """LRU-evicted store for ``/api/demo/auto-heal/restart`` outcomes.
+
+    The prior implementation was a bare ``dict[str, dict[str, Any]]`` that
+    accumulated one entry per request for the lifetime of the process —
+    fine for a 10-minute demo, a slow leak for a server left running.
+    """
+
+    _MAX_ENTRIES = 100
+
+    def __init__(self) -> None:
+        self._data: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # Writes happen on pool workers, reads on the FastAPI handler thread.
+        self._lock = threading.Lock()
+
+    def __setitem__(self, key: str, value: dict[str, Any]) -> None:
+        with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
+            self._data[key] = value
+            while len(self._data) > self._MAX_ENTRIES:
+                self._data.popitem(last=False)
+
+    def __getitem__(self, key: str) -> dict[str, Any]:
+        with self._lock:
+            return self._data[key]
+
+    def __contains__(self, key: object) -> bool:
+        with self._lock:
+            return key in self._data
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+
+_HITL_OUTCOMES = _BoundedOutcomeStore()
+
+
+class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
+    """``ThreadPoolExecutor`` whose worker threads are daemons.
+
+    The old per-request ``threading.Thread(daemon=True)`` design let the
+    process exit even when an agent was blocked in a long HITL gate wait
+    (up to 900s). Stock ``ThreadPoolExecutor`` workers are non-daemon
+    and would otherwise block process exit until those waits expire.
+
+    ``threading.Thread.daemon`` is read-only after the thread starts, so
+    we can't simply chain ``super()._adjust_thread_count()`` and flip
+    the flag afterwards — the stock implementation starts the thread on
+    the same line that creates it. Instead we copy the body of
+    ``_adjust_thread_count`` and pass ``daemon=True`` at construction.
+    Couples us to a CPython internal (``_worker``, ``_threads_queues``)
+    that has been stable since 3.7.
+    """
+
+    def _adjust_thread_count(self) -> None:
+        import weakref
+        from concurrent.futures.thread import _threads_queues, _worker
+
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def _weakref_cb(_: Any, q: Any = self._work_queue) -> None:
+            q.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads < self._max_workers:
+            thread_name = f"{self._thread_name_prefix or self}_{num_threads}"
+            t = threading.Thread(
+                name=thread_name,
+                target=_worker,
+                args=(
+                    weakref.ref(self, _weakref_cb),
+                    self._work_queue,
+                    self._initializer,
+                    self._initargs,
+                ),
+                daemon=True,
+            )
+            t.start()
+            self._threads.add(t)
+            _threads_queues[t] = self._work_queue
+
+
+def _new_hitl_agent_pool() -> _DaemonThreadPoolExecutor:
+    return _DaemonThreadPoolExecutor(
+        max_workers=8,
+        thread_name_prefix="hitl-demo-",
+    )
+
+
+_HITL_AGENT_POOL: _DaemonThreadPoolExecutor = _new_hitl_agent_pool()
 
 
 class HitlDemoRestartRequest(BaseModel):
@@ -396,8 +622,10 @@ async def trigger_auto_heal_restart(req: HitlDemoRestartRequest) -> dict[str, An
         outcome = recommend_restart(rec, hitl_context=ctx)
         _HITL_OUTCOMES[approval_id] = outcome.model_dump(mode="json")
 
-    # Daemon thread: the server can exit cleanly without waiting for stuck approvals.
-    threading.Thread(target=_run_agent, daemon=True).start()
+    # Bounded pool (HITL-3, #103): a fast-clicking presenter or misbehaving
+    # client can't pile up unbounded in-flight threads, each holding a
+    # 900s registry-wait.
+    _HITL_AGENT_POOL.submit(_run_agent)
 
     return {
         "approval_id": approval_id,
@@ -412,8 +640,10 @@ async def trigger_auto_heal_restart(req: HitlDemoRestartRequest) -> dict[str, An
 def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
     """Return the agent's outcome dict once the approval has been resolved.
 
-    Returns ``{"status": "pending"}`` until the agent thread completes.
-    The dashboard polls this after the approval flips out of PENDING.
+    Returns ``{"status": "pending"}`` until the agent thread completes,
+    *or* once the outcome has been evicted from the bounded LRU store
+    (after 100 newer requests). The dashboard polls this after the
+    approval flips out of PENDING.
     """
     if approval_id in _HITL_OUTCOMES:
         return _HITL_OUTCOMES[approval_id]
@@ -434,6 +664,36 @@ class ApprovalDecisionRequest(BaseModel):
 
     approver: str = Field(..., min_length=1, description="Approver identity")
     reason: str = Field("", description="Optional free-text justification")
+
+
+def _require_approval_token(request: Request) -> None:
+    """Authenticate the web approve/deny endpoints against
+    ``AIOPS_HITL_APPROVAL_TOKEN``.
+
+    Phase 1 of HITL-2 (#102): a lightweight shared-secret bearer-token
+    check.  When the env var is **unset** we accept every request so the
+    current localhost-only demo flow keeps working (the startup hook
+    above logs a loud warning).  When **set**, callers must present
+    ``Authorization: Bearer <token>`` and we compare it with
+    ``hmac.compare_digest`` for constant-time matching.
+
+    All failure modes raise the *same* 401 with the *same* detail so a
+    prober can't tell a missing header from a wrong token.  Phase 2
+    will replace this with OPA-gated identity verification once
+    ``policies/hitl.rego`` is wired up.
+
+    The env var is read on every call (not captured at import) so the
+    operator can rotate the token without restarting the server, and
+    tests can set it per-test without module reloads — matching the
+    pattern used by ``_verify_slack_signature``.
+    """
+    token = os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip()
+    if not token:
+        return
+    auth = request.headers.get("authorization", "")
+    presented = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
+    if not hmac.compare_digest(presented, token):
+        raise HTTPException(status_code=401, detail="invalid approval token")
 
 
 @app.get("/api/approvals")
@@ -459,7 +719,11 @@ def get_approval(approval_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/approvals/{approval_id}/approve")
-def approve_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str, Any]:
+def approve_request(
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    _auth: None = Depends(_require_approval_token),
+) -> dict[str, Any]:
     try:
         req = get_approval_registry().decide(
             approval_id,
@@ -477,7 +741,11 @@ def approve_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str
 
 
 @app.post("/api/approvals/{approval_id}/deny")
-def deny_request(approval_id: str, body: ApprovalDecisionRequest) -> dict[str, Any]:
+def deny_request(
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    _auth: None = Depends(_require_approval_token),
+) -> dict[str, Any]:
     try:
         req = get_approval_registry().decide(
             approval_id,

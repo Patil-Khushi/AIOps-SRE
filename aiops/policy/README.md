@@ -67,3 +67,27 @@ The demo server (`.\start.ps1`) wires the same approval flow into Slack +
 the dashboard. Set `AIOPS_SLACK_WEBHOOK_URL` and `AIOPS_SLACK_SIGNING_SECRET`
 to exercise the Slack path end-to-end; otherwise approve via
 `POST /api/approvals/{id}/approve`.
+
+## Authenticating the web approve/deny endpoints (`AIOPS_HITL_APPROVAL_TOKEN`)
+
+The Slack interactivity callback at `/api/approvals/slack/callback` is
+HMAC-verified with `AIOPS_SLACK_SIGNING_SECRET`. The web endpoints
+(`POST /api/approvals/{id}/approve` and `.../deny`) used by the React
+approver console are gated by a separate shared secret —
+**`AIOPS_HITL_APPROVAL_TOKEN`** (HITL-2, issue #102):
+
+- **Unset (default):** the server logs `WARNING: HITL web endpoints are
+  unauthenticated` on startup and accepts every request. This preserves
+  the localhost-only demo flow but a second process on the same host can
+  resolve any pending Required-HITL action, so do **not** ship this in
+  any environment where another process is reachable.
+- **Set:** approve / deny require an `Authorization: Bearer <token>`
+  header. The check is constant-time via `hmac.compare_digest`; every
+  failure mode (missing header, wrong scheme, wrong token) returns the
+  same `401 invalid approval token` so probers cannot tell them apart.
+
+The React approver console at `/hitl` takes the token from a
+session-scoped input (lives in `sessionStorage` — cleared on tab close,
+never persisted to disk) and attaches it to every approve / deny call.
+The Slack path is unaffected; OPA-gated identity verification will
+replace this bearer check post-POC once `policies/hitl.rego` is wired.

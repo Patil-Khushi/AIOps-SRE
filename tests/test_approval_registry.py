@@ -235,3 +235,88 @@ def test_listener_may_call_back_into_registry(registry: ApprovalRegistry):
     registry.add_listener(reentrant_listener)
     req = registry.create("test.action", {}, timeout_seconds=60)
     assert seen == [req.id]
+
+
+# ─── HITL-4 (#104) idempotent add_listener(id=...) ────────────────────────
+
+
+def test_add_listener_without_id_stacks(registry: ApprovalRegistry):
+    """Anonymous listeners (no id) stack — the legacy behaviour used by tests
+    that attach throwaway fakes."""
+    calls: list[str] = []
+    registry.add_listener(lambda _e, _r: calls.append("a"))
+    registry.add_listener(lambda _e, _r: calls.append("b"))
+    registry.create("test.action", {})
+    # Both fire on the "created" event.
+    assert sorted(calls) == ["a", "b"]
+
+
+def test_add_listener_same_id_replaces_previous(registry: ApprovalRegistry):
+    """A second ``add_listener`` with the same id replaces the prior
+    registration rather than stacking duplicates — the core HITL-4
+    acceptance bullet for ``install_chatops_listener`` idempotency."""
+    calls: list[str] = []
+    registry.add_listener(lambda _e, _r: calls.append("first"), id="bridge")
+    registry.add_listener(lambda _e, _r: calls.append("second"), id="bridge")
+    registry.create("test.action", {})
+    assert calls == ["second"]
+
+
+def test_add_listener_different_ids_coexist(registry: ApprovalRegistry):
+    """Two ids → two listeners, both fire."""
+    calls: list[str] = []
+    registry.add_listener(lambda _e, _r: calls.append("a"), id="a-bridge")
+    registry.add_listener(lambda _e, _r: calls.append("b"), id="b-bridge")
+    registry.create("test.action", {})
+    assert sorted(calls) == ["a", "b"]
+
+
+def test_add_listener_id_can_replace_anonymous_or_other_id(registry: ApprovalRegistry):
+    """Replace-on-duplicate-id only matches the exact id; anonymous and other
+    ids are preserved."""
+    calls: list[str] = []
+    registry.add_listener(lambda _e, _r: calls.append("anon"))
+    registry.add_listener(lambda _e, _r: calls.append("other"), id="other")
+    registry.add_listener(lambda _e, _r: calls.append("bridge-v1"), id="bridge")
+    registry.add_listener(lambda _e, _r: calls.append("bridge-v2"), id="bridge")
+    registry.create("test.action", {})
+    assert sorted(calls) == ["anon", "bridge-v2", "other"]
+
+
+def test_remove_listener_targets_id(registry: ApprovalRegistry):
+    fired: list[str] = []
+    registry.add_listener(lambda _e, _r: fired.append("kept"), id="keep")
+    registry.add_listener(lambda _e, _r: fired.append("gone"), id="trash")
+    assert registry.remove_listener(id="trash") is True
+    assert registry.remove_listener(id="missing") is False
+    registry.create("test.action", {})
+    assert fired == ["kept"]
+
+
+def test_install_chatops_listener_is_idempotent(monkeypatch):
+    """End-to-end: re-installing the chatops bridge does not stack listeners.
+    Without HITL-4's id-based dedup, a second ``install_chatops_listener()``
+    call (e.g. a test fixture or hot-reload path) would fire every chatops
+    side-effect twice per approval."""
+    from aiops.policy.approvals import install_chatops_listener
+    from aiops.tools.chatops import ChatMessage, ChatOpsClient
+
+    sent: list[ChatMessage] = []
+
+    class _Capture:
+        def send(self, msg: ChatMessage) -> None:
+            sent.append(msg)
+
+    client = ChatOpsClient()
+    client.register(_Capture())
+    monkeypatch.setattr("aiops.tools.chatops.client._CLIENT", client)
+
+    reg = ApprovalRegistry(default_timeout_seconds=2)
+    install_chatops_listener(reg)
+    install_chatops_listener(reg)
+    install_chatops_listener(reg)
+
+    reg.create("test.action", {})
+    # Exactly one "created" event per registered bridge.  Without dedup
+    # this would be three.
+    assert len(sent) == 1, [m.title for m in sent]

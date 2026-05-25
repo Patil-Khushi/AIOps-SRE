@@ -61,19 +61,40 @@ export async function listApprovals(includeResolved = false): Promise<ApprovalLi
   return data;
 }
 
-export async function approve(id: string, approver: string, reason: string): Promise<ApprovalRecord> {
-  const { data } = await axios.post<ApprovalRecord>(`/api/approvals/${id}/approve`, {
-    approver,
-    reason,
-  });
+// HITL-2 (#102): the server reads AIOPS_HITL_APPROVAL_TOKEN and, when set,
+// requires Authorization: Bearer <token> on /approve and /deny. The console
+// stores the token in sessionStorage (cleared on tab close — never written
+// to disk), and this helper turns it into request headers.
+function authHeaders(token: string | null | undefined): Record<string, string> {
+  const t = (token || '').trim();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+export async function approve(
+  id: string,
+  approver: string,
+  reason: string,
+  token?: string | null,
+): Promise<ApprovalRecord> {
+  const { data } = await axios.post<ApprovalRecord>(
+    `/api/approvals/${id}/approve`,
+    { approver, reason },
+    { headers: authHeaders(token) },
+  );
   return data;
 }
 
-export async function deny(id: string, approver: string, reason: string): Promise<ApprovalRecord> {
-  const { data } = await axios.post<ApprovalRecord>(`/api/approvals/${id}/deny`, {
-    approver,
-    reason,
-  });
+export async function deny(
+  id: string,
+  approver: string,
+  reason: string,
+  token?: string | null,
+): Promise<ApprovalRecord> {
+  const { data } = await axios.post<ApprovalRecord>(
+    `/api/approvals/${id}/deny`,
+    { approver, reason },
+    { headers: authHeaders(token) },
+  );
   return data;
 }
 

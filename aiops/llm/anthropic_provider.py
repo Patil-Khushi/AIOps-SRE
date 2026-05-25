@@ -39,7 +39,13 @@ class AnthropicProvider(LLMProvider):
         api_key = os.environ.get("ANTHROPIC_API_KEY")
 
         if base_url and ".azure.com" in base_url:
-            # Azure AI Foundry — use the Foundry client class.
+            # Azure AI Foundry — use the Foundry client class. Foundry deployments
+            # authenticate with the Azure resource key, which (when this org is
+            # running Anthropic and OpenAI on the same Azure resource) is the
+            # same value as AZURE_OPENAI_API_KEY. Fall back to it so callers
+            # don't have to duplicate the secret across two env vars.
+            if not api_key:
+                api_key = os.environ.get("AZURE_OPENAI_API_KEY")
             self._sync = anthropic.AnthropicFoundry(api_key=api_key, base_url=base_url)
             self._async = anthropic.AsyncAnthropicFoundry(api_key=api_key, base_url=base_url)
             self._flavor = "anthropic-foundry"
