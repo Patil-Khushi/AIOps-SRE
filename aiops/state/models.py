@@ -117,7 +117,7 @@ class NotificationRow(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     verdict_id: int = Field(foreign_key="verdicts.id", index=True)
-    target: str  # e.g. "chatops:slack", "chatops:pagerduty"
+    target: str  # e.g. "chatops:incidents-payments"
     routed_at: datetime = Field(
         default_factory=_utcnow,
         sa_column=Column(DateTime(timezone=True), index=True),

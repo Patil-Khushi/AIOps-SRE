@@ -379,6 +379,7 @@ def _notification_row_to_dict(row: NotificationRow) -> dict[str, Any]:
         "verdict_id": row.verdict_id,
         "routed_at": _aware(row.routed_at).isoformat() if row.routed_at else None,
         "channel": row.channel,
+        "target": row.target,
         "chat_severity": row.chat_severity,
         "title": row.title,
         "body": row.body,
