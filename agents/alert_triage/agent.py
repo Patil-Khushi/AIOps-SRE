@@ -340,9 +340,38 @@ def _is_customer_facing(service: str) -> bool:
     return s in _CUSTOMER_FACING or any(cf in s for cf in _CUSTOMER_FACING)
 
 
+# DEMO-SEV-ROUTING (#131). The ``ScenarioActive`` synthetic-gauge alert is
+# a bandaid for the OTel demo chart 0.40.8 span-status gap (the real
+# ``PaymentErrorRateHigh`` rule doesn't fire because spans stay STATUS_CODE_UNSET).
+# When the demo-critical scenarios are active, we want the chain to look like
+# a real Sev-1 — page on-call, light up Slack, the works — even though there's
+# no error-rate evidence in the metrics. This dict maps flag name to the
+# severity the triage should claim; the router then handles the page/no-page
+# decision from there.
+_DEMO_CRITICAL_FLAGS_TO_SEVERITY: dict[str, Severity] = {
+    "paymentFailure": "Sev-1",
+    "paymentUnreachable": "Sev-1",
+    "productCatalogFailure": "Sev-1",
+    "cartFailure": "Sev-1",
+    "recommendationCacheFailure": "Sev-2",
+    "adFailure": "Sev-2",
+    "checkoutFailure": "Sev-1",
+}
+
+
 def _classify_severity_rule_based(alert: Alert) -> tuple[Severity | None, float]:
     """Rule-based classifier. Returns (severity, confidence) or (None, 0.5)
     when the rules don't apply and the LLM should consult."""
+    # DEMO-SEV-ROUTING (#131): ScenarioActive synthetic alerts on demo-critical
+    # flags get bumped to their canonical severity so the router page_oncall
+    # path fires. Without this the LLM sees "no error-rate evidence" and
+    # downgrades to Sev-4, breaking the PagerDuty demo beat.
+    if alert.labels.get("alert_type") == "scenario_active":
+        flag = alert.labels.get("flag")
+        forced = _DEMO_CRITICAL_FLAGS_TO_SEVERITY.get(flag) if flag else None
+        if forced is not None:
+            return forced, 0.95
+
     s_hint = (alert.severity_hint or "").lower()
     if s_hint:
         if "critical" in s_hint or "p1" in s_hint or "sev-1" in s_hint:
