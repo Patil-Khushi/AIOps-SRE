@@ -5,6 +5,7 @@ interface Props {
   label: string;
   value: string | number;
   hint?: string;
+  tooltip?: string;
   trend?: number | null;          // -ve = good for error metrics; +ve = up
   trendInverse?: boolean;         // true means lower=better (e.g., MTTR)
   icon?: ReactNode;
@@ -25,7 +26,7 @@ const INTENT_VALUE: Record<NonNullable<Props['intent']>, string> = {
   bad:     'text-bad',
 };
 
-export default function StatCard({ label, value, hint, trend, trendInverse, icon, intent = 'default' }: Props) {
+export default function StatCard({ label, value, hint, tooltip, trend, trendInverse, icon, intent = 'default' }: Props) {
   let trendNode: ReactNode = null;
   if (typeof trend === 'number') {
     const good = trendInverse ? trend < 0 : trend > 0;
@@ -37,7 +38,7 @@ export default function StatCard({ label, value, hint, trend, trendInverse, icon
     );
   }
   return (
-    <div className={clsx('card animate-slide-up', INTENT_BORDER[intent])}>
+    <div title={tooltip} className={clsx('card animate-slide-up', INTENT_BORDER[intent])}>
       <div className="card-body">
         <div className="flex items-center justify-between">
           <span className="card-title text-[11px]">{label}</span>
