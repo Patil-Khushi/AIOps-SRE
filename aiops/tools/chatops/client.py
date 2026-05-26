@@ -78,8 +78,7 @@ class ChatOpsClient:
                 ok = False
                 error = f"{type(exc).__name__}: {exc}"
             latency_ms = int((perf_counter() - start) * 1000)
-            results[adapter_name] = DeliveryResult.model_construct(
-                _fields_set=set(),
+            results[adapter_name] = DeliveryResult(
                 adapter=adapter_name,
                 ok=ok,
                 error=error,

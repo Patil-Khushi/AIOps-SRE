@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from agents.alert_triage import AuditMetadata, TriageVerdict
-from agents.notification_router import RoutingDecision, RoutingOutcome, decide, route
+from agents.notification_router import RoutingDecision, decide, route
 from aiops.tools.chatops import ChatOpsClient, Severity, get_client
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

@@ -53,7 +53,7 @@ class RoutingDecision(BaseModel):
 
 
 class RoutingOutcome(BaseModel):
-  model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
-  decision: RoutingDecision
-  deliveries: dict[str, DeliveryResult] = Field(default_factory=dict)
+    decision: RoutingDecision
+    deliveries: dict[str, DeliveryResult] = Field(default_factory=dict)
