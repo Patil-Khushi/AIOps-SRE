@@ -18,6 +18,7 @@ from aiops.tools.chatops import ChatMessage, Severity, to_record
 from demo.ui.chatops_ws import (
     WebSocketChatOpsAdapter,
     _ChatOpsHub,
+    bootstrap_websocket_adapter,
     register_routes,
 )
 
@@ -125,13 +126,24 @@ def test_adapter_serializes_via_shared_to_record():
 
 
 def test_websocket_endpoint_replays_history_and_streams_new_messages():
-    app = FastAPI()
+    # Compose register_routes + bootstrap_websocket_adapter the same way
+    # demo/ui/server.py does in its production lifespan: the route wiring
+    # happens at construction, the loop-attach + adapter-register happens
+    # inside the running asyncio loop via the lifespan context manager.
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        bootstrap_websocket_adapter()
+        yield
+
+    app = FastAPI(lifespan=_lifespan)
     register_routes(app)
 
     with TestClient(app) as client:
-        # The startup hook attached the loop and registered the adapter
-        # against the *real* chatops client singleton. Push directly through
-        # that adapter to exercise the same path agents will use.
+        # The lifespan attached the loop and registered the adapter against
+        # the *real* chatops client singleton. Push directly through that
+        # adapter to exercise the same path agents will use.
         from aiops.tools.chatops import get_client
 
         chat_client = get_client()

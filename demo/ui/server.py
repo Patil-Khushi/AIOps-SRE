@@ -56,6 +56,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,7 @@ from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.pagerduty import PagerDutyAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
+from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -122,55 +124,22 @@ FIXTURES_PATH = (
     Path(__file__).parent.parent.parent / "agents" / "alert_triage" / "evals" / "golden.json"
 )
 
-app = FastAPI(title="Adaptive AIOps — Alert Triage demo", version="0.1.0")
 
-
-@app.on_event("startup")
-def _bootstrap_state() -> None:
-    init_db()
-
-
-@app.on_event("startup")
 def _warn_if_approval_token_unset() -> None:
     """HITL-2 (#102): web approve/deny endpoints are gated by
-    ``AIOPS_HITL_APPROVAL_TOKEN``. When unset, anyone reachable by the
-    FastAPI server can resolve any pending Required-HITL request — which
-    would violate CLAUDE.md principle #3. Log a single loud line so the
-    operator knows demo mode is on.
-    """
+    AIOPS_HITL_APPROVAL_TOKEN. When unset, anyone reachable by the FastAPI
+    server can resolve any pending Required-HITL request — which would
+    violate CLAUDE.md principle #3. Log a single loud line so the operator
+    knows demo mode is on."""
     if not os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip():
         logger.warning("HITL web endpoints are unauthenticated")
 
 
-@app.on_event("startup")
-def _wire_hitl_approval_flow() -> None:
-    """HITL UI v1 (#77): install the approval-requesting approver into the
-    gate and bridge approval lifecycle events into the chatops seam.
-
-    Order matters: the chatops listener must register BEFORE the first
-    approval is created so the "created" event reaches the Slack/JSONL/WS
-    sinks (which themselves register in ``_register_chatops_adapters``
-    below; FastAPI runs ``startup`` handlers in declaration order).
-    """
-    install_chatops_listener()
-    install_default_approver()
-
-
-@app.on_event("startup")
 def _register_chatops_adapters() -> None:
-    """JSON audit log (D3) + optional Slack webhook (CHAT-1) + optional
-    PagerDuty Events API v2 (CHAT-5). The WebSocket sink (D2) registers
-    itself via ``_register_chatops_ws_routes`` below.
-
-    Slack and PagerDuty are both opt-in: they only register when their
-    respective env vars are set. Without them the demo runs cleanly
-    against the JSONL audit log + WebSocket dashboard panel.
-
-    Idempotent by adapter class: re-calling this function (e.g. from a
-    test that triggers FastAPI startup twice, or a future hot-reload
-    path) won't register duplicate sinks of the same kind. Without this
-    guard the same audit JSON line lands twice per ``send()``.
-    """
+    """Register the chatops sinks (JSONL audit log + Slack + PagerDuty).
+    Idempotent by adapter class so re-running startup (tests, hot-reload)
+    does not register duplicate sinks of the same kind. Without this guard
+    the same audit JSON line lands twice per send()."""
     client = get_chatops_client()
     registered_kinds = {type(a) for a in client.adapters}
 
@@ -197,6 +166,72 @@ def _register_chatops_adapters() -> None:
                 "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping", exc
             )
 
+
+def _ensure_hitl_agent_pool() -> None:
+    """HITL-3 (#103): recreate the demo agent pool if a prior FastAPI
+    shutdown closed it. Matters for tests that open more than one
+    TestClient context against the same module; in production this is a
+    no-op on the first (and only) startup."""
+    global _HITL_AGENT_POOL
+    if _HITL_AGENT_POOL._shutdown:
+        _HITL_AGENT_POOL = _new_hitl_agent_pool()
+
+
+def _shutdown_hitl_agent_pool() -> None:
+    """HITL-3 (#103): drain the demo agent pool on app shutdown rather
+    than relying on the concurrent.futures atexit hook. ``wait=False``
+    because demo agents can be blocked on the HITL gate for up to 900s;
+    ``cancel_futures`` drops queued work that hasn't started. Running
+    workers are daemons, so they don't keep the process alive."""
+    _HITL_AGENT_POOL.shutdown(wait=False, cancel_futures=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup + shutdown wiring for the demo UI.
+
+    Replaces all prior ``@app.on_event`` hooks (deprecated since FastAPI
+    0.104). Order matters:
+
+    1. ``init_db()`` so any later step that persists has somewhere to write.
+    2. ``_warn_if_approval_token_unset()`` — HITL-2 (#102).
+    3. HITL approval listener + default approver — the listener must register
+       before any approval is created so the "created" event reaches the
+       sinks registered in step 4.
+    4. ``_register_chatops_adapters()`` — JSONL audit log (always) + Slack
+       webhook + PagerDuty (both opt-in via env). Idempotent.
+    5. ``bootstrap_websocket_adapter()`` — must run inside the asyncio loop
+       so ``asyncio.get_running_loop()`` resolves to the server's loop.
+       This is why the lifespan is ``async``.
+    6. ``_ensure_hitl_agent_pool()`` — HITL-3 (#103).
+    7. ``_start_auto_triage()`` — auto-triage loop (#130). Runs last so it
+       polls a fully wired stack (DB, chatops sinks, websocket bootstrap).
+
+    Teardown (post-yield):
+    - ``_stop_auto_triage()`` — cancel the background loop before draining
+      the agent pool so any in-flight triage call gets cancelled first.
+    - ``_shutdown_hitl_agent_pool()`` — HITL-3 (#103).
+    """
+    init_db()
+    _warn_if_approval_token_unset()
+    install_chatops_listener()
+    install_default_approver()
+    _register_chatops_adapters()
+    bootstrap_websocket_adapter()
+    _ensure_hitl_agent_pool()
+    await _start_auto_triage()
+
+    yield
+
+    await _stop_auto_triage()
+    _shutdown_hitl_agent_pool()
+
+
+app = FastAPI(
+    title="Adaptive AIOps — Alert Triage demo",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 _register_chatops_ws_routes(app)
 
@@ -497,7 +532,6 @@ _AUTO_TRIAGE = _AutoTriageLoop(
 )
 
 
-@app.on_event("startup")
 async def _start_auto_triage() -> None:
     enabled = os.environ.get("AIOPS_AUTO_TRIAGE_ENABLED", "true").lower() == "true"
     if not enabled:
@@ -506,7 +540,6 @@ async def _start_auto_triage() -> None:
     _AUTO_TRIAGE.start()
 
 
-@app.on_event("shutdown")
 async def _stop_auto_triage() -> None:
     await _AUTO_TRIAGE.stop()
 
@@ -677,30 +710,6 @@ def _new_hitl_agent_pool() -> _DaemonThreadPoolExecutor:
 
 
 _HITL_AGENT_POOL: _DaemonThreadPoolExecutor = _new_hitl_agent_pool()
-
-
-@app.on_event("startup")
-def _ensure_hitl_agent_pool() -> None:
-    """HITL-3 (#103): recreate the demo agent pool if a prior FastAPI
-    shutdown closed it. Matters for tests that open more than one
-    ``TestClient`` context against the same module; in production this
-    is a no-op on the first (and only) startup."""
-    global _HITL_AGENT_POOL
-    if _HITL_AGENT_POOL._shutdown:
-        _HITL_AGENT_POOL = _new_hitl_agent_pool()
-
-
-@app.on_event("shutdown")
-def _shutdown_hitl_agent_pool() -> None:
-    """HITL-3 (#103): drain the demo agent pool on app shutdown rather
-    than relying on the ``concurrent.futures`` atexit hook.
-
-    ``wait=False`` because demo agents can be blocked on the HITL gate
-    for up to 900s, and we don't want shutdown to wait that long;
-    ``cancel_futures=True`` drops queued work that hasn't started.
-    Running workers are daemons, so they don't keep the process alive.
-    """
-    _HITL_AGENT_POOL.shutdown(wait=False, cancel_futures=True)
 
 
 class HitlDemoRestartRequest(BaseModel):
