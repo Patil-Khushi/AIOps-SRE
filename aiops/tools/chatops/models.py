@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from pydantic import BaseModel
+
 
 class Severity(StrEnum):
     """How loud a notification should be. Adapters map this to their own levels."""
@@ -70,6 +72,13 @@ class ChatMessage:
     """
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     interactive: InteractivePrompt | None = None
+
+
+class DeliveryResult(BaseModel):
+    adapter: str
+    ok: bool
+    error: str | None = None
+    latency_ms: int | None = None
 
 
 def to_record(msg: ChatMessage) -> dict[str, Any]:

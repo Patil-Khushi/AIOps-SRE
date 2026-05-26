@@ -24,7 +24,7 @@ from typing import Literal
 from agents.alert_triage import TriageVerdict
 from aiops.tools.chatops import ChatMessage, Severity, get_client
 
-from .models import RoutingDecision
+from .models import RoutingDecision, RoutingOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +187,8 @@ def _decision_to_chat_message(
     )
 
 
-def route(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDecision:
-    """Decide and emit. Returns the decision so callers can audit it.
+def route(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingOutcome:
+    """Decide and emit. Returns the decision plus per-adapter deliveries.
 
     Side effect: drops a ``ChatMessage`` into the chatops seam, which fans
     it out to every registered adapter (WebSocket dashboard, JSON audit
@@ -204,9 +204,9 @@ def route(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDeci
             verdict.affected_service,
             decision.reason,
         )
-        return decision
+        return RoutingOutcome(decision=decision, deliveries={})
     msg = _decision_to_chat_message(verdict, decision)
-    get_client().send(msg)
+    deliveries = get_client().send(msg)
     logger.info(
         "RA-005: routed %s on %s -> %s (%s)",
         verdict.severity,
@@ -214,7 +214,7 @@ def route(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDeci
         decision.channel,
         decision.chat_severity,
     )
-    return decision
+    return RoutingOutcome(decision=decision, deliveries=deliveries)
 
 
 def run(input_payload: dict) -> dict:

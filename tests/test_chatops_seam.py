@@ -9,6 +9,7 @@ from __future__ import annotations
 from aiops.tools.chatops import (
     ChatMessage,
     ChatOpsClient,
+    DeliveryResult,
     Severity,
     get_client,
     to_record,
@@ -45,11 +46,47 @@ def test_send_fans_out_to_every_adapter():
     client.register(c)
     msg = _make_msg("hello")
 
-    client.send(msg)
+    results = client.send(msg)
 
     assert a.received == [msg]
     assert b.received == [msg]
     assert c.received == [msg]
+    assert set(results) == {"_FakeAdapter", "_FakeAdapter#2", "_FakeAdapter#3"}
+    assert all(result.ok for result in results.values())
+
+
+def test_send_returns_delivery_results_for_each_adapter():
+    client = ChatOpsClient()
+    named = _FakeAdapter()
+    client.register(named)
+    result = client.send(_make_msg("hello"))
+
+    assert list(result) == ["_FakeAdapter"]
+    delivery = result["_FakeAdapter"]
+    assert isinstance(delivery, DeliveryResult)
+    assert delivery.ok is True
+    assert delivery.error is None
+    assert isinstance(delivery.latency_ms, int)
+
+
+def test_send_uses_adapter_name_when_provided():
+    class _NamedAdapter:
+        name = "custom-adapter"
+
+        def __init__(self) -> None:
+            self.received: list[ChatMessage] = []
+
+        def send(self, msg: ChatMessage) -> None:
+            self.received.append(msg)
+
+    client = ChatOpsClient()
+    adapter = _NamedAdapter()
+    client.register(adapter)
+
+    result = client.send(_make_msg("hello"))
+
+    assert list(result) == ["custom-adapter"]
+    assert result["custom-adapter"].ok is True
 
 
 def test_failing_adapter_does_not_block_others():

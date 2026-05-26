@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 class JsonFileChatOpsAdapter:
     """Append every ``ChatMessage`` as one JSON line to a target file."""
 
+    name = "jsonfile"
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)

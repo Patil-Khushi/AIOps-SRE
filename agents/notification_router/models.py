@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from aiops.tools.chatops import Severity
+from aiops.tools.chatops import DeliveryResult, Severity
 
 
 class RoutingDecision(BaseModel):
@@ -50,3 +50,10 @@ class RoutingDecision(BaseModel):
     reason: str
     audit_trace: list[str] = Field(default_factory=list)
     decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class RoutingOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: RoutingDecision
+    deliveries: dict[str, DeliveryResult] = Field(default_factory=dict)
