@@ -93,6 +93,7 @@ def _migrate_add_columns_if_missing() -> None:
         ("notifications", "title", "VARCHAR"),
         ("notifications", "body", "VARCHAR"),
         ("notifications", "service", "VARCHAR"),
+        ("notifications", "target", "VARCHAR"),
         ("notifications", "actions", "JSON"),
         ("notifications", "reason", "VARCHAR"),
         ("notifications", "audit_trace", "JSON"),
