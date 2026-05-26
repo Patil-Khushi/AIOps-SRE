@@ -100,6 +100,7 @@ def _safe_put(q: asyncio.Queue[dict[str, Any]], record: dict[str, Any]) -> None:
 
 class WebSocketChatOpsAdapter:
     """ChatOpsAdapter that hands every message to the hub."""
+
     name = "websocket"
 
     def __init__(self, hub: _ChatOpsHub) -> None:
