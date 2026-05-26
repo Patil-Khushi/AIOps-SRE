@@ -115,14 +115,38 @@ def test_delayed_alert_still_dedupes_within_wall_clock_window(clean_state):
     assert v2["duplicate_alert_count"] == 2
 
 
-def test_embedding_similarity_match_suppresses_paraphrase(clean_state):
+def test_embedding_similarity_match_suppresses_paraphrase(clean_state, monkeypatch):
     """Different cluster_key (labels differ) but identical embedding text →
     cosine similarity = 1.0 → embedding path suppresses the second alert.
 
-    Requires the ``embeddings`` extra (sentence-transformers); skipped otherwise.
+    Uses a deterministic fake embedding model (same pattern as
+    ``test_alert_triage_embedding_persistence``) so the test doesn't pay
+    the 80MB sentence-transformers model load cost (#113). The
+    ``tests/conftest.py`` autouse disables embeddings globally; this
+    test reinstalls a fake so the embedding path is exercised end-to-end
+    without the real model.
+
+    Skips when ``numpy`` isn't installed (the ``embeddings`` extra carries
+    it transitively via sentence-transformers; CI installs only ``dev`` +
+    ``ui`` and so legitimately doesn't have it).  Matches the gating
+    pattern in ``test_alert_triage_embedding_persistence``.
     """
-    pytest.importorskip("sentence_transformers")
+    np = pytest.importorskip("numpy")
+
+    from agents.alert_triage import agent as agent_mod
     from agents.alert_triage import run
+
+    class _FakeEmbedModel:
+        @staticmethod
+        def encode(text: str, convert_to_numpy: bool = True):
+            # Deterministic by text — identical text → identical vector.
+            # Cosine sim = 1.0 on identical input, which is what the test
+            # asserts. Padded to 32 dims so the cosine math has enough
+            # numeric body to be stable.
+            raw = [float(ord(c)) for c in (text * 4)[:32]]
+            return np.asarray(raw, dtype=np.float32)
+
+    monkeypatch.setattr(agent_mod, "_get_embed_model", lambda: _FakeEmbedModel())
 
     desc = "Payment service CPU usage above 80% threshold"
 

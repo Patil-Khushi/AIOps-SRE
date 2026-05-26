@@ -241,3 +241,38 @@ def test_no_direct_llm_sdk_imports_outside_aiops_llm():
             if needle in text:
                 offenders.append(f"{rel}: {needle}")
     assert not offenders, "Direct LLM SDK imports outside aiops/llm:\n" + "\n".join(offenders)
+
+
+def test_no_fastapi_on_event_in_demo_ui():
+    """DEMO-15 (#67) — ratchet the lifespan migration.
+
+    ``@app.on_event`` has been deprecated since FastAPI 0.104 and was
+    removed from ``demo/ui/`` in favour of a single ``lifespan`` context
+    manager. PR #135 (auto-triage loop) silently re-introduced it; this
+    test exists so the next merge that does so fails CI instead.
+
+    Uses AST so the lifespan docstring (which mentions @app.on_event
+    historically) doesn't trip the check.
+    """
+    import ast
+
+    offenders: list[str] = []
+    for path in (REPO_ROOT / "demo" / "ui").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for deco in node.decorator_list:
+                target = deco.func if isinstance(deco, ast.Call) else deco
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "on_event"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "app"
+                ):
+                    rel = path.relative_to(REPO_ROOT).as_posix()
+                    offenders.append(f"{rel}:{node.lineno} @app.on_event on {node.name}")
+    assert not offenders, (
+        "FastAPI @app.on_event is deprecated — use the lifespan context manager:\n"
+        + "\n".join(offenders)
+    )

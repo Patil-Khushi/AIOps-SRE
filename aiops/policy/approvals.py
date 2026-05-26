@@ -42,6 +42,8 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
+from aiops.policy.gate import ApprovalOutcome, ApprovalSummary, ApproverResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -422,13 +424,26 @@ class ApprovalRequester:
         self._registry = registry or get_approval_registry()
         self._timeout_seconds = timeout_seconds
 
-    def __call__(self, action: str, context: dict[str, Any]) -> str | None:
+    def __call__(self, action: str, context: dict[str, Any]) -> ApproverResult:
+        """Run an approval flow.
+
+        HITL-5 (#105): returns a structured :class:`~aiops.policy.gate.ApproverResult`
+        carrying the canonical approver id **and** a full :class:`~aiops.policy.gate.ApprovalSummary`
+        of the outcome (approved / denied / expired).  The gate puts the
+        summary on :attr:`~aiops.policy.gate.Decision.approval` so callers
+        get the rich payload without scraping ad-hoc keys out of the
+        ``hitl_context`` dict.
+
+        The only writeback into ``context`` is ``pending_approval_id`` —
+        intentional surface for the agent so it can show "approval
+        pending: <id>" to the user while the flow is in flight.
+        """
         # ``hitl_context.skip_approval=True`` exists as an explicit override for
         # eval-harness runs that don't want to block — they get the default
         # "no approver" behaviour (REQUIRED stays blocked) without spawning a
         # pending request that has to time out.
         if context.get("skip_approval"):
-            return None
+            return ApproverResult(approver=None, summary=None)
         req = self._registry.create(
             action=action,
             context=context,
@@ -436,17 +451,34 @@ class ApprovalRequester:
             request_id=context.get("approval_id"),
         )
         # Surface the id back to the caller so HTTP/CLI surfaces can show it.
+        # This is the *only* writeback into the caller's dict — see HITL-5.
         context["pending_approval_id"] = req.id
         resolved = self._registry.wait_for(req.id)
         if resolved.status is ApprovalStatus.APPROVED:
-            return resolved.approver or "unknown-approver"
-        # Annotate context so the gate's Decision.reason can render
-        # "denied by <approver>: <reason>" / "expired" rather than the
-        # generic "approver missing" fallback.
-        context["approval_decision"] = resolved.status.value
-        context["approval_approver"] = resolved.approver
-        context["approval_reason"] = resolved.reason
-        return None
+            return ApproverResult(
+                approver=resolved.approver or "unknown-approver",
+                summary=ApprovalSummary(
+                    id=resolved.id,
+                    status="approved",
+                    approver=resolved.approver,
+                    reason=resolved.reason,
+                ),
+            )
+        # Denied or expired: carry the structured summary back via the
+        # return shape (HITL-5).  The gate's _outcome_reason reads it
+        # to render "denied by <approver>: <reason>" / "expired".
+        summary_status: ApprovalOutcome = (
+            "denied" if resolved.status is ApprovalStatus.DENIED else "expired"
+        )
+        return ApproverResult(
+            approver=None,
+            summary=ApprovalSummary(
+                id=resolved.id,
+                status=summary_status,
+                approver=resolved.approver,
+                reason=resolved.reason,
+            ),
+        )
 
 
 def install_default_approver(
