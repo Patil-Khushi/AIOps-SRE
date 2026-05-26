@@ -125,11 +125,16 @@ def test_embedding_similarity_match_suppresses_paraphrase(clean_state, monkeypat
     ``tests/conftest.py`` autouse disables embeddings globally; this
     test reinstalls a fake so the embedding path is exercised end-to-end
     without the real model.
+
+    Skips when ``numpy`` isn't installed (the ``embeddings`` extra carries
+    it transitively via sentence-transformers; CI installs only ``dev`` +
+    ``ui`` and so legitimately doesn't have it).  Matches the gating
+    pattern in ``test_alert_triage_embedding_persistence``.
     """
+    np = pytest.importorskip("numpy")
+
     from agents.alert_triage import agent as agent_mod
     from agents.alert_triage import run
-
-    import numpy as np
 
     class _FakeEmbedModel:
         @staticmethod

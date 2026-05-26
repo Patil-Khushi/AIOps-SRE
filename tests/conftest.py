@@ -23,9 +23,6 @@ from __future__ import annotations
 
 import pytest
 
-from aiops.policy import get_gate
-from aiops.tools.observability import jaeger as _jaeger
-
 # Disable embeddings in the test suite by default (#113).
 #
 # Multiple agents (``alert_triage``, ``incident_classifier``) lazily
@@ -50,8 +47,10 @@ from aiops.tools.observability import jaeger as _jaeger
 # monkeypatch ``_get_embed_model`` back to a fake (see
 # ``test_alert_triage_embedding_persistence``); ``monkeypatch.setattr``
 # undoes the override per-test without disturbing this default.
-from agents.alert_triage import agent as _alert_triage_agent  # noqa: E402
-from agents.incident_classifier import agent as _incident_classifier_agent  # noqa: E402
+from agents.alert_triage import agent as _alert_triage_agent
+from agents.incident_classifier import agent as _incident_classifier_agent
+from aiops.policy import get_gate
+from aiops.tools.observability import jaeger as _jaeger
 
 
 def _no_embed_model() -> None:
@@ -60,6 +59,21 @@ def _no_embed_model() -> None:
 
 _alert_triage_agent._get_embed_model = _no_embed_model
 _incident_classifier_agent._get_embed_model = _no_embed_model
+
+
+@pytest.fixture(autouse=True)
+def _disable_auto_triage(monkeypatch):
+    """Disable the auto-triage loop in tests (#130).
+
+    ``demo/ui/server.py`` spawns an asyncio background task on startup
+    that polls Prometheus every 3s and triages new alerts. In tests
+    that boot FastAPI via ``TestClient``, the startup hook would
+    otherwise spawn a real background task, generate test noise, and
+    keep the loop alive for the full test duration. Tests that
+    specifically exercise the loop instantiate ``_AutoTriageLoop``
+    directly rather than going through the startup hook.
+    """
+    monkeypatch.setenv("AIOPS_AUTO_TRIAGE_ENABLED", "false")
 
 
 @pytest.fixture(autouse=True)

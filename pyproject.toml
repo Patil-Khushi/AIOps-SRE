@@ -48,6 +48,11 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-timeout>=2.3",
+    # numpy is used by a handful of tests that mock the embeddings model
+    # with a deterministic fake (#113).  The ``embeddings`` extra also
+    # carries it transitively via sentence-transformers, but CI installs
+    # only ``dev`` + ``ui``, so list it here too.
+    "numpy>=1.26",
     "ruff>=0.6",
     "mypy>=1.11",
 ]

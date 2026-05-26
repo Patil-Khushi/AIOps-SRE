@@ -45,6 +45,7 @@ except ImportError:
     pass
 
 import asyncio
+import contextlib
 import hmac
 import json
 import logging
@@ -55,6 +56,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -112,6 +114,7 @@ from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.pagerduty import PagerDutyAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
+from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -121,55 +124,22 @@ FIXTURES_PATH = (
     Path(__file__).parent.parent.parent / "agents" / "alert_triage" / "evals" / "golden.json"
 )
 
-app = FastAPI(title="Adaptive AIOps — Alert Triage demo", version="0.1.0")
 
-
-@app.on_event("startup")
-def _bootstrap_state() -> None:
-    init_db()
-
-
-@app.on_event("startup")
 def _warn_if_approval_token_unset() -> None:
     """HITL-2 (#102): web approve/deny endpoints are gated by
-    ``AIOPS_HITL_APPROVAL_TOKEN``. When unset, anyone reachable by the
-    FastAPI server can resolve any pending Required-HITL request — which
-    would violate CLAUDE.md principle #3. Log a single loud line so the
-    operator knows demo mode is on.
-    """
+    AIOPS_HITL_APPROVAL_TOKEN. When unset, anyone reachable by the FastAPI
+    server can resolve any pending Required-HITL request — which would
+    violate CLAUDE.md principle #3. Log a single loud line so the operator
+    knows demo mode is on."""
     if not os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip():
         logger.warning("HITL web endpoints are unauthenticated")
 
 
-@app.on_event("startup")
-def _wire_hitl_approval_flow() -> None:
-    """HITL UI v1 (#77): install the approval-requesting approver into the
-    gate and bridge approval lifecycle events into the chatops seam.
-
-    Order matters: the chatops listener must register BEFORE the first
-    approval is created so the "created" event reaches the Slack/JSONL/WS
-    sinks (which themselves register in ``_register_chatops_adapters``
-    below; FastAPI runs ``startup`` handlers in declaration order).
-    """
-    install_chatops_listener()
-    install_default_approver()
-
-
-@app.on_event("startup")
 def _register_chatops_adapters() -> None:
-    """JSON audit log (D3) + optional Slack webhook (CHAT-1) + optional
-    PagerDuty Events API v2 (CHAT-5). The WebSocket sink (D2) registers
-    itself via ``_register_chatops_ws_routes`` below.
-
-    Slack and PagerDuty are both opt-in: they only register when their
-    respective env vars are set. Without them the demo runs cleanly
-    against the JSONL audit log + WebSocket dashboard panel.
-
-    Idempotent by adapter class: re-calling this function (e.g. from a
-    test that triggers FastAPI startup twice, or a future hot-reload
-    path) won't register duplicate sinks of the same kind. Without this
-    guard the same audit JSON line lands twice per ``send()``.
-    """
+    """Register the chatops sinks (JSONL audit log + Slack + PagerDuty).
+    Idempotent by adapter class so re-running startup (tests, hot-reload)
+    does not register duplicate sinks of the same kind. Without this guard
+    the same audit JSON line lands twice per send()."""
     client = get_chatops_client()
     registered_kinds = {type(a) for a in client.adapters}
 
@@ -196,6 +166,72 @@ def _register_chatops_adapters() -> None:
                 "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping", exc
             )
 
+
+def _ensure_hitl_agent_pool() -> None:
+    """HITL-3 (#103): recreate the demo agent pool if a prior FastAPI
+    shutdown closed it. Matters for tests that open more than one
+    TestClient context against the same module; in production this is a
+    no-op on the first (and only) startup."""
+    global _HITL_AGENT_POOL
+    if _HITL_AGENT_POOL._shutdown:
+        _HITL_AGENT_POOL = _new_hitl_agent_pool()
+
+
+def _shutdown_hitl_agent_pool() -> None:
+    """HITL-3 (#103): drain the demo agent pool on app shutdown rather
+    than relying on the concurrent.futures atexit hook. ``wait=False``
+    because demo agents can be blocked on the HITL gate for up to 900s;
+    ``cancel_futures`` drops queued work that hasn't started. Running
+    workers are daemons, so they don't keep the process alive."""
+    _HITL_AGENT_POOL.shutdown(wait=False, cancel_futures=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup + shutdown wiring for the demo UI.
+
+    Replaces all prior ``@app.on_event`` hooks (deprecated since FastAPI
+    0.104). Order matters:
+
+    1. ``init_db()`` so any later step that persists has somewhere to write.
+    2. ``_warn_if_approval_token_unset()`` — HITL-2 (#102).
+    3. HITL approval listener + default approver — the listener must register
+       before any approval is created so the "created" event reaches the
+       sinks registered in step 4.
+    4. ``_register_chatops_adapters()`` — JSONL audit log (always) + Slack
+       webhook + PagerDuty (both opt-in via env). Idempotent.
+    5. ``bootstrap_websocket_adapter()`` — must run inside the asyncio loop
+       so ``asyncio.get_running_loop()`` resolves to the server's loop.
+       This is why the lifespan is ``async``.
+    6. ``_ensure_hitl_agent_pool()`` — HITL-3 (#103).
+    7. ``_start_auto_triage()`` — auto-triage loop (#130). Runs last so it
+       polls a fully wired stack (DB, chatops sinks, websocket bootstrap).
+
+    Teardown (post-yield):
+    - ``_stop_auto_triage()`` — cancel the background loop before draining
+      the agent pool so any in-flight triage call gets cancelled first.
+    - ``_shutdown_hitl_agent_pool()`` — HITL-3 (#103).
+    """
+    init_db()
+    _warn_if_approval_token_unset()
+    install_chatops_listener()
+    install_default_approver()
+    _register_chatops_adapters()
+    bootstrap_websocket_adapter()
+    _ensure_hitl_agent_pool()
+    await _start_auto_triage()
+
+    yield
+
+    await _stop_auto_triage()
+    _shutdown_hitl_agent_pool()
+
+
+app = FastAPI(
+    title="Adaptive AIOps — Alert Triage demo",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 _register_chatops_ws_routes(app)
 
@@ -394,6 +430,120 @@ async def triage_live() -> dict[str, Any]:
     return {"count": len(results), "results": results}
 
 
+# ─── DEMO-AUTO-TRIAGE (#130) ─────────────────────────────────────────────
+#
+# Background loop that auto-fires the triage pipeline on any alert that
+# appears in /api/live-alerts and hasn't been triaged yet. Without this,
+# the 6-minute demo path stalls after Inject — alerts sit in /api/live-
+# alerts until the presenter manually clicks "Triage". With it, the
+# chain (alert → triage → classify → ticket → notify → RCA gate) fires
+# automatically.
+
+
+class _AutoTriageLoop:
+    """Periodic poller that triages new alerts as they appear.
+
+    Dedup is by ``alert_id`` against a process-local set. The triage
+    agent has its own idempotency window (see
+    ``agents.alert_triage._IDEMPOTENCY_WINDOW``), so even if the same
+    id slips through, the verdict is suppressed at the agent layer.
+
+    Disabled by default in tests (``AIOPS_AUTO_TRIAGE_ENABLED=false``)
+    so the test suite doesn't generate background traffic.
+    """
+
+    def __init__(self, interval_seconds: float = 3.0) -> None:
+        self._interval = interval_seconds
+        self._task: asyncio.Task[None] | None = None
+        self._seen: set[str] = set()
+
+    def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._task = asyncio.create_task(self._run(), name="auto-triage")
+
+    async def stop(self) -> None:
+        if self._task is None or self._task.done():
+            return
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+    def forget(self, alert_id: str) -> None:
+        """Drop an id from the seen set so the next poll re-triages it.
+
+        Hook for ``/api/scenarios/reset-all`` — when a scenario is reset
+        and re-injected, we want the new alert to flow through even
+        though its id may match the previous one.
+        """
+        self._seen.discard(alert_id)
+
+    def forget_all(self) -> None:
+        self._seen.clear()
+
+    async def _run(self) -> None:
+        logger.info("auto-triage loop started (interval=%.1fs)", self._interval)
+        while True:
+            try:
+                payload = await asyncio.to_thread(live_alerts)
+                candidates = payload.get("alerts", [])
+                fresh = [c for c in candidates if c.get("alert_id") not in self._seen]
+                if fresh:
+                    for c in fresh:
+                        aid = c.get("alert_id")
+                        if aid:
+                            self._seen.add(aid)
+                    tasks = [asyncio.to_thread(self._safe_triage, c) for c in fresh]
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    logger.info(
+                        "auto-triage processed %d new alert(s); seen=%d",
+                        len(fresh),
+                        len(self._seen),
+                    )
+            except asyncio.CancelledError:
+                logger.info("auto-triage loop cancelled")
+                raise
+            except Exception:
+                logger.exception("auto-triage loop iteration failed")
+            try:
+                await asyncio.sleep(self._interval)
+            except asyncio.CancelledError:
+                logger.info("auto-triage loop cancelled")
+                return
+
+    @staticmethod
+    def _safe_triage(candidate: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return triage_alert(TriageRequest(alert=candidate))
+        except HTTPException as exc:
+            logger.warning(
+                "auto-triage skipped alert %s: %s",
+                candidate.get("alert_id"),
+                exc.detail,
+            )
+            return {"error": exc.detail, "alert": candidate}
+        except Exception:
+            logger.exception("auto-triage failed on alert %s", candidate.get("alert_id"))
+            return {"error": "internal", "alert": candidate}
+
+
+_AUTO_TRIAGE = _AutoTriageLoop(
+    interval_seconds=float(os.environ.get("AIOPS_AUTO_TRIAGE_INTERVAL_SECONDS", "3"))
+)
+
+
+async def _start_auto_triage() -> None:
+    enabled = os.environ.get("AIOPS_AUTO_TRIAGE_ENABLED", "true").lower() == "true"
+    if not enabled:
+        logger.info("auto-triage loop disabled via AIOPS_AUTO_TRIAGE_ENABLED")
+        return
+    _AUTO_TRIAGE.start()
+
+
+async def _stop_auto_triage() -> None:
+    await _AUTO_TRIAGE.stop()
+
+
 class RcaRequest(BaseModel):
     triage_verdict: dict[str, Any] = Field(
         ..., description="The RA-001 TriageVerdict dict (as emitted by POST /api/triage)."
@@ -560,30 +710,6 @@ def _new_hitl_agent_pool() -> _DaemonThreadPoolExecutor:
 
 
 _HITL_AGENT_POOL: _DaemonThreadPoolExecutor = _new_hitl_agent_pool()
-
-
-@app.on_event("startup")
-def _ensure_hitl_agent_pool() -> None:
-    """HITL-3 (#103): recreate the demo agent pool if a prior FastAPI
-    shutdown closed it. Matters for tests that open more than one
-    ``TestClient`` context against the same module; in production this
-    is a no-op on the first (and only) startup."""
-    global _HITL_AGENT_POOL
-    if _HITL_AGENT_POOL._shutdown:
-        _HITL_AGENT_POOL = _new_hitl_agent_pool()
-
-
-@app.on_event("shutdown")
-def _shutdown_hitl_agent_pool() -> None:
-    """HITL-3 (#103): drain the demo agent pool on app shutdown rather
-    than relying on the ``concurrent.futures`` atexit hook.
-
-    ``wait=False`` because demo agents can be blocked on the HITL gate
-    for up to 900s, and we don't want shutdown to wait that long;
-    ``cancel_futures=True`` drops queued work that hasn't started.
-    Running workers are daemons, so they don't keep the process alive.
-    """
-    _HITL_AGENT_POOL.shutdown(wait=False, cancel_futures=True)
 
 
 class HitlDemoRestartRequest(BaseModel):
@@ -1235,6 +1361,12 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
     result = _toggle_flagd_flag(s["flag"], "off")
+    # DEMO-AUTO-TRIAGE (#130): drop this scenario's alert ids from the
+    # auto-triage seen set so a re-inject of the same scenario fires the
+    # chain again. The Prometheus alert_id is stable per (alertname,
+    # instance) so the previous id is the same — without this, the loop
+    # would silently dedupe the re-inject.
+    _AUTO_TRIAGE.forget_all()
     return {**s, "scenario_id": scenario_id, **result}
 
 
@@ -1247,6 +1379,8 @@ def reset_all_scenarios() -> dict[str, Any]:
     res = get_registry().call("feature_flags.reset_all", flags=flag_names)
     if not res.ok:
         raise HTTPException(status_code=502, detail=res.error or "reset_all failed")
+    # DEMO-AUTO-TRIAGE (#130): see comment in reset_scenario above.
+    _AUTO_TRIAGE.forget_all()
     data = res.data or {}
     return {
         "reset_count": data.get("reset_count", 0),

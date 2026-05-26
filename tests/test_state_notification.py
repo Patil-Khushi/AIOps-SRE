@@ -85,6 +85,7 @@ def test_save_notification_roundtrip():
     # actions: empty list from agent → stored as NULL, surfaced as [].
     # CHAT-3 (#83) will replace this with the real action vocabulary.
     assert row["actions"] == []
+    assert row["target"] == "chatops:incidents-payments"
     # routed_at survives the SQLite roundtrip with tz info
     assert row["routed_at"] is not None
     assert row["routed_at"].endswith("+00:00") or "T" in row["routed_at"]
@@ -135,3 +136,39 @@ def test_save_notification_requires_existing_verdict_for_service_lookup():
     assert nid > 0
     rows = repo.list_notifications(limit=1)
     assert rows[0]["service"] is None
+
+
+def test_init_db_adds_missing_notifications_target(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    db_url = f"sqlite:///{db_path.as_posix()}"
+    monkeypatch.setenv("AIOPS_STATE_DB_URL", db_url)
+    state_pkg.reset_engine_for_tests()
+
+    from sqlalchemy import create_engine, inspect, text
+
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE notifications (
+                    id INTEGER PRIMARY KEY,
+                    verdict_id INTEGER,
+                    routed_at TIMESTAMP,
+                    channel VARCHAR,
+                    chat_severity VARCHAR,
+                    title VARCHAR,
+                    body VARCHAR,
+                    service VARCHAR,
+                    actions JSON,
+                    reason VARCHAR,
+                    audit_trace JSON
+                )
+                """
+            )
+        )
+
+    state_pkg.init_db()
+    inspector = inspect(state_pkg.get_engine())
+    cols = {c["name"] for c in inspector.get_columns("notifications")}
+    assert "target" in cols

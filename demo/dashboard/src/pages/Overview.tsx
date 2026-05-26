@@ -19,6 +19,11 @@ const SEV_COLOR: Record<Severity, string> = {
   'Sev-1': '#ef4444', 'Sev-2': '#f59e0b', 'Sev-3': '#eab308', 'Sev-4': '#3b82f6',
 };
 
+// Palette used to assign a stable colour to each Prometheus alert rule
+// shown in the Overview scenario cards. Hoisted to module scope so the
+// array isn't re-allocated on every render.
+const ALERT_PALETTE = ['#7c3aed', '#06b6d4', '#ef4444', '#f59e0b', '#10b981', '#a78bfa', '#ec4899'];
+
 // Map a Prometheus alert's severity_hint label to a Sev-N bucket for chart slicing.
 function inferSeverity(hint: string | null | undefined): Severity {
   const s = (hint || '').toLowerCase();
@@ -50,6 +55,16 @@ export default function Overview() {
     for (const a of alerts) c[inferSeverity(a.severity_hint)]++;
     return c;
   }, [alerts]);
+
+  // Use `metric` as the canonical alert-rule name coming from Prometheus' API
+  // when available. Fall back to `alert_id` for older/alternate envelopes.
+  const firingAlertNames = useMemo(() => new Set(alerts.map((a) => a.metric || a.alert_id || '')), [alerts]);
+  const alertToColor = useMemo(() => {
+    const uniq = Array.from(new Set((scenarios.data?.scenarios ?? []).map((s) => s.alert))).filter(Boolean);
+    const m: Record<string, string> = {};
+    uniq.forEach((name, i) => { m[name] = ALERT_PALETTE[i % ALERT_PALETTE.length]; });
+    return m;
+  }, [scenarios]);
 
   const pieData = useMemo(() => (
     (Object.entries(sevCounts) as [Severity, number][])
@@ -86,11 +101,12 @@ export default function Overview() {
       {/* Stat row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Active alerts"
+          label="Firing alerts"
           value={alerts.length}
           icon={<BellRing className="h-4 w-4" />}
           intent={alerts.length > 0 ? 'bad' : 'ok'}
-          hint={alerts.length === 0 ? 'No firing alerts' : 'Firing right now'}
+          hint={alerts.length === 0 ? 'No firing alerts' : 'Prometheus rules currently firing'}
+          tooltip="Number of Prometheus rules currently in firing state. Each rule can be triggered by one or more injected scenarios."
         />
         <StatCard
           label="Sev-1 / Sev-2"
@@ -177,6 +193,8 @@ export default function Overview() {
         onInject={inject}
         onReset={reset}
         onResetAll={resetAll}
+        firingAlertNames={firingAlertNames}
+        alertToColor={alertToColor}
       />
     </div>
   );
@@ -203,8 +221,8 @@ const CATEGORY_META: Record<string, { label: string; icon: JSX.Element; tint: st
 };
 
 function FailureInjection({
-  scenarios, loading, error, busy, onInject, onReset, onResetAll,
-}: InjectionProps) {
+  scenarios, loading, error, busy, onInject, onReset, onResetAll, firingAlertNames, alertToColor,
+}: InjectionProps & { firingAlertNames: Set<string>; alertToColor: Record<string, string> }) {
   const grouped = useMemo(() => {
     const buckets: Record<string, import('@/types/api').Scenario[]> = {};
     for (const s of scenarios) {
@@ -277,6 +295,8 @@ function FailureInjection({
                       busy={busy}
                       onInject={onInject}
                       onReset={onReset}
+                      isFiring={firingAlertNames.has(s.alert)}
+                      alertColor={alertToColor[s.alert]}
                     />
                   ))}
                 </div>
@@ -290,63 +310,73 @@ function FailureInjection({
 }
 
 function ScenarioCard({
-  s, busy, onInject, onReset,
+  s, busy, onInject, onReset, isFiring, alertColor,
 }: {
   s: import('@/types/api').Scenario;
   busy: string | null;
   onInject: (id: string) => void;
   onReset: (id: string) => void;
+  isFiring: boolean;
+  alertColor?: string;
 }) {
   const on = s.current_variant !== 'off';
   const isThisBusy = busy === s.scenario_id;
   return (
-    <div
-      className={clsx(
-        'rounded-lg border bg-ink-50/50 p-3 transition-all dark:bg-ink-900/40',
-        on
-          ? 'border-bad/40 ring-1 ring-bad/20'
-          : 'border-ink-200 dark:border-ink-700',
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold text-ink-900 dark:text-ink-50">
-            {s.title}
-          </h3>
-          <p className="mt-0.5 text-xs text-ink-600 dark:text-ink-400">{s.description}</p>
-          <p className="mt-1.5 font-mono text-[10px] text-ink-500 dark:text-ink-400">
-            flag <span className="text-ink-700 dark:text-ink-300">{s.flag}</span>
-            {' · alert '}<span className="text-ink-700 dark:text-ink-300">{s.alert}</span>
-          </p>
+    <div>
+      {alertColor && <div style={{ height: 6, background: alertColor }} className="rounded-t-sm -mx-3 mt-0" />}
+      <div
+        className={clsx(
+          'rounded-lg border bg-ink-50/50 p-3 transition-all dark:bg-ink-900/40',
+          on
+            ? 'border-bad/40 ring-1 ring-bad/20'
+            : 'border-ink-200 dark:border-ink-700',
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold text-ink-900 dark:text-ink-50">
+              {s.title}
+            </h3>
+            <p className="mt-0.5 text-xs text-ink-600 dark:text-ink-400">{s.description}</p>
+            <p className="mt-1.5 font-mono text-[10px] text-ink-500 dark:text-ink-400">
+              flag <span className="text-ink-700 dark:text-ink-300">{s.flag}</span>
+              {' · alert '}<span className="text-ink-700 dark:text-ink-300">{s.alert}</span>
+            </p>
+          </div>
+          <span
+            className={clsx(
+              'chip flex-shrink-0 font-mono',
+              on && '!border-bad/40 !text-bad',
+            )}
+          >
+            {on ? s.current_variant : 'off'}
+          </span>
         </div>
-        <span
-          className={clsx(
-            'chip flex-shrink-0 font-mono',
-            on && '!border-bad/40 !text-bad',
-          )}
-        >
-          {on ? s.current_variant : 'off'}
-        </span>
-      </div>
-      <div className="mt-3 flex items-center gap-2">
-        <button
-          onClick={() => onInject(s.scenario_id)}
-          disabled={!!busy || on}
-          className="btn btn-primary !py-1 !text-xs"
-        >
-          <PlayCircle className={clsx('h-3.5 w-3.5', isThisBusy && 'animate-spin')} />
-          Inject
-        </button>
-        <button
-          onClick={() => onReset(s.scenario_id)}
-          disabled={!!busy || !on}
-          className="btn !py-1 !text-xs"
-        >
-          <RotateCcw className="h-3.5 w-3.5" /> Reset
-        </button>
-        <span className="ml-auto font-mono text-[10px] text-ink-500 dark:text-ink-400">
-          ETA ~{s.eta_seconds}s
-        </span>
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            onClick={() => onInject(s.scenario_id)}
+            disabled={!!busy || on}
+            className="btn btn-primary !py-1 !text-xs"
+          >
+            <PlayCircle className={clsx('h-3.5 w-3.5', isThisBusy && 'animate-spin')} />
+            Inject
+          </button>
+          <button
+            onClick={() => onReset(s.scenario_id)}
+            disabled={!!busy || !on}
+            className="btn !py-1 !text-xs"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Reset
+          </button>
+          <span className="ml-auto font-mono text-[10px] text-ink-500 dark:text-ink-400">
+            ETA ~{s.eta_seconds}s
+          </span>
+        </div>
+        {on && !isFiring && (
+          <p className="mt-2 text-[11px] text-ink-500 dark:text-ink-400">
+            waiting ~{s.eta_seconds}s for {s.alert} to fire
+          </p>
+        )}
       </div>
     </div>
   );

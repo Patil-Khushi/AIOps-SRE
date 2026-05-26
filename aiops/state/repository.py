@@ -325,6 +325,7 @@ def save_notification(decision: Any, verdict_id: int) -> int:
 
     row = NotificationRow(
         verdict_id=verdict_id,
+        target=f"chatops:{decision.channel}",
         routed_at=getattr(decision, "decided_at", None) or datetime.now(UTC),
         channel=decision.channel,
         # ``chat_severity`` is the chatops enum — accept either the enum or
@@ -378,6 +379,7 @@ def _notification_row_to_dict(row: NotificationRow) -> dict[str, Any]:
         "verdict_id": row.verdict_id,
         "routed_at": _aware(row.routed_at).isoformat() if row.routed_at else None,
         "channel": row.channel,
+        "target": row.target,
         "chat_severity": row.chat_severity,
         "title": row.title,
         "body": row.body,
