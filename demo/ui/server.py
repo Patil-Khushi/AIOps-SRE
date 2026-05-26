@@ -285,9 +285,12 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
 
     Response: ``{"verdict": TriageVerdict, "ticket": TicketRecord,
     "classification": Classification, "notifications": RoutingDecision | null,
+    "deliveries": {adapter_name: DeliveryResult} | null,
     "persisted": {verdict_id, classification_id, notification_id}}``.
     ``notification_id`` is ``null`` when routing failed or when the persistence
     write itself raised (the JSONL audit log is the durable record).
+    ``deliveries`` is ``null`` when routing failed and ``{}`` when the verdict
+    was suppressed (no chatops emit).
     """
     try:
         alert_obj = Alert(**req.alert)
@@ -306,9 +309,14 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     ticket_record = auto_ticket(verdict, classification=classification)
 
     notifications: dict[str, Any] | None = None
+    deliveries: dict[str, Any] | None = None
     notification_id: int | None = None
     try:
-        decision = route_notification(verdict)
+        # #84: route() returns a RoutingOutcome bundling the decision with
+        # per-adapter DeliveryResults. Persistence + the existing response
+        # shape want the flat decision; deliveries surface as a sibling key.
+        outcome = route_notification(verdict)
+        decision = outcome.decision
         # CHAT-2 (#82): persist the structured row alongside the existing
         # JSONL audit log. Persistence failure must not break the pipeline —
         # the JSONL adapter (the source of truth) already wrote.
@@ -322,6 +330,7 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
                 verdict.affected_service,
             )
         notifications = decision.model_dump(mode="json")
+        deliveries = {name: r.model_dump(mode="json") for name, r in outcome.deliveries.items()}
     except Exception:
         logger.exception("RA-005: routing failed for verdict on %s", verdict.affected_service)
 
@@ -330,6 +339,7 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
         "ticket": ticket_record.model_dump(mode="json"),
         "classification": classification.model_dump(mode="json"),
         "notifications": notifications,
+        "deliveries": deliveries,
         "persisted": {
             "verdict_id": verdict_id,
             "classification_id": classification_id,
