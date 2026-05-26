@@ -91,7 +91,7 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
-from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
+from agents.alert_triage import Alert, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
@@ -332,14 +332,22 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
 
-    verdict: TriageVerdict = triage(alert_obj)
-    verdict_id = state_repo.save_verdict(verdict, cluster_key=alert_obj.cluster_key())
+    # #61: ``triage`` returns ``(verdict, verdict_id)`` and persists the row
+    # itself. The route used to call ``save_verdict`` again here to capture
+    # an id for the classification/notification FKs — that was the source
+    # of the double-save (verdict_id growing 2× per /api/triage call).
+    verdict, verdict_id = triage(alert_obj)
 
     # Classify BEFORE ticketing (DEMO-3 / #55): RA-002 does not depend on the
     # ticket id, and the ServiceNow incident's ``category`` + description
     # block are only useful if classification is available at create time.
     classification = classify(ClassificationInput(alert=alert_obj, triage_verdict=verdict))
-    classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
+    # #61: classification persistence requires a verdict_id FK. If the
+    # agent-side ``save_verdict`` failed (verdict_id is None), skip the
+    # downstream persistence rather than crash on the FK.
+    classification_id: int | None = None
+    if verdict_id is not None:
+        classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
 
     ticket_record = auto_ticket(verdict, classification=classification)
 
@@ -356,7 +364,8 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
         # JSONL audit log. Persistence failure must not break the pipeline —
         # the JSONL adapter (the source of truth) already wrote.
         try:
-            notification_id = state_repo.save_notification(decision, verdict_id=verdict_id)
+            if verdict_id is not None:
+                notification_id = state_repo.save_notification(decision, verdict_id=verdict_id)
         except Exception:
             logger.exception(
                 "RA-005: persist save_notification failed for verdict %s on %s "
