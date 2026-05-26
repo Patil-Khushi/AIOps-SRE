@@ -73,7 +73,6 @@ class ChatMessage:
     interactive: InteractivePrompt | None = None
 
 
-@dataclass
 class DeliveryResult(BaseModel):
     adapter: str
     ok: bool
