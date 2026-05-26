@@ -57,12 +57,12 @@ class ChatOpsClient:
             logger.debug("chatops: no adapters registered; dropping %r", msg.title)
             return results
 
-        seen_names: set[str] = set()
-        for index, adapter in enumerate(self._adapters, start=1):
-            adapter_name = getattr(adapter, "name", None) or adapter.__class__.__name__
-            if adapter_name in seen_names:
-                adapter_name = f"{adapter_name}#{index}"
-            seen_names.add(adapter_name)
+        name_counts: dict[str, int] = {}
+        for adapter in self._adapters:
+            base_name = getattr(adapter, "name", None) or adapter.__class__.__name__
+            count = name_counts.get(base_name, 0) + 1
+            name_counts[base_name] = count
+            adapter_name = base_name if count == 1 else f"{base_name}#{count}"
 
             start = perf_counter()
             ok = True
@@ -78,7 +78,8 @@ class ChatOpsClient:
                 ok = False
                 error = f"{type(exc).__name__}: {exc}"
             latency_ms = int((perf_counter() - start) * 1000)
-            results[adapter_name] = DeliveryResult(
+            results[adapter_name] = DeliveryResult.model_construct(
+                _fields_set=set(),
                 adapter=adapter_name,
                 ok=ok,
                 error=error,

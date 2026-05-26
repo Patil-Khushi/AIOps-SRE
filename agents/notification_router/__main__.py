@@ -28,7 +28,7 @@ def main() -> None:
     verdict = TriageVerdict.model_validate_json(raw)
     if send:
         outcome = route(verdict)
-        print(outcome.decision.model_dump_json(indent=2))
+        print(outcome.model_dump_json(indent=2))
     else:
         print(decide(verdict).model_dump_json(indent=2))
 

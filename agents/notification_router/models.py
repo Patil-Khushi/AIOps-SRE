@@ -16,7 +16,6 @@ Why a separate decision object instead of just returning ``ChatMessage``:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,7 +52,8 @@ class RoutingDecision(BaseModel):
     decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
-@dataclass
-class RoutingOutcome:
-    decision: RoutingDecision
-    deliveries: dict[str, "DeliveryResult"]
+class RoutingOutcome(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  decision: RoutingDecision
+  deliveries: dict[str, DeliveryResult] = Field(default_factory=dict)

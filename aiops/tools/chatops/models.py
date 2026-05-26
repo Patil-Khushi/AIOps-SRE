@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
+from pydantic import BaseModel
 
 
 class Severity(StrEnum):
@@ -73,7 +74,7 @@ class ChatMessage:
 
 
 @dataclass
-class DeliveryResult:
+class DeliveryResult(BaseModel):
     adapter: str
     ok: bool
     error: str | None = None
