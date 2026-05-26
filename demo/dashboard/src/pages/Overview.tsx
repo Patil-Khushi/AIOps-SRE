@@ -19,6 +19,11 @@ const SEV_COLOR: Record<Severity, string> = {
   'Sev-1': '#ef4444', 'Sev-2': '#f59e0b', 'Sev-3': '#eab308', 'Sev-4': '#3b82f6',
 };
 
+// Palette used to assign a stable colour to each Prometheus alert rule
+// shown in the Overview scenario cards. Hoisted to module scope so the
+// array isn't re-allocated on every render.
+const ALERT_PALETTE = ['#7c3aed', '#06b6d4', '#ef4444', '#f59e0b', '#10b981', '#a78bfa', '#ec4899'];
+
 // Map a Prometheus alert's severity_hint label to a Sev-N bucket for chart slicing.
 function inferSeverity(hint: string | null | undefined): Severity {
   const s = (hint || '').toLowerCase();
@@ -51,8 +56,9 @@ export default function Overview() {
     return c;
   }, [alerts]);
 
+  // Use `metric` as the canonical alert-rule name coming from Prometheus' API
+  // when available. Fall back to `alert_id` for older/alternate envelopes.
   const firingAlertNames = useMemo(() => new Set(alerts.map((a) => a.metric || a.alert_id || '')), [alerts]);
-  const ALERT_PALETTE = ['#7c3aed', '#06b6d4', '#ef4444', '#f59e0b', '#10b981', '#a78bfa', '#ec4899'];
   const alertToColor = useMemo(() => {
     const uniq = Array.from(new Set((scenarios.data?.scenarios ?? []).map((s) => s.alert))).filter(Boolean);
     const m: Record<string, string> = {};
