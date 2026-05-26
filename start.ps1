@@ -6,6 +6,12 @@
 #   3. Starts the FastAPI demo server (demo/ui/server.py) at http://localhost:8765
 #   4. Opens the browser
 #
+# Pass -Fresh to wipe demo state before bring-up (DEMO-4 / #56):
+#   - resets every flag-driven scenario in flagd to ``off``
+#   - deletes data/state.db so verdict_id / cluster ids start at 1
+#   - archives demo/audit/chatops.jsonl to chatops.jsonl.bak-<utc-timestamp>
+# Default is off — iterative dev keeps state across runs.
+#
 # Stop with: .\stop.ps1
 
 [CmdletBinding()]
@@ -14,7 +20,8 @@ param(
     [int]$UiPort = 8765,
     [string]$LlmProvider = '',   # leave empty to let .env drive AIOPS_LLM_PROVIDER
     [string]$LlmModel = '',      # leave empty to let .env drive AIOPS_LLM_MODEL
-    [string]$Context = 'rancher-desktop'  # set to '' to use current kube context
+    [string]$Context = 'rancher-desktop',  # set to '' to use current kube context
+    [switch]$Fresh                          # wipe scenarios + state.db + chatops.jsonl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +68,58 @@ if ($probeExit -ne 0) {
     throw "Rancher Desktop k3s API unreachable on context '$Context'."
 }
 Write-Host "    cluster API reachable" -ForegroundColor Green
+
+# --- 1.5 -Fresh cleanup (DEMO-4 / #56) ---
+# Wipe demo state so the run starts from a clean slate. Three pieces of state
+# survive a stop/start cycle by default:
+#   - flagd-config in the cluster: scenarios stay flipped on across restarts
+#   - data/state.db: verdict_id grows monotonically across sessions
+#   - demo/audit/chatops.jsonl: yesterday's chatops entries get tailed by
+#     `Get-Content -Wait` and mixed into today's feed
+# -Fresh resets all three. Archived chatops logs land next to the live file
+# as chatops.jsonl.bak-<utc-timestamp> and are gitignored (demo/audit/*).
+if ($Fresh) {
+    Write-Step '1.5' "fresh cleanup (-Fresh)..."
+
+    # 1. Clear every flag-driven scenario back to its 'off' variant.
+    # The feature_flags seam talks to flagd-config via the kubernetes Python
+    # client (ARCH-1 / #70) so it needs the cluster up — which we just
+    # verified above — but no port-forward.
+    Write-Host "    flagd: resetting all scenarios to 'off'..." -ForegroundColor DarkGray
+    cmd /c "uv run python -m demo.failure_injection.inject --clear >NUL 2>&1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "    flagd reset returned exit $LASTEXITCODE; scenarios may still be on. Run 'uv run python -m demo.failure_injection.inject --clear' manually to see the error."
+    } else {
+        Write-Host "    flagd: all scenarios reset" -ForegroundColor Green
+    }
+
+    # 2. Drop data/state.db. ``init_db()`` recreates the schema on the first
+    # FastAPI call, so the file comes back empty without manual intervention.
+    $stateDb = Join-Path $RepoRoot 'data\state.db'
+    if (Test-Path $stateDb) {
+        Remove-Item $stateDb -Force
+        Write-Host "    state.db: removed (init_db will recreate on first call)" -ForegroundColor Green
+    } else {
+        Write-Host "    state.db: not present, nothing to remove" -ForegroundColor DarkGray
+    }
+
+    # 3. Archive the chatops audit log so the WebSocket replay + tail don't
+    # mix yesterday's entries into today's session. Use a UTC stamp so
+    # archives sort lexicographically.
+    $chatLog = Join-Path $RepoRoot 'demo\audit\chatops.jsonl'
+    if (Test-Path $chatLog) {
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+        $bak = Join-Path $RepoRoot "demo\audit\chatops.jsonl.bak-$stamp"
+        Move-Item $chatLog $bak
+        New-Item -ItemType File -Path $chatLog | Out-Null
+        Write-Host "    chatops.jsonl: archived -> $(Split-Path -Leaf $bak)" -ForegroundColor Green
+    } else {
+        # Touch the empty file so the WebSocket adapter can append on first
+        # send without dealing with the missing-file edge case.
+        New-Item -ItemType File -Path $chatLog -Force | Out-Null
+        Write-Host "    chatops.jsonl: not present, created empty file" -ForegroundColor DarkGray
+    }
+}
 
 # --- 2. port-forwards ---
 Write-Step 2 "starting port-forwards..."
