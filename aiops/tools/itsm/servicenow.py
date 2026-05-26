@@ -1,10 +1,11 @@
 """ServiceNow provider for the ``itsm.*`` capabilities (RA-003 Auto-Ticketing).
 
-Three capabilities are registered when ``AIOPS_USE_MOCK_ITSM`` is ``false``:
+Four capabilities are registered when ``AIOPS_USE_MOCK_ITSM`` is ``false``:
 
-- ``itsm.incident.create`` — POST ``/api/now/table/incident``
-- ``itsm.incident.update`` — PATCH ``/api/now/table/incident/{sys_id}``
-- ``itsm.cmdb.lookup``     — GET  ``/api/now/table/cmdb_ci_service`` by service name
+- ``itsm.incident.create``         — POST ``/api/now/table/incident``
+- ``itsm.incident.update``         — PATCH ``/api/now/table/incident/{sys_id}``
+- ``itsm.incident.attachment.add`` — POST ``/api/now/attachment/file``  (DEMO-8 / #60)
+- ``itsm.cmdb.lookup``             — GET  ``/api/now/table/cmdb_ci_service`` by service name
 
 The provider authenticates against a ServiceNow PDI via basic auth. Credentials
 come from the environment (``AIOPS_SERVICENOW_*``) and are read lazily on every
@@ -208,6 +209,113 @@ def create_incident(
 # ─────────────────────────────────────────────────────────────────────────────
 # itsm.incident.update
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# itsm.incident.attachment.add  (DEMO-8 / #60)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@_register_if_real(
+    name="snow.itsm.incident.attachment.add",
+    capability="itsm.incident.attachment.add",
+    provider="servicenow",
+    description="Attach a binary file (e.g. a Grafana panel PNG) to a ServiceNow incident by sys_id.",
+)
+def add_attachment(
+    sys_id: str,
+    file_name: str,
+    content: bytes,
+    content_type: str = "application/octet-stream",
+) -> ToolResult:
+    """POST a file body to ``/api/now/attachment/file?table_name=incident&table_sys_id=<sys_id>``.
+
+    Returns the attachment record's sys_id and file metadata on success.
+    Used by RA-003 (#60) to attach the Grafana panel screenshot to the
+    incident so triagers see the actual graph without context-switching
+    into Grafana.  The agent treats a failure here as non-fatal — the
+    ticket itself has already been created by ``itsm.incident.create``.
+    """
+    if not sys_id:
+        return ToolResult(
+            ok=False,
+            error="add_attachment requires sys_id",
+            metadata={"provider": "servicenow"},
+        )
+    if not file_name:
+        return ToolResult(
+            ok=False,
+            error="add_attachment requires file_name",
+            metadata={"provider": "servicenow"},
+        )
+    if not content:
+        return ToolResult(
+            ok=False,
+            error="add_attachment requires non-empty content",
+            metadata={"provider": "servicenow"},
+        )
+
+    cfg = _config()
+    if cfg is None:
+        return _not_configured()
+    base_url, auth, timeout, verify = cfg
+
+    params = {
+        "table_name": "incident",
+        "table_sys_id": sys_id,
+        "file_name": file_name,
+    }
+    # ServiceNow's attachment endpoint expects the file body as the raw
+    # request body (NOT multipart/form-data) plus the Content-Type header
+    # set to the file's mime type.
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": content_type,
+    }
+    try:
+        r = httpx.post(
+            f"{base_url}/api/now/attachment/file",
+            params=params,
+            content=content,
+            headers=headers,
+            auth=auth,
+            timeout=timeout,
+            verify=verify,
+        )
+    except httpx.HTTPError as exc:
+        return ToolResult(
+            ok=False,
+            error=f"HTTPError: {exc}",
+            metadata={"provider": "servicenow"},
+        )
+    if r.status_code >= 400:
+        try:
+            body = r.json()
+        except ValueError:
+            body = {"raw": r.text[:500]}
+        return ToolResult(
+            ok=False,
+            error=f"status={r.status_code} body={body}",
+            metadata={"provider": "servicenow", "status_code": r.status_code},
+        )
+    try:
+        record = (r.json() or {}).get("result", {})
+    except ValueError as exc:
+        return ToolResult(
+            ok=False,
+            error=f"non-JSON response: {exc}",
+            metadata={"provider": "servicenow"},
+        )
+    return ToolResult(
+        ok=True,
+        data={
+            "attachment_sys_id": record.get("sys_id"),
+            "file_name": record.get("file_name"),
+            "size_bytes": record.get("size_bytes"),
+            "content_type": record.get("content_type"),
+        },
+        metadata={"provider": "servicenow", "url": base_url},
+    )
 
 
 @_register_if_real(

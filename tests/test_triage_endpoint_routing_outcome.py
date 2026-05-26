@@ -96,7 +96,9 @@ def _stub_pipeline(monkeypatch, *, outcome: RoutingOutcome) -> dict[str, Any]:
     monkeypatch.setattr(
         srv,
         "auto_ticket",
-        lambda _verdict, classification=None: _StubTicket(),
+        # alert_name kwarg added in #60. Accept **kwargs so this stub stays
+        # tolerant of any further auto_ticket signature growth.
+        lambda _verdict, classification=None, **_kw: _StubTicket(),
     )
 
     monkeypatch.setattr(srv, "route_notification", lambda _verdict: outcome)

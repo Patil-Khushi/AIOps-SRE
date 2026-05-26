@@ -341,7 +341,14 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     classification = classify(ClassificationInput(alert=alert_obj, triage_verdict=verdict))
     classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
 
-    ticket_record = auto_ticket(verdict, classification=classification)
+    # alert_name (DEMO-8 / #60): the Prometheus alert rule name, used by
+    # auto_ticket to look up the matching Grafana panel and attach a
+    # screenshot to the ServiceNow incident.
+    ticket_record = auto_ticket(
+        verdict,
+        classification=classification,
+        alert_name=alert_obj.metric,
+    )
 
     notifications: dict[str, Any] | None = None
     deliveries: dict[str, Any] | None = None

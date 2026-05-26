@@ -24,18 +24,123 @@ sink live in ``aiops.tools.mock_providers``.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 # Side-effect imports register providers with the registry.
 import aiops.tools.itsm
-import aiops.tools.mock_providers  # noqa: F401
+import aiops.tools.mock_providers
+import aiops.tools.observability  # noqa: F401  — registers grafana.render_panel
 from agents.alert_triage.models import Severity, TriageVerdict
 from agents.auto_ticketing.models import TicketRecord, TicketSystem
 from agents.incident_classifier.models import Classification
 from aiops.tools import get_registry
 
 logger = logging.getLogger(__name__)
+
+# ─── DEMO-8 / #60: Grafana panel attachment ──────────────────────────────
+#
+# Loaded lazily so a missing or malformed JSON file doesn't break import.
+# The mapping keys are Prometheus alert rule names (the ``metric`` field on
+# the canonical ``Alert`` model); values carry the Grafana dashboard UID
+# and panel coordinates.  See ``grafana_panels.json`` for the schema.
+_PANEL_MAP_PATH = Path(__file__).parent / "grafana_panels.json"
+_PANEL_MAP: dict[str, dict[str, Any]] | None = None
+
+
+def _panel_for(alert_name: str) -> dict[str, Any] | None:
+    """Look up the Grafana panel mapping for an alert. Returns ``None`` if
+    the alert is unmapped (most alerts won't have a panel — the demo only
+    wires the high-value ones)."""
+    global _PANEL_MAP
+    if _PANEL_MAP is None:
+        try:
+            raw = json.loads(_PANEL_MAP_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("could not load grafana_panels.json (%s); skipping attachments", exc)
+            _PANEL_MAP = {}
+        else:
+            # Strip the docstring key so it can never collide with a real alert name.
+            _PANEL_MAP = {
+                k: v for k, v in raw.items() if not k.startswith("_") and isinstance(v, dict)
+            }
+    return _PANEL_MAP.get(alert_name)
+
+
+def _reload_panel_map_for_tests() -> None:
+    """Test seam — clears the lazy cache so a monkeypatched JSON path reloads."""
+    global _PANEL_MAP
+    _PANEL_MAP = None
+
+
+def _try_attach_grafana_panel(
+    *,
+    registry: Any,
+    sys_id: str,
+    alert_name: str,
+    audit: list[str],
+) -> None:
+    """Render the alert's Grafana panel and attach it to the incident.
+
+    Every failure path is logged to ``audit`` and swallowed — ticket
+    creation has already succeeded, and a missing attachment must not
+    erase that success.  Failure modes worth distinguishing in the audit
+    log: alert unmapped (most alerts), Grafana unreachable / plugin
+    missing, ServiceNow attachment endpoint failure.
+    """
+    panel = _panel_for(alert_name)
+    if panel is None:
+        audit.append(f"grafana attachment skipped: no panel mapped for alert {alert_name!r}")
+        return
+
+    try:
+        render = registry.call(
+            "observability.metrics.render_panel",
+            dashboard_uid=panel["dashboard_uid"],
+            panel_id=int(panel["panel_id"]),
+            from_=panel.get("from", "now-15m"),
+            to=panel.get("to", "now"),
+        )
+    except Exception as exc:  # registry-level (capability not registered)
+        audit.append(f"grafana attachment skipped: render_panel raised {type(exc).__name__}: {exc}")
+        return
+
+    if not render.ok or not render.data:
+        audit.append(f"grafana render_panel failed: {render.error}")
+        return
+
+    png_bytes = render.data.get("png_bytes")
+    if not isinstance(png_bytes, bytes) or not png_bytes:
+        audit.append("grafana render_panel returned no png_bytes; skipping attach")
+        return
+
+    file_name = f"{alert_name}.png"
+    try:
+        attach = registry.call(
+            "itsm.incident.attachment.add",
+            sys_id=sys_id,
+            file_name=file_name,
+            content=png_bytes,
+            content_type=render.data.get("content_type", "image/png"),
+        )
+    except Exception as exc:
+        audit.append(
+            f"grafana attachment skipped: incident.attachment.add raised "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return
+
+    if attach.ok:
+        audit.append(
+            f"grafana panel attached ({file_name}, "
+            f"{len(png_bytes)} bytes, "
+            f"attachment_sys_id={(attach.data or {}).get('attachment_sys_id')})"
+        )
+    else:
+        audit.append(f"grafana incident.attachment.add failed: {attach.error}")
+
 
 _SEV1_CHANNEL = "oncall"
 _DEFAULT_CHANNEL = "alerts-noise"
@@ -164,6 +269,8 @@ def run(input: dict[str, Any]) -> dict[str, Any]:
 def ticket(
     verdict: TriageVerdict,
     classification: Classification | None = None,
+    *,
+    alert_name: str | None = None,
 ) -> TicketRecord:
     """File an ITSM ticket + chat-ops notification for a triage verdict.
 
@@ -181,6 +288,13 @@ def ticket(
     e.g. the eval harness which only feeds verdicts — the description still
     contains every other block plus a "Pending classification" placeholder
     so a human triaging the ticket sees the same structure either way.
+
+    ``alert_name`` (DEMO-8 / #60) is the Prometheus alert rule name (the
+    ``Alert.metric`` field — e.g. ``PaymentErrorRateHigh``).  When supplied
+    AND the ticket lands in ServiceNow AND ``grafana_panels.json`` maps
+    that alert to a panel, the agent renders the panel and attaches it
+    to the incident.  Failure at any step is non-fatal and audited; the
+    ticket creation itself is unaffected.
     """
     audit: list[str] = []
     registry = get_registry()
@@ -239,6 +353,21 @@ def ticket(
             ticket_id = data.get("number") or data.get("id") or data.get("sys_id")
             system = "servicenow" if result.metadata.get("provider") == "servicenow" else "mock"
             audit.append(f"itsm.incident.create ok (system={system}, ticket_id={ticket_id})")
+            # DEMO-8 / #60: render + attach the matching Grafana panel.
+            # ServiceNow only — the mock provider has no attachment endpoint
+            # and the demo's value is the human triager seeing the graph in
+            # ServiceNow, not in a mock JSON blob.
+            if system == "servicenow":
+                snow_sys_id = data.get("sys_id")
+                if snow_sys_id and alert_name:
+                    _try_attach_grafana_panel(
+                        registry=registry,
+                        sys_id=snow_sys_id,
+                        alert_name=alert_name,
+                        audit=audit,
+                    )
+                elif not alert_name:
+                    audit.append("grafana attachment skipped: alert_name not supplied by caller")
         else:
             audit.append(f"itsm.incident.create failed: {result.error}")
 

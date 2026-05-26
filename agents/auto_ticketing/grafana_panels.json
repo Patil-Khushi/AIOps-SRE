@@ -1,0 +1,28 @@
+{
+  "_doc": "Alert-name -> Grafana panel coordinates (DEMO-8 / #60). Loaded by agents.auto_ticketing on every ticket-create attempt; failure to render or attach the panel must NOT break ticket creation. Keys are Prometheus alert rule names (the `alert` field from demo/scenarios/*.yaml). Add entries here when wiring a new scenario whose Grafana view is worth attaching. `dashboard_uid` is the stable id from the dashboard's URL (.../d/<UID>/...); `panel_id` is the numeric id shown when 'Inspect → Panel JSON' on that panel. `from` and `to` accept Grafana's relative time expressions.",
+
+  "PaymentErrorRateHigh": {
+    "dashboard_uid": "otel-demo-services",
+    "panel_id": 5,
+    "from": "now-15m",
+    "to": "now"
+  },
+  "AdErrorRateHigh": {
+    "dashboard_uid": "otel-demo-services",
+    "panel_id": 7,
+    "from": "now-15m",
+    "to": "now"
+  },
+  "CartErrorRateHigh": {
+    "dashboard_uid": "otel-demo-services",
+    "panel_id": 9,
+    "from": "now-15m",
+    "to": "now"
+  },
+  "SlowProductCatalog": {
+    "dashboard_uid": "otel-demo-services",
+    "panel_id": 11,
+    "from": "now-30m",
+    "to": "now"
+  }
+}
