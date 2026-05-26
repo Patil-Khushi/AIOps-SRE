@@ -28,20 +28,25 @@ import httpx
 
 from aiops.tools.registry import ToolResult, tool
 
-# Default points at the kubectl port-forward in start.ps1
-# (Grafana is mounted under /grafana in the OTel demo's frontend-proxy).
-# Override for a self-hosted Grafana.
-_URL = os.environ.get("AIOPS_GRAFANA_URL", "http://localhost:8080/grafana").rstrip("/")
+# Default URL points at the kubectl port-forward in start.ps1 (Grafana is
+# mounted under /grafana in the OTel demo's frontend-proxy). If you
+# port-forward Grafana directly (typically on :3000) you need to set
+# AIOPS_GRAFANA_URL to "http://localhost:3000" — the default path-suffix
+# won't apply.
 
-# Optional API key. The OTel demo's Grafana is unauthenticated on the
-# port-forward, so leaving this empty is fine for local dev.  Set it
-# (any Editor-or-higher service-account token) when targeting a Grafana
-# that enforces auth on /render/*.
-_API_KEY = os.environ.get("AIOPS_GRAFANA_API_KEY", "").strip()
 
-# Rendering is heavier than a normal Grafana request: the image-renderer
-# spins up headless Chromium per call.  Give it a generous default.
-_TIMEOUT = float(os.environ.get("AIOPS_GRAFANA_TIMEOUT", "30"))
+def _config() -> tuple[str, str, float]:
+    """Return (base_url, api_key, timeout). Read lazily on every call so
+    ``.env`` edits take effect on the next request without re-importing
+    the module (mirrors ``aiops.tools.itsm.servicenow._config`` — see #144
+    review). ``api_key`` is ``""`` when unset; the OTel demo's local
+    Grafana is unauthenticated so that's the common path."""
+    url = os.environ.get("AIOPS_GRAFANA_URL", "http://localhost:8080/grafana").rstrip("/")
+    api_key = os.environ.get("AIOPS_GRAFANA_API_KEY", "").strip()
+    # Rendering is heavier than a normal Grafana request: the image-renderer
+    # spins up headless Chromium per call. Give it a generous default.
+    timeout = float(os.environ.get("AIOPS_GRAFANA_TIMEOUT", "30"))
+    return url, api_key, timeout
 
 
 @tool(
@@ -66,12 +71,20 @@ def render_panel(
     size and the panel coordinates.  On failure (plugin not installed,
     panel not found, Grafana unreachable) returns ``ToolResult(ok=False)``
     so the auto-ticketing agent can log + continue without raising.
+
+    Contract note: ``data["png_bytes"]`` is raw ``bytes``. Do not pass the
+    ``data`` dict to ``json.dumps`` or anything that serializes it without
+    base64-encoding the value first — bytes are not JSON-serializable and
+    will raise ``TypeError``. The current consumer (auto-ticketing) hands
+    the bytes straight to ServiceNow's binary attachment endpoint.
     """
+    url, api_key, timeout = _config()
+
     if not dashboard_uid:
         return ToolResult(
             ok=False,
             error="render_panel requires dashboard_uid",
-            metadata={"provider": "grafana", "url": _URL},
+            metadata={"provider": "grafana", "url": url},
         )
 
     params = {
@@ -83,22 +96,22 @@ def render_panel(
         "tz": tz,
     }
     headers = {"Accept": "image/png"}
-    if _API_KEY:
-        headers["Authorization"] = f"Bearer {_API_KEY}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     try:
         r = httpx.get(
-            f"{_URL}/render/d-solo/{dashboard_uid}",
+            f"{url}/render/d-solo/{dashboard_uid}",
             params=params,
             headers=headers,
-            timeout=_TIMEOUT,
+            timeout=timeout,
         )
         r.raise_for_status()
     except httpx.HTTPError as exc:
         return ToolResult(
             ok=False,
             error=f"HTTPError: {exc}",
-            metadata={"provider": "grafana", "url": _URL},
+            metadata={"provider": "grafana", "url": url},
         )
 
     # Defensive: confirm the response really is an image. A Grafana
@@ -113,7 +126,7 @@ def render_panel(
                 f"(Content-Type={content_type!r}). "
                 "Is the grafana-image-renderer plugin installed?"
             ),
-            metadata={"provider": "grafana", "url": _URL},
+            metadata={"provider": "grafana", "url": url},
         )
 
     return ToolResult(
@@ -128,5 +141,5 @@ def render_panel(
             "from": from_,
             "to": to,
         },
-        metadata={"provider": "grafana", "url": _URL},
+        metadata={"provider": "grafana", "url": url},
     )

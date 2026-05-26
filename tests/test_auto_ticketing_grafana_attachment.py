@@ -239,6 +239,21 @@ def test_alert_name_omitted_skips_attachment(monkeypatch):
     assert any("alert_name not supplied" in line for line in record.audit_metadata)
 
 
+def test_attachment_filename_is_sanitized():
+    """Path separators and other shell-hostile chars in an alert name must
+    not survive into the attachment filename. The sanitizer rewrites them
+    to underscores and forbids leading dots."""
+    sanitize = auto_ticketing_agent._safe_attachment_filename
+    assert sanitize("PaymentErrorRateHigh") == "PaymentErrorRateHigh.png"
+    assert sanitize("foo/bar") == "foo_bar.png"
+    # ``..`` becomes ``..``, ``/`` becomes ``_``, then leading dots strip.
+    assert sanitize("../etc/passwd") == "_etc_passwd.png"
+    assert sanitize(".hidden") == "hidden.png"
+    assert sanitize("with space") == "with_space.png"
+    # Pure-garbage names still produce a usable file.
+    assert sanitize("/////") == "alert.png"
+
+
 def test_mock_provider_ticket_skips_grafana_path(monkeypatch):
     """When the mock ITSM is active (provider=mock), the resulting ticket
     has no real ServiceNow sys_id to attach to. The agent should skip the

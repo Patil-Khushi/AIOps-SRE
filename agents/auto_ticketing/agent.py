@@ -53,26 +53,52 @@ _PANEL_MAP: dict[str, dict[str, Any]] | None = None
 def _panel_for(alert_name: str) -> dict[str, Any] | None:
     """Look up the Grafana panel mapping for an alert. Returns ``None`` if
     the alert is unmapped (most alerts won't have a panel — the demo only
-    wires the high-value ones)."""
-    global _PANEL_MAP
-    if _PANEL_MAP is None:
+    wires the high-value ones).
+
+    Thread-safety: the lazy load builds the map into a local first, then
+    publishes via a single assignment. Two concurrent first-callers (FastAPI
+    can serve /api/triage in parallel) may both read the file, but neither
+    sees a half-built map and the final state is correct either way."""
+    cached = _PANEL_MAP
+    if cached is None:
         try:
             raw = json.loads(_PANEL_MAP_PATH.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             logger.warning("could not load grafana_panels.json (%s); skipping attachments", exc)
-            _PANEL_MAP = {}
+            cached = {}
         else:
-            # Strip the docstring key so it can never collide with a real alert name.
-            _PANEL_MAP = {
+            # Keys starting with ``_`` are reserved for documentation entries
+            # (e.g. ``_doc``); stripping them here means they can never
+            # collide with a real alert rule name.
+            cached = {
                 k: v for k, v in raw.items() if not k.startswith("_") and isinstance(v, dict)
             }
-    return _PANEL_MAP.get(alert_name)
+        globals()["_PANEL_MAP"] = cached
+    return cached.get(alert_name)
 
 
 def _reload_panel_map_for_tests() -> None:
     """Test seam — clears the lazy cache so a monkeypatched JSON path reloads."""
-    global _PANEL_MAP
-    _PANEL_MAP = None
+    globals()["_PANEL_MAP"] = None
+
+
+def _safe_attachment_filename(alert_name: str) -> str:
+    """Strip path separators and other shell-hostile characters from an
+    alert rule name so it can be used as a ServiceNow attachment filename.
+
+    Prometheus rule names are conventionally CamelCase identifiers, but a
+    typo or a future caller could feed in something like ``foo/bar`` or
+    ``../etc/passwd``. ServiceNow stores the decoded form server-side; we
+    keep the filename to a safe alphabet.
+    """
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in alert_name)
+    # Avoid leading dots (would create hidden files on Unix-y viewers).
+    safe = safe.lstrip(".")
+    # Fall back to a placeholder if the input had no alphanumerics — a
+    # filename of just underscores is technically valid but unhelpful.
+    if not any(c.isalnum() for c in safe):
+        safe = "alert"
+    return f"{safe}.png"
 
 
 def _try_attach_grafana_panel(
@@ -116,7 +142,7 @@ def _try_attach_grafana_panel(
         audit.append("grafana render_panel returned no png_bytes; skipping attach")
         return
 
-    file_name = f"{alert_name}.png"
+    file_name = _safe_attachment_filename(alert_name)
     try:
         attach = registry.call(
             "itsm.incident.attachment.add",
