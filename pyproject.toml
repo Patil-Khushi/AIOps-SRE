@@ -55,6 +55,9 @@ dev = [
     "numpy>=1.26",
     "ruff>=0.6",
     "mypy>=1.11",
+    # Optional local commit guard (.pre-commit-config.yaml). Editor-agnostic
+    # backstop for contributors not on the shared VS Code Ruff-on-save setup.
+    "pre-commit>=3.7",
 ]
 
 [build-system]
