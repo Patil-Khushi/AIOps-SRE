@@ -21,7 +21,11 @@ jobs:
         run: uv python install 3.12
 
       - name: Install deps
-        run: uv sync --extra dev --extra ui
+        # --locked: fail if uv.lock is out of step with pyproject.toml, so a
+        # dependency change not accompanied by a committed `uv lock` is caught
+        # here instead of silently re-resolving — the floating-dependency class
+        # of bug that reddened CI before the lockfile was committed (see #155).
+        run: uv sync --locked --extra dev --extra ui
 
       - name: ruff check
         run: uv run ruff check .
