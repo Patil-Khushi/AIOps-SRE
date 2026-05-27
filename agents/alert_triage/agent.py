@@ -695,7 +695,8 @@ def _generate_summary(
 
 def run(input: dict[str, Any]) -> dict[str, Any]:
     """Eval-harness contract: dict-in, dict-out shim around ``triage``."""
-    return triage(Alert(**input)).model_dump(mode="json")
+    verdict, _verdict_id = triage(Alert(**input))
+    return verdict.model_dump(mode="json")
 
 
 def _verdict_from_row(row: dict[str, Any]) -> TriageVerdict:
@@ -732,8 +733,14 @@ def _verdict_from_row(row: dict[str, Any]) -> TriageVerdict:
     )
 
 
-def triage(alert: Alert) -> TriageVerdict:
-    """Triage a single alert. Returns a structured verdict.
+def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
+    """Triage a single alert. Returns the verdict plus the persisted row id.
+
+    The second element is the ``verdicts.id`` of the saved row, or ``None``
+    if persistence failed (logged but non-fatal). Callers that need to
+    foreign-key into the verdict — classification, notification, the
+    ``/api/triage`` response — should use this id rather than calling
+    ``save_verdict`` themselves (#61).
 
     Read-only with respect to external systems — does not open tickets, page
     anyone, or run remediation (those are downstream agents).
@@ -751,7 +758,7 @@ def triage(alert: Alert) -> TriageVerdict:
             alert.alert_id,
             cached.get("audit_metadata", {}).get("created_at"),
         )
-        return _verdict_from_row(cached)
+        return _verdict_from_row(cached), cached.get("id")
 
     decision_trace: list[str] = []
     # Stage 1+2: validate + normalize — done by Pydantic on Alert construction.
@@ -864,8 +871,11 @@ def triage(alert: Alert) -> TriageVerdict:
         status=status,
         audit_metadata=audit,
     )
+    verdict_id: int | None = None
     try:
-        state_repo.save_verdict(verdict, cluster_key=hit.cluster_key, alert_id=alert.alert_id)
+        verdict_id = state_repo.save_verdict(
+            verdict, cluster_key=hit.cluster_key, alert_id=alert.alert_id
+        )
     except Exception as exc:
         logger.warning("verdict persistence failed: %s", exc)
-    return verdict
+    return verdict, verdict_id

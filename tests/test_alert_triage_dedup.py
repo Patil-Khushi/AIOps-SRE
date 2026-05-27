@@ -171,3 +171,46 @@ def test_embedding_similarity_match_suppresses_paraphrase(clean_state, monkeypat
     assert v2["status"] == "Suppressed"
     trace = v2["audit_metadata"]["decision_trace"]
     assert any("embedding" in line.lower() for line in trace), trace
+
+
+def test_triage_writes_exactly_one_verdict_row_per_call(clean_state):
+    """#61 regression: each ``triage()`` call must produce exactly one
+    row in ``verdicts``. Previously the agent saved once and the route
+    handler saved again to capture an id, doubling the count.
+
+    Asserts both that the returned id matches the persisted row id and
+    that ``MAX(id)`` after N distinct calls equals N.
+    """
+    from agents.alert_triage import Alert
+    from agents.alert_triage.agent import triage
+    from aiops.state import repository as state_repo
+
+    ids: list[int | None] = []
+    for i in range(10):
+        verdict, verdict_id = triage(Alert(**_alert_input(alert_id=f"ALT-COUNT-{i}")))
+        assert verdict_id is not None, "save_verdict must succeed under clean_state"
+        ids.append(verdict_id)
+
+    # Each id should be unique and the highest should equal len(ids) since
+    # the DB is fresh and nothing else has written.
+    assert len(set(ids)) == 10
+    assert max(ids) == 10  # type: ignore[type-var]
+
+    # And the returned id must point at a real row.
+    persisted = state_repo.get_verdict(ids[-1])  # type: ignore[arg-type]
+    assert persisted is not None
+    assert persisted["affected_service"] == verdict.affected_service
+
+
+def test_idempotent_triage_returns_same_verdict_id(clean_state):
+    """#61 + idempotency: a re-delivery of the same ``alert_id`` within
+    the idempotency window must return the SAME ``verdict_id`` as the
+    first call (not a fresh save)."""
+    from agents.alert_triage import Alert
+    from agents.alert_triage.agent import triage
+
+    v1, id1 = triage(Alert(**_alert_input(alert_id="ALT-IDEMP")))
+    v2, id2 = triage(Alert(**_alert_input(alert_id="ALT-IDEMP")))
+
+    assert id1 == id2, "duplicate delivery should reuse the cached verdict's row id"
+    assert v1.affected_service == v2.affected_service

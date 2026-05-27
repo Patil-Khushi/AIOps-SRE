@@ -69,8 +69,6 @@ from fastapi import (
     HTTPException,
     Request,
     Response,
-    WebSocket,
-    WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -91,7 +89,7 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
-from agents.alert_triage import Alert, TriageVerdict, triage  # noqa: E402
+from agents.alert_triage import Alert, triage  # noqa: E402
 from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
 from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
 from agents.notification_router import route as route_notification  # noqa: E402
@@ -111,6 +109,7 @@ from aiops.tools import (  # noqa: E402
 )
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import register_env_adapters  # noqa: E402
+from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
@@ -316,14 +315,22 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
 
-    verdict: TriageVerdict = triage(alert_obj)
-    verdict_id = state_repo.save_verdict(verdict, cluster_key=alert_obj.cluster_key())
+    # #61: ``triage`` returns ``(verdict, verdict_id)`` and persists the row
+    # itself. The route used to call ``save_verdict`` again here to capture
+    # an id for the classification/notification FKs — that was the source
+    # of the double-save (verdict_id growing 2× per /api/triage call).
+    verdict, verdict_id = triage(alert_obj)
 
     # Classify BEFORE ticketing (DEMO-3 / #55): RA-002 does not depend on the
     # ticket id, and the ServiceNow incident's ``category`` + description
     # block are only useful if classification is available at create time.
     classification = classify(ClassificationInput(alert=alert_obj, triage_verdict=verdict))
-    classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
+    # #61: classification persistence requires a verdict_id FK. If the
+    # agent-side ``save_verdict`` failed (verdict_id is None), skip the
+    # downstream persistence rather than crash on the FK.
+    classification_id: int | None = None
+    if verdict_id is not None:
+        classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
 
     # alert_name (DEMO-8 / #60): the Prometheus alert rule name, used by
     # auto_ticket to look up the matching Grafana panel and attach a
@@ -347,7 +354,8 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
         # JSONL audit log. Persistence failure must not break the pipeline —
         # the JSONL adapter (the source of truth) already wrote.
         try:
-            notification_id = state_repo.save_notification(decision, verdict_id=verdict_id)
+            if verdict_id is not None:
+                notification_id = state_repo.save_notification(decision, verdict_id=verdict_id)
         except Exception:
             logger.exception(
                 "RA-005: persist save_notification failed for verdict %s on %s "
@@ -1501,45 +1509,9 @@ def get_pods(namespace: str = "otel-demo") -> dict[str, Any]:
 # ─── WebSocket /ws/alerts ──────────────────────────────────────────────────
 #
 # Single broadcaster task polls Prometheus once per N seconds and pushes the
-# result to every connected client. Cheaper than each tab polling directly.
-
-
-class _AlertHub:
-    def __init__(self) -> None:
-        self._clients: set[WebSocket] = set()
-        self._task: asyncio.Task[None] | None = None
-        self._lock = asyncio.Lock()
-
-    async def connect(self, ws: WebSocket) -> None:
-        await ws.accept()
-        async with self._lock:
-            self._clients.add(ws)
-            if self._task is None or self._task.done():
-                self._task = asyncio.create_task(self._broadcast_loop())
-
-    async def disconnect(self, ws: WebSocket) -> None:
-        async with self._lock:
-            self._clients.discard(ws)
-
-    async def _broadcast_loop(self) -> None:
-        interval = float(os.environ.get("AIOPS_ALERT_BROADCAST_INTERVAL", "5"))
-        while True:
-            async with self._lock:
-                if not self._clients:
-                    return  # last client gone; stop the task
-                clients = list(self._clients)
-            payload = await asyncio.to_thread(_collect_alerts_frame)
-            stale: list[WebSocket] = []
-            for ws in clients:
-                try:
-                    await ws.send_json(payload)
-                except Exception:
-                    stale.append(ws)
-            if stale:
-                async with self._lock:
-                    for ws in stale:
-                        self._clients.discard(ws)
-            await asyncio.sleep(interval)
+# result to every connected client.  The hub itself lives in
+# ``demo.ui._alert_hub`` (extracted in #68); this module owns only the
+# frame-shaping function that knows about ``live_alerts()``.
 
 
 def _collect_alerts_frame() -> dict[str, Any]:
@@ -1555,21 +1527,7 @@ def _collect_alerts_frame() -> dict[str, Any]:
     }
 
 
-_HUB = _AlertHub()
-
-
-@app.websocket("/ws/alerts")
-async def ws_alerts(ws: WebSocket) -> None:
-    await _HUB.connect(ws)
-    try:
-        # Send one frame immediately so the UI doesn't sit empty for N seconds.
-        await ws.send_json(_collect_alerts_frame())
-        while True:
-            await ws.receive_text()  # client keepalive pings; ignore content
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await _HUB.disconnect(ws)
+_register_alert_hub_routes(app, _collect_alerts_frame)
 
 
 # ─── React dashboard mount (alongside the vanilla UI) ──────────────────────
