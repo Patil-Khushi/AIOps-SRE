@@ -110,10 +110,7 @@ from aiops.tools import (  # noqa: E402
     get_registry,
 )
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
-from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
-from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
-from aiops.tools.chatops.adapters.pagerduty import PagerDutyAdapter  # noqa: E402
-from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
+from aiops.tools.chatops import register_env_adapters  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
@@ -140,31 +137,18 @@ def _register_chatops_adapters() -> None:
     Idempotent by adapter class so re-running startup (tests, hot-reload)
     does not register duplicate sinks of the same kind. Without this guard
     the same audit JSON line lands twice per send()."""
-    client = get_chatops_client()
-    registered_kinds = {type(a) for a in client.adapters}
-
-    if JsonFileChatOpsAdapter not in registered_kinds:
-        audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
-        client.register(JsonFileChatOpsAdapter(audit_path))
-        logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
-
-    slack_url = os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip()
-    if slack_url and SlackWebhookAdapter not in registered_kinds:
-        try:
-            client.register(SlackWebhookAdapter(slack_url))
-            logger.info("chatops: registered slack webhook adapter")
-        except ValueError as exc:
-            logger.warning("chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping", exc)
-
-    pd_key = os.environ.get("AIOPS_PAGERDUTY_INTEGRATION_KEY", "").strip()
-    if pd_key and PagerDutyAdapter not in registered_kinds:
-        try:
-            client.register(PagerDutyAdapter(pd_key))
-            logger.info("chatops: registered pagerduty adapter (page_oncall actions only)")
-        except ValueError as exc:
-            logger.warning(
-                "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping", exc
-            )
+    audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
+    try:
+        register_env_adapters(
+            audit_path=audit_path,
+            slack_webhook_url=os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip(),
+            pagerduty_integration_key=os.environ.get(
+                "AIOPS_PAGERDUTY_INTEGRATION_KEY", ""
+            ).strip(),
+        )
+        logger.info("chatops: registered env-driven chatops adapters")
+    except ValueError as exc:
+        logger.warning("chatops: invalid chatops adapter config (%s); skipping invalid adapters", exc)
 
 
 def _ensure_hitl_agent_pool() -> None:
