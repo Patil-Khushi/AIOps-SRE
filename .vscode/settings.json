@@ -1,0 +1,19 @@
+{
+  // Shared so every clone gets the same Ruff-on-save behavior instead of
+  // relying on each laptop being configured right. This is what keeps PRs
+  // green on `ruff check` / `ruff format --check` (CONTRIBUTING.md "Pull
+  // requests") without anyone remembering to run it by hand. Personal
+  // editor state (launch.json, tasks.json, ...) stays gitignored.
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      // organizeImports fixes I001 (unsorted imports); fixAll applies
+      // Ruff's other safe auto-fixes (RUF022 __all__ sorting, F401 unused
+      // imports) — the exact rules that slip into PRs when nothing runs
+      // Ruff locally.
+      "source.organizeImports.ruff": "explicit",
+      "source.fixAll.ruff": "explicit"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  // VS Code prompts contributors to install these when they open the repo.
+  // Ruff drives the lint/format-on-save in settings.json; the Python
+  // extension provides the language server everything else assumes.
+  "recommendations": [
+    "charliermarsh.ruff",
+    "ms-python.python"
+  ]
+}
