@@ -321,6 +321,22 @@ cd C:\Projects\AIops
 
 You do **not** need to re-run `bootstrap.ps1` daily.
 
+**Starting fresh between rehearsals (DEMO-4 / #56):**
+
+By default `start.ps1` carries demo state forward — that's the right behaviour for iterative dev. When rehearsing the demo (or a screen recording) you usually want the dashboard to load empty:
+
+```powershell
+.\start.ps1 -Fresh
+```
+
+This:
+
+- resets every flag-driven scenario back to `off` (no "1 payment failure" sitting in the alert stream at startup),
+- deletes `data/state.db` so `verdict_id` and cluster ids start at 1,
+- archives `demo/audit/chatops.jsonl` to `chatops.jsonl.bak-<utc-timestamp>` (history is preserved, not deleted) and starts a new empty file.
+
+Archives are gitignored. Drop `-Fresh` for the next iterative run and existing state carries through.
+
 ---
 
 ## 10. Tear down (when you want a clean slate)
