@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from aiops.tools.chatops import (
     JsonFileChatOpsAdapter,
     PagerDutyAdapter,
-    register_env_adapters,
     SlackWebhookAdapter,
+    register_env_adapters,
 )
 from aiops.tools.chatops.client import ChatOpsClient
 

@@ -32,8 +32,8 @@ __all__ = [
     "InteractivePrompt",
     "Severity",
     "get_client",
-    "to_record",
     "register_env_adapters",
+    "to_record",
 ]
 
 
