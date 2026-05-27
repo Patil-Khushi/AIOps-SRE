@@ -77,6 +77,31 @@ def _disable_auto_triage(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_llm_provider(monkeypatch):
+    """Pin the LLM provider to the offline ``stub`` around every test (#151).
+
+    ``demo/ui/server.py`` calls ``load_dotenv()`` at import and then
+    ``os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")`` — but ``setdefault``
+    cannot override a real provider/key that ``.env`` has already pushed into
+    the *process-wide* environment. So once any ``TestClient(srv.app)`` test
+    imports the server, ``.env`` leaks a real provider into ``os.environ`` for
+    the rest of the session (``test_pagerduty_adapter`` documents the same
+    ``load_dotenv`` re-population). A later agent test that doesn't pin the
+    provider then makes a *real* LLM call, which hangs on a corporate
+    TLS-inspecting proxy — the SDK's default timeout is far longer than the 60s
+    pytest-timeout, so the whole suite stalls. That is the full-suite hang in
+    #151 (a recurrence of the #113 class of bug).
+
+    Forcing ``stub`` here makes the suite hermetic regardless of ``.env`` or
+    test import order. The handful of tests that need a specific provider
+    (``test_llm_ping``) override with their own ``monkeypatch.setenv`` inside the
+    test body — that runs after this fixture and takes precedence, and is
+    unwound afterwards.
+    """
+    monkeypatch.setenv("AIOPS_LLM_PROVIDER", "stub")
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_gate_approver():
     """Reset ``HITLGate._approver`` to the fail-closed default around every test.
 
