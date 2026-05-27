@@ -73,7 +73,7 @@ def main(
     reset_dedup_store()
 
     alert = Alert(**case["input"])
-    verdict = triage(alert)
+    verdict, _ = triage(alert)
 
     rprint("\n[bold]Triage verdict:[/bold]")
     rprint(json.dumps(verdict.model_dump(mode="json"), indent=2, default=str))

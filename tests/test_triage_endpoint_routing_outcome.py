@@ -81,7 +81,9 @@ def _stub_pipeline(monkeypatch, *, outcome: RoutingOutcome) -> dict[str, Any]:
     receives. Returns the capture dict so tests can assert on it."""
     captured: dict[str, Any] = {}
 
-    monkeypatch.setattr(srv, "triage", lambda _alert: _verdict())
+    # #61: ``triage`` now returns ``(verdict, verdict_id)`` — the agent
+    # persists the row itself and hands the id back to the route.
+    monkeypatch.setattr(srv, "triage", lambda _alert: (_verdict(), 1))
 
     class _StubClassification:
         def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
@@ -105,7 +107,8 @@ def _stub_pipeline(monkeypatch, *, outcome: RoutingOutcome) -> dict[str, Any]:
 
     # Stub upstream persistence calls so the test doesn't depend on the
     # exact shapes of Classification / Ticket — those have their own tests.
-    monkeypatch.setattr(srv.state_repo, "save_verdict", lambda _v, cluster_key: 1)
+    # ``save_verdict`` is no longer called from the route (#61) — the
+    # stubbed ``triage`` returns the verdict_id directly.
     monkeypatch.setattr(srv.state_repo, "save_classification", lambda _c, verdict_id: 2)
 
     real_save_notification = srv.state_repo.save_notification
