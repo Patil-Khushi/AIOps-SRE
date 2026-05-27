@@ -114,10 +114,18 @@ def _migrate_add_columns_if_missing() -> None:
 
 
 def reset_engine_for_tests() -> None:
-    """Drop the cached engine. Tests that swap ``AIOPS_STATE_DB_URL`` need
-    this so the next ``get_engine()`` rebuilds against the new URL."""
+    """Drop and dispose the cached engine. Tests that swap
+    ``AIOPS_STATE_DB_URL`` need this so the next ``get_engine()`` rebuilds
+    against the new URL.
+
+    Disposing closes the old engine's pooled connections instead of leaking
+    them until GC. That matters on Windows, where a lingering SQLite file
+    handle keeps the prior test's ``tmp_path`` DB open and can block its
+    cleanup — a contributor to the order-dependent state bleed in #151."""
     global _engine
     with _engine_lock:
+        if _engine is not None:
+            _engine.dispose()
         _engine = None
 
 
