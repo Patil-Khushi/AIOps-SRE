@@ -74,7 +74,7 @@ exercises:
   alert_triage:
     severity_in: ["Sev-2", "Sev-3"]
     affected_service: product-catalog
-    status_in: ["Triaged", "Suppressed"]  # see payment_failure.yaml for rationale
+    status_in: ["Active", "Suppressed"]  # see payment_failure.yaml for rationale
     min_confidence_score: 0.5
 
 notes: |
