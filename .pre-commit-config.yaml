@@ -1,0 +1,27 @@
+# Optional commit guard that mirrors the CI lint gate
+# (.github/workflows/ci.yml) for contributors not on the shared VS Code
+# Ruff-on-save setup (.vscode/settings.json). CI stays the backstop;
+# this just moves the failure left, off the PR.
+#
+# Enable once per clone (after `uv sync --extra dev`):
+#
+#     uv run pre-commit install
+#
+# These run the project's own Ruff via `uv run`, so there is exactly one
+# Ruff version — the one pinned in uv.lock — instead of a second copy
+# pinned here that could drift from what CI runs.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check --fix
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
