@@ -133,21 +133,16 @@ def _warn_if_approval_token_unset() -> None:
 
 def _register_chatops_adapters() -> None:
     """Register the chatops sinks (JSONL audit log + Slack + PagerDuty).
+
     Idempotent by adapter class so re-running startup (tests, hot-reload)
     does not register duplicate sinks of the same kind. Without this guard
-    the same audit JSON line lands twice per send()."""
+    the same audit JSON line lands twice per send().
+
+    Slack/PagerDuty keys are read from the env inside register_env_adapters,
+    which logs each adapter as it is registered and warns (without raising)
+    on an invalid key."""
     audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
-    try:
-        register_env_adapters(
-            audit_path=audit_path,
-            slack_webhook_url=os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip(),
-            pagerduty_integration_key=os.environ.get("AIOPS_PAGERDUTY_INTEGRATION_KEY", "").strip(),
-        )
-        logger.info("chatops: registered env-driven chatops adapters")
-    except ValueError as exc:
-        logger.warning(
-            "chatops: invalid chatops adapter config (%s); skipping invalid adapters", exc
-        )
+    register_env_adapters(audit_path=audit_path)
 
 
 def _ensure_hitl_agent_pool() -> None:

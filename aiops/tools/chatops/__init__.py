@@ -24,13 +24,18 @@ from .adapters.slack import SlackWebhookAdapter
 from .client import ChatOpsAdapter, ChatOpsClient, DeliveryResult, get_client
 from .models import ChatMessage, InteractivePrompt, Severity, to_record
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "ChatMessage",
     "ChatOpsAdapter",
     "ChatOpsClient",
     "DeliveryResult",
     "InteractivePrompt",
+    "JsonFileChatOpsAdapter",
+    "PagerDutyAdapter",
     "Severity",
+    "SlackWebhookAdapter",
     "get_client",
     "register_env_adapters",
     "to_record",
@@ -52,10 +57,10 @@ def register_env_adapters(
 
     client = get_client()
     registered_kinds = {type(adapter) for adapter in client.adapters}
-    logger = logging.getLogger(__name__)
 
     if JsonFileChatOpsAdapter not in registered_kinds:
         client.register(JsonFileChatOpsAdapter(audit_path))
+        logger.info("chatops: registered jsonfile adapter -> %s", audit_path)
 
     slack_webhook_url = (
         slack_webhook_url
@@ -65,6 +70,7 @@ def register_env_adapters(
     if slack_webhook_url and SlackWebhookAdapter not in registered_kinds:
         try:
             client.register(SlackWebhookAdapter(slack_webhook_url))
+            logger.info("chatops: registered slack webhook adapter")
         except ValueError as exc:
             logger.warning(
                 "chatops: AIOPS_SLACK_WEBHOOK_URL set but invalid (%s); skipping",
@@ -79,6 +85,7 @@ def register_env_adapters(
     if pagerduty_integration_key and PagerDutyAdapter not in registered_kinds:
         try:
             client.register(PagerDutyAdapter(pagerduty_integration_key))
+            logger.info("chatops: registered pagerduty adapter (page_oncall actions only)")
         except ValueError as exc:
             logger.warning(
                 "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping",
