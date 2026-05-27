@@ -69,8 +69,6 @@ from fastapi import (
     HTTPException,
     Request,
     Response,
-    WebSocket,
-    WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -114,6 +112,7 @@ from aiops.tools.chatops import get_client as get_chatops_client  # noqa: E402
 from aiops.tools.chatops.adapters.jsonfile import JsonFileChatOpsAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.pagerduty import PagerDutyAdapter  # noqa: E402
 from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter  # noqa: E402
+from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
@@ -1517,45 +1516,9 @@ def get_pods(namespace: str = "otel-demo") -> dict[str, Any]:
 # ─── WebSocket /ws/alerts ──────────────────────────────────────────────────
 #
 # Single broadcaster task polls Prometheus once per N seconds and pushes the
-# result to every connected client. Cheaper than each tab polling directly.
-
-
-class _AlertHub:
-    def __init__(self) -> None:
-        self._clients: set[WebSocket] = set()
-        self._task: asyncio.Task[None] | None = None
-        self._lock = asyncio.Lock()
-
-    async def connect(self, ws: WebSocket) -> None:
-        await ws.accept()
-        async with self._lock:
-            self._clients.add(ws)
-            if self._task is None or self._task.done():
-                self._task = asyncio.create_task(self._broadcast_loop())
-
-    async def disconnect(self, ws: WebSocket) -> None:
-        async with self._lock:
-            self._clients.discard(ws)
-
-    async def _broadcast_loop(self) -> None:
-        interval = float(os.environ.get("AIOPS_ALERT_BROADCAST_INTERVAL", "5"))
-        while True:
-            async with self._lock:
-                if not self._clients:
-                    return  # last client gone; stop the task
-                clients = list(self._clients)
-            payload = await asyncio.to_thread(_collect_alerts_frame)
-            stale: list[WebSocket] = []
-            for ws in clients:
-                try:
-                    await ws.send_json(payload)
-                except Exception:
-                    stale.append(ws)
-            if stale:
-                async with self._lock:
-                    for ws in stale:
-                        self._clients.discard(ws)
-            await asyncio.sleep(interval)
+# result to every connected client.  The hub itself lives in
+# ``demo.ui._alert_hub`` (extracted in #68); this module owns only the
+# frame-shaping function that knows about ``live_alerts()``.
 
 
 def _collect_alerts_frame() -> dict[str, Any]:
@@ -1571,21 +1534,7 @@ def _collect_alerts_frame() -> dict[str, Any]:
     }
 
 
-_HUB = _AlertHub()
-
-
-@app.websocket("/ws/alerts")
-async def ws_alerts(ws: WebSocket) -> None:
-    await _HUB.connect(ws)
-    try:
-        # Send one frame immediately so the UI doesn't sit empty for N seconds.
-        await ws.send_json(_collect_alerts_frame())
-        while True:
-            await ws.receive_text()  # client keepalive pings; ignore content
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await _HUB.disconnect(ws)
+_register_alert_hub_routes(app, _collect_alerts_frame)
 
 
 # ─── React dashboard mount (alongside the vanilla UI) ──────────────────────
