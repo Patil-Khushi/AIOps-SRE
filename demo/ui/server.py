@@ -141,13 +141,13 @@ def _register_chatops_adapters() -> None:
         register_env_adapters(
             audit_path=audit_path,
             slack_webhook_url=os.environ.get("AIOPS_SLACK_WEBHOOK_URL", "").strip(),
-            pagerduty_integration_key=os.environ.get(
-                "AIOPS_PAGERDUTY_INTEGRATION_KEY", ""
-            ).strip(),
+            pagerduty_integration_key=os.environ.get("AIOPS_PAGERDUTY_INTEGRATION_KEY", "").strip(),
         )
         logger.info("chatops: registered env-driven chatops adapters")
     except ValueError as exc:
-        logger.warning("chatops: invalid chatops adapter config (%s); skipping invalid adapters", exc)
+        logger.warning(
+            "chatops: invalid chatops adapter config (%s); skipping invalid adapters", exc
+        )
 
 
 def _ensure_hitl_agent_pool() -> None:
