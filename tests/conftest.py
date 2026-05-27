@@ -102,6 +102,38 @@ def _hermetic_llm_provider(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_state_db(monkeypatch, tmp_path_factory):
+    """Give every test its own empty SQLite state DB (#151, mode A).
+
+    ``aiops.state`` caches a process-wide engine, and tests that don't set
+    their own ``AIOPS_STATE_DB_URL`` all fall back to the same default
+    ``./data/state.db`` file. Clusters and verdicts written by one such test
+    then accumulate and leak into the next, which is the order-dependent root
+    of ``test_ema_keeps_centroid_anchored_to_origin`` — an embedding-dedup
+    test that asserts an exact active-cluster count. Pointing each test at a
+    fresh temp DB and rebuilding the engine + clearing the alert_triage dedup
+    cache around it makes persisted state hermetic regardless of run order.
+
+    Tests that set their own ``AIOPS_STATE_DB_URL`` (the alert_triage and
+    state suites) request their fixtures after this autouse setup and override
+    the URL; the duplicate engine resets are idempotent and harmless.
+    """
+    from agents.alert_triage.agent import reset_dedup_store
+    from aiops.state import init_db, reset_engine_for_tests
+
+    db_path = tmp_path_factory.mktemp("state") / "state.db"
+    monkeypatch.setenv("AIOPS_STATE_DB_URL", f"sqlite:///{db_path.as_posix()}")
+    reset_engine_for_tests()
+    reset_dedup_store()
+    init_db()
+    try:
+        yield
+    finally:
+        reset_engine_for_tests()
+        reset_dedup_store()
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_gate_approver():
     """Reset ``HITLGate._approver`` to the fail-closed default around every test.
 
