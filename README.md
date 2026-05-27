@@ -8,6 +8,12 @@ This repository is the **Proof-of-Concept (POC) build** — not production. The 
 
 ---
 
+## Product
+
+[**`PRD.md`**](PRD.md) — Product Requirements Document. Problem statement, target users, success metrics, the 6-component MVP demo scope (RA-001 Alert Triage → RA-002 Incident Classifier → RA-003 Auto-Ticketing → RA-005 Notification Router → PRS-008 RCA Agent → platform HITL gate), explicit non-goals, assumptions, and open questions. Read this before adding scope.
+
+---
+
 ## Status
 
 | Phase | Window | What's done | What's open |
