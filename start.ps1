@@ -11,7 +11,10 @@
 [CmdletBinding()]
 param(
     [string]$Namespace = 'otel-demo',
-    [int]$UiPort = 8765,
+    # Precedence: explicit -UiPort > $env:AIOPS_UI_PORT > 8765. The env var
+    # path lets ``.env`` (loaded inside the FastAPI process by aiops._dotenv)
+    # and the start script agree without two places to keep in sync (#63).
+    [int]$UiPort = $(if ($env:AIOPS_UI_PORT) { [int]$env:AIOPS_UI_PORT } else { 8765 }),
     [string]$LlmProvider = '',   # leave empty to let .env drive AIOPS_LLM_PROVIDER
     [string]$LlmModel = '',      # leave empty to let .env drive AIOPS_LLM_MODEL
     [string]$Context = 'rancher-desktop'  # set to '' to use current kube context
