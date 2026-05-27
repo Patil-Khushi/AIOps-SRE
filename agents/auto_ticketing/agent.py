@@ -70,9 +70,7 @@ def _panel_for(alert_name: str) -> dict[str, Any] | None:
             # Keys starting with ``_`` are reserved for documentation entries
             # (e.g. ``_doc``); stripping them here means they can never
             # collide with a real alert rule name.
-            cached = {
-                k: v for k, v in raw.items() if not k.startswith("_") and isinstance(v, dict)
-            }
+            cached = {k: v for k, v in raw.items() if not k.startswith("_") and isinstance(v, dict)}
         globals()["_PANEL_MAP"] = cached
     return cached.get(alert_name)
 
