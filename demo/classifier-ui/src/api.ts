@@ -11,7 +11,12 @@ export interface ClassifierAuditMetadata {
   created_at?: string | null;
   created_by: string;
   decision_trace: string[];
-  similar_incidents: { incident_key: string; incident_type: string; similarity: number }[];
+  similar_incidents: {
+    incident_key: string;
+    incident_type: string;
+    similarity: number;
+    summary?: string;
+  }[];
 }
 
 export interface Classification {

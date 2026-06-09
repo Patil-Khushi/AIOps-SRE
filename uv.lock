@@ -52,6 +52,7 @@ llm-openai = [
     { name = "openai" },
 ]
 ui = [
+    { name = "anthropic" },
     { name = "fastapi" },
     { name = "kubernetes" },
     { name = "prometheus-client" },
@@ -60,8 +61,9 @@ ui = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", marker = "extra == 'all-llm'", specifier = ">=0.39" },
-    { name = "anthropic", marker = "extra == 'llm-anthropic'", specifier = ">=0.39" },
+    { name = "adaptive-aiops", extras = ["llm-anthropic"], marker = "extra == 'ui'" },
+    { name = "anthropic", marker = "extra == 'all-llm'", specifier = ">=0.69" },
+    { name = "anthropic", marker = "extra == 'llm-anthropic'", specifier = ">=0.69" },
     { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'itsm'", specifier = ">=0.27" },

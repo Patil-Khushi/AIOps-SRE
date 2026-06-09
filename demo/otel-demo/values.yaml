@@ -30,7 +30,10 @@ prometheus:
   # verified reachable from inside the prometheus pod via ``kubectl exec``.
   extraScrapeConfigs: |
     - job_name: aiops-ui
-      scrape_interval: 15s
+      # 5s (vs the global 15s): this job scrapes one tiny /metrics endpoint, so
+      # the extra load is negligible, and it shaves up to 10s off how fast the
+      # aiops_scenario_active gauge flip reaches Prometheus after an inject.
+      scrape_interval: 5s
       static_configs:
         - targets: ['host.docker.internal:8765']
           labels:
@@ -39,7 +42,10 @@ prometheus:
     alerting_rules.yml:
       groups:
       - name: aiops-demo
-        interval: 30s
+        # 10s (vs 30s): evaluate the demo alert rules 3x more often so a
+        # firing condition is picked up within ~10s instead of up to 30s.
+        # ~14 lightweight rules, so the extra evaluation cost is trivial.
+        interval: 10s
         rules:
         # Payment uses gRPC and the OTel collector doesn't enrich http_status_code,
         # so HTTP-based detection silently never fires. Span-metric error rate
@@ -209,7 +215,11 @@ prometheus:
         # real error data is present; this fires unconditionally on flag flip.
         - alert: ScenarioActive
           expr: aiops_scenario_active > 0
-          for: 15s
+          # for: 0s — fire on the first evaluation where the gauge is set. The
+          # gauge is a stable binary signal driven by an explicit inject (no
+          # flapping), so there's no reason to hold it pending. Removes 15s of
+          # latency on the demo's fast-path alert.
+          for: 0s
           labels:
             severity: high
             alert_type: scenario_active

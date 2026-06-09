@@ -17,10 +17,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-llm-anthropic = ["anthropic>=0.39"]
+# anthropic>=0.69: the Azure AI Foundry client classes (AnthropicFoundry /
+# AsyncAnthropicFoundry) that aiops/llm/anthropic_provider.py uses for the
+# .azure.com endpoint do not exist in the old 0.39 floor.
+llm-anthropic = ["anthropic>=0.69"]
 llm-openai = ["openai>=1.40"]
 llm-ollama = ["ollama>=0.3"]
-all-llm = ["anthropic>=0.39", "openai>=1.40", "ollama>=0.3"]
+all-llm = ["anthropic>=0.69", "openai>=1.40", "ollama>=0.3"]
 
 # Embedding similarity for Alert Triage dedup (workflow step 4).
 # Optional: agents fall back to rule-based dedup when this is not installed.
@@ -37,6 +40,11 @@ ui = [
     "uvicorn[standard]>=0.32",
     "prometheus-client>=0.20",
     "kubernetes>=29",
+    # The RCA Agent (PRS-008) served by this UI is pinned to the Anthropic
+    # (Azure Foundry Claude) provider regardless of AIOPS_LLM_PROVIDER, so the
+    # anthropic SDK is a hard runtime dependency of the server, not optional.
+    # Without it every RCA verdict falls back to a 20%-confidence result.
+    "adaptive-aiops[llm-anthropic]",
 ]
 
 # ITSM providers (RA-003 Auto-Ticketing — ServiceNow via aiops/tools/itsm/).
