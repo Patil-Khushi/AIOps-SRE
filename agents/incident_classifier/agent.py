@@ -574,6 +574,7 @@ def classify(payload: ClassificationInput) -> Classification:
                 "incident_key": c["incident_key"],
                 "incident_type": c["incident_type"],
                 "similarity": round(float(c["similarity"]), 3),
+                "summary": c.get("summary", ""),
             }
             for c in candidates
         ],

@@ -508,21 +508,48 @@ function ClassificationRow({ c }: { c: PersistedClassification }) {
           </div>
         )}
       </td>
-      <td className="px-4 py-2 align-top font-mono text-[11px] text-slate-500">
-        {c.similar_incident_ids.length > 0 ? (
-          <div className="space-y-0.5">
-            {c.similar_incident_ids.slice(0, 3).map((id) => (
-              <div key={id}>{id}</div>
-            ))}
-            {c.similar_incident_ids.length > 3 && (
-              <div className="text-slate-600">+{c.similar_incident_ids.length - 3} more</div>
-            )}
-          </div>
-        ) : (
-          '—'
-        )}
+      <td className="min-w-[26ch] px-4 py-2 align-top text-[11px] text-slate-500">
+        <SimilarHits c={c} />
       </td>
     </tr>
+  );
+}
+
+// ─── similar hits ──────────────────────────────────────────────────────────
+
+function simColor(sim: number): string {
+  if (sim >= 0.85) return 'text-emerald-300';
+  if (sim >= 0.7) return 'text-amber-300';
+  return 'text-slate-300';
+}
+
+function SimilarHits({ c }: { c: PersistedClassification }) {
+  // Backend returns these pre-sorted by similarity, descending.
+  const hits = c.audit_metadata?.similar_incidents ?? [];
+  if (hits.length === 0) return <span className="text-slate-600">—</span>;
+  return (
+    <div className="space-y-1">
+      {hits.slice(0, 3).map((h, i) => {
+        const pill = TYPE_PILL[h.incident_type as IncidentType] ?? 'bg-slate-700 text-slate-200';
+        const label = h.summary || h.incident_key;
+        return (
+          <div key={`${h.incident_key}-${i}`} className="flex items-baseline gap-1.5">
+            <span className={clsx('font-mono tabular-nums', simColor(h.similarity))}>
+              {Math.round(h.similarity * 100)}%
+            </span>
+            <span className={clsx('shrink-0 rounded px-1 py-px text-[9px] font-semibold', pill)}>
+              {h.incident_type}
+            </span>
+            <span className="min-w-0 flex-1 break-words text-slate-400" title={label}>
+              {label}
+            </span>
+          </div>
+        );
+      })}
+      {hits.length > 3 && (
+        <div className="text-slate-600">+{hits.length - 3} more</div>
+      )}
+    </div>
   );
 }
 

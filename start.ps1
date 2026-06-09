@@ -255,6 +255,9 @@ elseif ($lp -eq 'openai')    { $extras += @('--extra', 'llm-openai') }
 elseif ($lp -eq 'ollama')    { $extras += @('--extra', 'llm-ollama') }
 elseif ($lp -eq 'stub')      { }   # no SDK needed
 else { Write-Warning "unknown AIOPS_LLM_PROVIDER='$resolvedProvider' - skipping llm-* extra" }
+# NOTE: the anthropic SDK is pulled in transitively by `--extra ui` (the RCA
+# Agent served here is pinned to the Azure Foundry Claude provider — see the
+# `ui` extra in pyproject.toml), so it does not need a separate `--extra` here.
 $extrasStr = $extras -join ' '
 # Run uv via cmd so its stderr chatter doesn't get wrapped as a PS 5.1
 # NativeCommandError under $ErrorActionPreference = 'Stop'.

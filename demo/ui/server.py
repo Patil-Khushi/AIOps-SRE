@@ -1298,10 +1298,42 @@ def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
     return r.stdout
 
 
+def _kick_flagd() -> None:
+    """Force the flagd deployment to reload its configmap immediately.
+
+    flagd watches its mounted configmap *file*, but the mount inside the
+    running pod doesn't refresh until kubelet's ConfigMap sync (~60-120s).
+    Without this kick, a flag flip lands in the configmap right away (so the
+    Overview's ``aiops_scenario_active`` gauge — which reads the configmap
+    directly — flips instantly), but the running flagd pod keeps serving the
+    old variant for up to ~2 minutes. That means no real service degradation,
+    no Prometheus alert, and therefore nothing on the Alert Stream / Integrated
+    Tools feeds (both driven by /api/live-alerts → real firing alerts).
+
+    Restarting the deployment remounts the configmap in seconds. This mirrors
+    the CLI's ``inject.py:_flagd_set`` behavior so UI and CLI injects propagate
+    at the same speed. Best-effort and non-fatal — a failed kick just means the
+    slow kubelet-sync path, not a broken inject, so we never raise.
+    """
+    namespace = os.environ.get("AIOPS_FLAGD_NAMESPACE", "otel-demo")
+    try:
+        subprocess.run(
+            ["kubectl", "-n", namespace, "rollout", "restart", "deployment/flagd"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("flagd kick (rollout restart) failed; falling back to kubelet sync: %s", exc)
+
+
 def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
     """Set ``flags.<flag_name>.defaultVariant`` to ``variant`` via the ARCH-1
-    feature-flags seam. Variant must be one of the variants declared for that
-    flag in flagd-config. flagd watches the configmap and reloads ~1 s later."""
+    feature-flags seam, then kick the flagd deployment so the change propagates
+    in seconds rather than waiting on kubelet's ~60-120s configmap sync.
+
+    Variant must be one of the variants declared for that flag in flagd-config."""
     res = get_registry().call("feature_flags.set_variant", flag=flag_name, variant=variant)
     if not res.ok:
         meta = res.metadata or {}
@@ -1310,6 +1342,7 @@ def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
         if "valid_variants" in meta:
             raise HTTPException(status_code=400, detail=res.error)
         raise HTTPException(status_code=502, detail=res.error)
+    _kick_flagd()
     return {
         "flag": flag_name,
         "variant": variant,
@@ -1383,6 +1416,10 @@ def reset_all_scenarios() -> dict[str, Any]:
     res = get_registry().call("feature_flags.reset_all", flags=flag_names)
     if not res.ok:
         raise HTTPException(status_code=502, detail=res.error or "reset_all failed")
+    # Reset writes the configmap via the seam but, like inject, the running
+    # flagd pod won't see it until kubelet syncs — kick it so the cleared
+    # flags take effect in seconds.
+    _kick_flagd()
     # DEMO-AUTO-TRIAGE (#130): see comment in reset_scenario above.
     _AUTO_TRIAGE.forget_all()
     data = res.data or {}
