@@ -9,7 +9,7 @@ interface PortalNavProps {
 }
 
 const NAV_ITEMS: { label: string; to: string }[] = [
-  { label: 'Agents',       to: '/console' },
+  { label: 'Agents',       to: '/agents' },
   { label: 'Architecture', to: '/console/topology' },
   { label: 'Integrations', to: '/console/health' },
   { label: 'SRE Ops',      to: '/console/alerts' },

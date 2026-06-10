@@ -72,7 +72,7 @@ export default function Hero({ progress }: HeroProps) {
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <Link
-                to="/console"
+                to="/agents"
                 className="rounded-full bg-white px-6 py-3 font-body text-[12px] font-bold uppercase text-black transition-colors hover:bg-white/90"
                 style={{ letterSpacing: '0.2em' }}
               >
