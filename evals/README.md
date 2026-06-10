@@ -7,13 +7,13 @@ Hand-rolled JSON test cases. Per the POC guide §9.5: **build the eval set in th
 Each agent ships its eval cases beside its code:
 
 ```
-agents/ra-001-alert-triage/
+agents/alert_triage/
 ├── agent.py                # exposes ``run(input: dict) -> dict``
 └── evals/
     └── golden.json
 ```
 
-`golden.json` is a list of cases:
+`golden.json` is a list of cases (or a `{"cases": [...]}` wrapper carrying top-level metadata):
 
 ```json
 [
@@ -25,15 +25,12 @@ agents/ra-001-alert-triage/
         "id": "ALERT-101",
         "title": "CPU > 90% on inv-app-07",
         "fired_at": "2026-05-06T09:42:00Z"
-      },
-      "recent_alerts": [
-        {"id": "ALERT-100", "title": "CPU > 90% on inv-app-07",
-         "fired_at": "2026-05-06T09:40:00Z"}
-      ]
+      }
     },
     "expected": {
-      "has_keys": ["incident_id", "severity", "owner_team"],
-      "field": {"name": "severity", "check": "matches", "value": "Sev-3"}
+      "severity_in": ["Sev-2", "Sev-3"],
+      "decision_trace_contains": "dedup",
+      "min_confidence": 0.5
     },
     "tags": ["dedup", "phase-1"]
   }
@@ -44,7 +41,7 @@ agents/ra-001-alert-triage/
 
 ```powershell
 uv run python -m evals.harness                       # all agents
-uv run python -m evals.harness --agent ra-001-alert-triage
+uv run python -m evals.harness --agent alert_triage
 uv run python -m evals.harness --ci --min-pass-rate 0.85
 ```
 
@@ -52,13 +49,21 @@ Phase 0 has no agents yet, so the harness emits an empty-but-passing summary. CI
 
 ## Supported checks (`expected`)
 
-| Check | Means |
+Each `expected` block is a **flat dict** whose keys encode both the target field and the
+check type via a suffix grammar (see `evals/scoring.py`):
+
+| Key form | Means |
 |---|---|
-| `equals` | strict equality with `actual` |
-| `contains` | substring of a string `actual`, or element of a list/set |
-| `has_keys` | `actual` is a dict containing every listed key |
-| `matches` | case-insensitive equality (string only) |
-| `field` | nested check against `actual[name]`: `{name, check, value}` |
+| `<field>` | exact equality: `actual[<field>] == want` |
+| `<field>_in: [list]` | membership: `actual[<field>] in [...]` |
+| `<field>_contains: value` | substring (str) or element (list) containment in `actual[<field>]` |
+| `min_<field>: number` | numeric `actual[<field>] >= number` |
+| `max_<field>: number` | numeric `actual[<field>] <= number` |
+
+A case **passes** only when every check in its `expected` block passes (`score` is the
+fraction that passed; `passed` requires all). The full methodology — scoring, pass-rate
+definition, CI gating, champion/challenger, per-agent status — lives in
+[`../EVAL_METHODOLOGY.md`](../EVAL_METHODOLOGY.md).
 
 Add new checks in `evals/scoring.py` only when a real agent forces it. Don't pre-build for hypotheticals.
 
