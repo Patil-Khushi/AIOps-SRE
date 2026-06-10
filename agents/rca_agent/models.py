@@ -30,6 +30,30 @@ class BlastRadius(StrEnum):
     HIGH = "high"
 
 
+class FixActionType(StrEnum):
+    """How — and whether — the platform executor can carry out a fix step.
+
+    This is the machine-readable counterpart to the human-readable
+    ``description``. It exists so the platform executor (``aiops.tools.
+    rca_remediation``) can *follow the RCA step* directly, instead of a UI
+    re-deriving the action from a hardcoded service→flag map. The agent only
+    annotates the step; execution still goes through the platform HITL gate
+    (CLAUDE.md #3).
+
+    Values:
+        set_flag        — flip a flagd feature flag (``flag`` + ``variant``
+                          required). The one action v0's executor implements.
+        rollback_deploy — roll back a Helm/K8s deploy. Recognised but no
+                          executor wired in v0 — surfaces as a manual step.
+        manual          — no automated executor; a human SRE performs it.
+                          Default for any un-annotated step.
+    """
+
+    SET_FLAG = "set_flag"
+    ROLLBACK_DEPLOY = "rollback_deploy"
+    MANUAL = "manual"
+
+
 class RankedFixStep(BaseModel):
     """One ranked, reversible fix step.
 
@@ -49,6 +73,17 @@ class RankedFixStep(BaseModel):
     blast_radius: BlastRadius
     rollback: str = Field(min_length=1)
     requires_hitl: Literal[True] = True
+    # Machine-readable action the platform executor follows. Defaults to a
+    # non-executable ``manual`` step, so the prose ``description`` is the
+    # source of truth until the agent explicitly annotates an executable
+    # action.
+    action_type: FixActionType = FixActionType.MANUAL
+    # Populated only for ``action_type == set_flag``: the flagd flag to flip
+    # and the target variant (almost always "off" to disable an injected
+    # failure). A ``None`` flag on a set_flag step means "couldn't resolve a
+    # flag" — the executor treats it as non-executable.
+    flag: str | None = None
+    variant: str = "off"
 
 
 class RCAAuditMetadata(BaseModel):

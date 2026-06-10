@@ -58,12 +58,19 @@ export interface TriageResult {
 // RCA Agent (PRS-008 ★) — mirrors agents/rca_agent/models.py.
 export type BlastRadius = 'low' | 'medium' | 'high';
 
+export type FixActionType = 'set_flag' | 'rollback_deploy' | 'manual';
+
 export interface RankedFixStep {
   description: string;
   blast_radius: BlastRadius;
   rollback: string;
   // Schema-enforced True by pydantic Literal[True]; included for completeness.
   requires_hitl: true;
+  // Machine-readable action the platform executor follows. 'set_flag' steps
+  // carry the flagd flag to flip; everything else is advisory-only in v0.
+  action_type: FixActionType;
+  flag: string | null;
+  variant: string;
 }
 
 export interface RCAAuditMetadata {

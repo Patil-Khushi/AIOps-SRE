@@ -58,4 +58,29 @@ export const api = {
     ),
   topology:    () => unwrap<TopologyResponse>(http.get('/api/topology')),
   pods:        () => unwrap<SystemPodsResponse>(http.get('/api/system/pods')),
+
+  // RCA → approve → apply. Fires the REQUIRED-HITL-gated flag flip; returns an
+  // approval id immediately while the platform blocks on human approval.
+  applyRcaFix: (flag: string, variant = 'off', actionType = 'set_flag', reason?: string) =>
+    unwrap<{
+      approval_id: string;
+      action_type: string;
+      flag: string;
+      variant: string;
+      status: string;
+      timeout_seconds: number;
+    }>(
+      http.post('/api/demo/rca/apply-fix', { flag, variant, action_type: actionType, reason }),
+    ),
+  // Poll the shared HITL outcome store for an approval id (returns
+  // {status:'pending'} until the executor thread finishes).
+  hitlOutcome: (approvalId: string) =>
+    unwrap<{
+      status: string;
+      approval_id?: string;
+      approver?: string | null;
+      flag?: string;
+      variant?: string;
+      error?: string | null;
+    }>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
 };

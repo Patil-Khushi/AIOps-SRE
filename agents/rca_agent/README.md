@@ -20,12 +20,18 @@ itself).
 ## v0 scope (locked — see [DEMO_PLAN.md](../../DEMO_PLAN.md))
 
 - Single scenario: `slow-product-catalog`
-- Single prompt template (`SYSTEM_PROMPT_V2` in [prompts.py](prompts.py))
+- Single prompt template (`SYSTEM_PROMPT_V3` in [prompts.py](prompts.py))
 - One golden case ([evals/golden.json](evals/golden.json))
 - Pass-rate target: ≥ 0.6 in W1, ≥ 0.85 in W2 after prompt tuning
 - **No retrieval phase** (W2)
 - **No safety.py command allow-list** (W2)
-- **No fix-step execution** (post-POC — that's Auto-Healer / Runbook Executor)
+- **Fix-step execution is platform-side, not agent-side.** The agent annotates
+  each step with a machine-readable `action_type` (`set_flag` / `rollback_deploy`
+  / `manual`) so the platform executor ([aiops/tools/rca_remediation.py](../../aiops/tools/rca_remediation.py))
+  can *follow the recommended step* — gated by the REQUIRED-HITL
+  `rca.fix_step.execute` capability. v0 executes `set_flag` only; the agent
+  still never acts on its own (CLAUDE.md #3). `rollback_deploy` / `manual` are
+  advisory until their executors land (Auto-Healer / Runbook Executor).
 
 ## Why not Azure OpenAI for this agent
 

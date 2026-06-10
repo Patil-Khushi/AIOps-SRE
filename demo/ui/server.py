@@ -819,6 +819,71 @@ def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
     return {"status": "pending", "approval_id": approval_id}
 
 
+# ─── RCA fix-step remediation (RCA → approve → apply) ──────────────────────
+#
+# The RCA panel's "Approve & apply" button POSTs here. Same shape as the
+# auto-heal restart above: fire the gated executor on a background thread,
+# return the approval id immediately, and park the outcome in the shared
+# _HITL_OUTCOMES store (polled via /api/demo/auto-heal/outcome/{id}).
+#
+# The executor calls the REQUIRED-gated rca.fix_step.execute capability, so the
+# platform HITL gate posts the Slack approve/deny prompt and blocks until a
+# human resolves it — then flips the flag through the feature_flags seam.
+
+
+class RcaApplyFixRequest(BaseModel):
+    flag: str = Field(..., min_length=1, description="flagd flag to flip (e.g. paymentFailure)")
+    variant: str = Field("off", description="Target defaultVariant — 'off' disables the failure")
+    action_type: str = Field(
+        "set_flag",
+        description="The RCA fix step's action_type. v0 only executes 'set_flag'.",
+    )
+    reason: str = Field("RCA-recommended remediation: disable the injected failure flag.")
+    timeout_seconds: int = Field(120, ge=5, le=900)
+
+
+@app.post("/api/demo/rca/apply-fix")
+async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
+    """Kick off the gated RCA fix-step remediation and return the approval id.
+
+    The executor follows the fix step's ``action_type`` (v0 runs ``set_flag``;
+    other types come back ``unsupported``). It blocks inside the HITL gate
+    until the human resolves the Slack/dashboard approval; we don't wait for
+    that here. Poll ``/api/demo/auto-heal/outcome/{approval_id}`` for the
+    result.
+    """
+    from aiops.tools.rca_remediation import request_fix_step
+
+    approval_id = _uuid_hex()
+    ctx: dict[str, Any] = {
+        "approval_id": approval_id,
+        "approval_timeout_seconds": req.timeout_seconds,
+        "reason": req.reason,
+        "action_type": req.action_type,
+        "flag": req.flag,
+        "variant": req.variant,
+    }
+
+    def _run_executor() -> None:
+        _HITL_OUTCOMES[approval_id] = request_fix_step(
+            action_type=req.action_type,
+            flag=req.flag,
+            variant=req.variant,
+            hitl_context=ctx,
+        )
+
+    _HITL_AGENT_POOL.submit(_run_executor)
+
+    return {
+        "approval_id": approval_id,
+        "action_type": req.action_type,
+        "flag": req.flag,
+        "variant": req.variant,
+        "status": "pending",
+        "timeout_seconds": req.timeout_seconds,
+    }
+
+
 # ─── HITL approval surface (issue #77) ─────────────────────────────────────
 #
 # Two callback paths land here:
