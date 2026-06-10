@@ -62,6 +62,13 @@ class ChatMessage:
     body: str = ""
     incident_id: str | None = None
     service: str | None = None
+    category_display: str | None = None
+    """Human-readable failure sub-domain (e.g. ``"Payment Gateway"``) — set
+    by RA-005 when the expertise-aware on-call lookup matched a specific
+    category. Adapters that render structured fields (Slack Block Kit)
+    surface this as a dedicated row so the recipient sees *which* sub-area
+    of the team's surface failed at a glance.
+    """
     mentions: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
     """Routing intents the agent attached (e.g. ``"page_oncall"``,
@@ -106,6 +113,7 @@ def to_record(msg: ChatMessage) -> dict[str, Any]:
         "body": msg.body,
         "incident_id": msg.incident_id,
         "service": msg.service,
+        "category_display": msg.category_display,
         "mentions": list(msg.mentions),
         "actions": list(msg.actions),
         "interactive": interactive,

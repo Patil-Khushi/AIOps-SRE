@@ -202,6 +202,9 @@ seam-specific secrets. Keep these in `.env.shared` (encrypted) rather than
 | `AIOPS_SERVICENOW_USER` / `..._PASSWORD` | ServiceNow PDI basic-auth | `.env.shared` |
 | `AIOPS_SLACK_WEBHOOK_URL` | One-way Slack notifications (CHAT-1) | `.env.shared` |
 | `AIOPS_SLACK_SIGNING_SECRET` | Verifies the Slack interactivity callback HMAC | `.env.shared` |
+| `AIOPS_SLACK_BOT_TOKEN` | Bot User OAuth token (`xoxb-…`) used by `SlackBotAdapter` to DM the picked on-call engineer (ON-CALL-2) | `.env.shared` |
+| `AIOPS_SLACK_USER_MAP_JSON` | Real handle→Slack user-ID map merged on top of the placeholder `slack_users.json` at startup (see `aiops/tools/chatops/adapters/_slack_user_map.py`). Shape: a JSON object on one line, e.g. `{"chinmay":"U0…","chinmay@example.com":"U0…"}`. Keep both handle and `@example.com` keys so mention rewriting works regardless of which form RA-005 emits. | `.env.shared` |
+| `AIOPS_ONCALL_ROSTER_JSON` | Real on-call roster (name/email/slack_handle/slack_user_id) merged on top of the placeholder `DEFAULT_ENGINEERS` in `scripts/seed_oncall.py` (see `_resolve_engineers`). Shape: JSON object keyed by engineer `key` (chinmay/riya/arjun/meera/vikram). Run `uv run python -m scripts.seed_oncall --force` after editing. Team/skills/timezone stay in code. | `.env.shared` |
 | `AIOPS_HITL_APPROVAL_TOKEN` | Shared bearer token for `POST /api/approvals/{id}/approve\|deny` (HITL-2, issue #102). When unset, the demo server logs a loud WARNING and accepts every request — only acceptable for a localhost-only demo. When set, the React approver console attaches it as `Authorization: Bearer <token>`; constant-time matched via `hmac.compare_digest`. | `.env.shared` |
 
 Generate a fresh approval token with:

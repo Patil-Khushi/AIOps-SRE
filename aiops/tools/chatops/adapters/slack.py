@@ -53,7 +53,6 @@ Secret hygiene:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -62,6 +61,7 @@ from typing import Any
 import httpx
 
 from ..models import ChatMessage, Severity
+from ._slack_user_map import load_slack_user_map
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class SlackWebhookAdapter:
         # loader is permissive (missing/bad file → empty map) so the demo
         # still runs without grooming the map first — unmapped names just
         # fall back to plain text per the issue's done-when criteria.
-        self._user_map: dict[str, str] = self._load_user_map(
+        self._user_map: dict[str, str] = load_slack_user_map(
             user_map_path or _DEFAULT_USER_MAP_PATH
         )
 
@@ -143,45 +143,6 @@ class SlackWebhookAdapter:
         return "SlackWebhookAdapter(webhook=https://hooks.slack.com/services/***)"
 
     # ─── mention rewriting (CHAT-6) ──────────────────────────────────────
-
-    @staticmethod
-    def _load_user_map(path: Path) -> dict[str, str]:
-        """Read the static name→Slack-user-id map.
-
-        Returns an empty dict if the file is missing or malformed — Slack
-        notifications will still land, mentions just won't ping anyone.
-        That trade-off is intentional: demo continuity beats hard failure
-        on a config file most of the team doesn't touch.
-        """
-        if not path.exists():
-            logger.info(
-                "slack adapter: user map %s not found; mentions will render as plain text",
-                path,
-            )
-            return {}
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning(
-                "slack adapter: user map %s unreadable (%s); falling back to plain text mentions",
-                path,
-                exc,
-            )
-            return {}
-        if not isinstance(data, dict):
-            logger.warning(
-                "slack adapter: user map %s must be a JSON object (got %s); using empty map",
-                path,
-                type(data).__name__,
-            )
-            return {}
-        # Filter out the documentation key + any non-string entries so
-        # downstream lookups stay total.
-        return {
-            k: v
-            for k, v in data.items()
-            if isinstance(k, str) and isinstance(v, str) and not k.startswith("_")
-        }
 
     def _format_mention(self, raw: str) -> str:
         """Rewrite ``"@chinmay"`` → ``"<@U01ABC123>"`` if mapped.
@@ -217,11 +178,16 @@ class SlackWebhookAdapter:
             }
         ]
 
-        # Routing-context fields (service / channel / incident). Each is
-        # only added if populated so the section doesn't render empty rows.
+        # Routing-context fields (application / sub-domain / channel /
+        # incident). Each is only added if populated so the section doesn't
+        # render empty rows. Slack's Block Kit lays fields in two columns;
+        # ordering Application + Sub-domain side-by-side puts the "where"
+        # at the top of the recipient's eye-path.
         fields: list[dict[str, str]] = []
         if msg.service:
-            fields.append({"type": "mrkdwn", "text": f"*Service:*\n{msg.service}"})
+            fields.append({"type": "mrkdwn", "text": f"*Application:*\n{msg.service}"})
+        if msg.category_display:
+            fields.append({"type": "mrkdwn", "text": f"*Sub-domain:*\n{msg.category_display}"})
         if msg.channel:
             fields.append({"type": "mrkdwn", "text": f"*Channel:*\n{msg.channel}"})
         if msg.incident_id:

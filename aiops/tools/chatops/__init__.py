@@ -21,6 +21,7 @@ from pathlib import Path
 from .adapters.jsonfile import JsonFileChatOpsAdapter
 from .adapters.pagerduty import PagerDutyAdapter
 from .adapters.slack import SlackWebhookAdapter
+from .adapters.slack_bot import SlackBotAdapter
 from .client import ChatOpsAdapter, ChatOpsClient, DeliveryResult, get_client
 from .models import ChatMessage, InteractivePrompt, Severity, to_record
 
@@ -35,6 +36,7 @@ __all__ = [
     "JsonFileChatOpsAdapter",
     "PagerDutyAdapter",
     "Severity",
+    "SlackBotAdapter",
     "SlackWebhookAdapter",
     "get_client",
     "register_env_adapters",
@@ -47,6 +49,7 @@ def register_env_adapters(
     audit_path: str | Path,
     slack_webhook_url: str | None = None,
     pagerduty_integration_key: str | None = None,
+    slack_bot_token: str | None = None,
 ) -> None:
     """Register the process-wide chatops sinks configured from the env.
 
@@ -89,5 +92,20 @@ def register_env_adapters(
         except ValueError as exc:
             logger.warning(
                 "chatops: AIOPS_PAGERDUTY_INTEGRATION_KEY set but invalid (%s); skipping",
+                exc,
+            )
+
+    slack_bot_token = (
+        slack_bot_token
+        if slack_bot_token is not None
+        else os.environ.get("AIOPS_SLACK_BOT_TOKEN", "").strip()
+    )
+    if slack_bot_token and SlackBotAdapter not in registered_kinds:
+        try:
+            client.register(SlackBotAdapter(slack_bot_token))
+            logger.info("chatops: registered slack bot adapter (DMs on page_oncall actions only)")
+        except ValueError as exc:
+            logger.warning(
+                "chatops: AIOPS_SLACK_BOT_TOKEN set but invalid (%s); skipping",
                 exc,
             )

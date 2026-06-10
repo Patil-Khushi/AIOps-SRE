@@ -196,11 +196,164 @@ class HistoricalIncidentRow(SQLModel, table=True):
     )
 
 
+class EngineerRow(SQLModel, table=True):
+    """An on-call engineer / SRE who can be paged.
+
+    The ``slack_handle`` is the vendor-neutral mention RA-005 emits
+    (``@chinmay``); ``slack_user_id`` is what the Slack adapter rewrites
+    that handle to for a real ping (``<@U12345>``). Both are nullable so
+    you can seed engineers without Slack and add it later via a single
+    UPDATE.
+
+    Skills are stored as a comma-separated string in ``skills_csv``. POC
+    scale (5–50 engineers, a handful of skills each) doesn't need a
+    join table. Promote to a proper many-to-many when the engineer count
+    crosses a few hundred.
+    """
+
+    __tablename__ = "engineers"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    email: str = Field(index=True, unique=True)
+    slack_handle: str | None = Field(default=None, index=True)  # "@chinmay" or "chinmay"
+    slack_user_id: str | None = Field(default=None)  # "U12345"
+    timezone: str = "UTC"
+    primary_team: str = Field(index=True)
+    skills_csv: str = ""  # "payments,kafka,kubernetes"
+    active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+    @property
+    def skills(self) -> list[str]:
+        return [s.strip() for s in self.skills_csv.split(",") if s.strip()]
+
+
+class ShiftRow(SQLModel, table=True):
+    """A recurring weekly on-call shift.
+
+    ``day_of_week`` is 0..6 with 0 = Monday (matches Python's
+    ``datetime.weekday()``). ``start_hour_utc`` and ``end_hour_utc`` are
+    integers in [0, 24]. Shifts that cross midnight UTC are represented
+    as two rows (one ending at 24, the next starting at 0 on the next
+    day) rather than allowing ``end < start`` — keeps the lookup query
+    a simple range check.
+
+    ``role``:
+    - ``primary``            — first to be paged for this team's alerts.
+    - ``secondary``          — page if primary is overloaded or unreachable.
+    - ``manager_escalation`` — final fallback if no one else is on shift.
+    """
+
+    __tablename__ = "shifts"
+
+    id: int | None = Field(default=None, primary_key=True)
+    engineer_id: int = Field(foreign_key="engineers.id", index=True)
+    team: str = Field(index=True)
+    day_of_week: int = Field(index=True)  # 0=Mon..6=Sun
+    start_hour_utc: int  # 0..24
+    end_hour_utc: int  # 0..24, > start
+    role: str = Field(default="primary", index=True)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
+class FailureCategoryRow(SQLModel, table=True):
+    """A sub-domain within a team's responsibility.
+
+    Examples for the Payments team:
+    - ``payment-gateway`` — third-party gateway integration issues
+    - ``payment-database`` — DB connection / query failures
+    - ``payment-kafka`` — event-streaming bottlenecks
+
+    Alerts are matched to categories by intersecting the alert's tokens
+    (service + alert_summary + recommended_runbook) with ``keywords_csv``.
+    ALL categories whose keyword set overlaps the alert are considered;
+    each one's expertise score is then multiplied by its overlap count
+    (see ``oncall_repository.find_best_for_team_and_category``), so a
+    category matched on a specific term beats one matched only by the
+    generic team marker (e.g. "payment"). If no category matches at
+    all, routing falls back to the plain shift lookup so alerts are
+    never dropped.
+
+    ``team`` is stored as a plain string (matches ``EngineerRow.primary_team``)
+    so we don't need a teams table at POC scale.
+    """
+
+    __tablename__ = "failure_categories"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)  # slug, e.g. "payment-gateway"
+    display_name: str  # human-readable
+    description: str = ""
+    team: str = Field(index=True)  # which team owns this category
+    keywords_csv: str = ""  # alert match keywords
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+    @property
+    def keywords(self) -> list[str]:
+        return [k.strip().lower() for k in self.keywords_csv.split(",") if k.strip()]
+
+
+class EngineerExpertiseRow(SQLModel, table=True):
+    """One row per (engineer, category) pair — the expertise ranking signal.
+
+    Routing scoring formula (see ``_score_expertise`` in
+    ``oncall_repository.py``)::
+
+        expertise_score = proficiency_weight[proficiency_level]
+                        + min(incidents_resolved, 25) * 2
+                        + feedback_score * 20
+                        + manual_priority * 50
+        weighted_score  = expertise_score × keyword_overlap_count
+
+    Higher weighted score wins; ties break on lowest engineer_id.
+
+    ``feedback_score`` is the mean of post-incident review ratings on a
+    1.0..5.0 scale. Default 3.0 (neutral) until a real rating arrives.
+
+    ``last_resolved_at`` is stored for future recency-bonus weighting
+    but not yet read by the scorer — the POC scoring intentionally
+    leans on track record + feedback only so the formula stays simple
+    enough to be explainable in a single screenshot.
+    """
+
+    __tablename__ = "engineer_expertise"
+
+    engineer_id: int = Field(foreign_key="engineers.id", primary_key=True)
+    category_id: int = Field(foreign_key="failure_categories.id", primary_key=True)
+    # "novice" | "intermediate" | "expert" | "principal"
+    proficiency_level: str = Field(default="intermediate", index=True)
+    incidents_resolved: int = 0
+    feedback_score: float = 3.0  # 1.0..5.0 (neutral default)
+    last_resolved_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    manual_priority: int = 0  # operator override
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True)),
+    )
+
+
 __all__ = [
     "ClassificationRow",
     "ClusterRow",
+    "EngineerExpertiseRow",
+    "EngineerRow",
+    "FailureCategoryRow",
     "HistoricalIncidentRow",
     "NotificationRow",
+    "ShiftRow",
     "TicketRow",
     "VerdictRow",
 ]

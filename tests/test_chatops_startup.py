@@ -18,6 +18,9 @@ def _fresh_chatops_client(monkeypatch):
 
     fresh = ChatOpsClient()
     monkeypatch.setattr(_client_mod, "_CLIENT", fresh)
+    # Isolate from any developer-local .env that may set the bot token:
+    # the env reader would otherwise auto-register a 4th adapter.
+    monkeypatch.delenv("AIOPS_SLACK_BOT_TOKEN", raising=False)
     return fresh
 
 
@@ -29,6 +32,7 @@ def test_register_env_adapters_registers_json_slack_and_pagerduty(monkeypatch, t
         audit_path=audit_path,
         slack_webhook_url="https://hooks.slack.com/services/T000/B000/XXXXXXXX",
         pagerduty_integration_key=_FAKE_PD_KEY,
+        slack_bot_token="",
     )
 
     assert any(isinstance(adapter, JsonFileChatOpsAdapter) for adapter in client.adapters)
@@ -45,11 +49,13 @@ def test_register_env_adapters_is_idempotent(monkeypatch, tmp_path):
         audit_path=audit_path,
         slack_webhook_url="https://hooks.slack.com/services/T000/B000/XXXXXXXX",
         pagerduty_integration_key=_FAKE_PD_KEY,
+        slack_bot_token="",
     )
     register_env_adapters(
         audit_path=audit_path,
         slack_webhook_url="https://hooks.slack.com/services/T000/B000/XXXXXXXX",
         pagerduty_integration_key=_FAKE_PD_KEY,
+        slack_bot_token="",
     )
 
     assert len(client.adapters) == 3

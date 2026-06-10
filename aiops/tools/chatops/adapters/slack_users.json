@@ -1,10 +1,13 @@
 {
-  "_comment": "Maps the mention text RA-005 emits (sans leading '@') to Slack user IDs. The Slack adapter rewrites '@chinmay' to '<@U01ABC123>' before posting so the real engineer gets pinged. Unmapped names fall back to plain text — the message still sends, the person just doesn't get a native Slack notification. Find a user's Slack ID via Slack -> their profile -> '...' -> 'Copy member ID' (starts with U for users, W for guests). Keys here are example placeholders; replace with real IDs as teammates onboard. See aiops/tools/chatops/adapters/slack.py for details.",
-  "chinmay": "U01EXAMPLE0",
-  "alice": "U02EXAMPLE1",
-  "bob": "U03EXAMPLE2",
-  "carol": "U04EXAMPLE3",
-  "oncall@payments.example.com": "U01EXAMPLE0",
-  "oncall@order-experience.example.com": "U02EXAMPLE1",
-  "oncall@personalization.example.com": "U03EXAMPLE2"
+  "_comment": "Placeholder name+email → Slack user-ID map. The committed values are FAKE (`UPLACEHOLDER1`..`UPLACEHOLDER5`); real workspace IDs are loaded from `AIOPS_SLACK_USER_MAP_JSON` in `.env.shared` (git-crypt encrypted) and merged on top at startup. See `_slack_user_map.py` and `SECRETS.md`. Keys match the placeholder roster in `scripts/seed_oncall.py` (handle and @example.com email both resolve to the same ID).",
+  "chinmay": "UPLACEHOLDER1",
+  "riya": "UPLACEHOLDER2",
+  "arjun": "UPLACEHOLDER3",
+  "meera": "UPLACEHOLDER4",
+  "vikram": "UPLACEHOLDER5",
+  "chinmay@example.com": "UPLACEHOLDER1",
+  "riya@example.com": "UPLACEHOLDER2",
+  "arjun@example.com": "UPLACEHOLDER3",
+  "meera@example.com": "UPLACEHOLDER4",
+  "vikram@example.com": "UPLACEHOLDER5"
 }

@@ -18,10 +18,12 @@ Public surface::
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Literal
 
 from agents.alert_triage import TriageVerdict
+from aiops.tools import get_registry
 from aiops.tools.chatops import ChatMessage, Severity, get_client
 
 from .models import RoutingDecision, RoutingOutcome
@@ -53,19 +55,122 @@ def _channel_for(team_slug: str) -> str:
     return f"team-{team_slug}"
 
 
-def _mentions_for(verdict: TriageVerdict) -> list[str]:
-    if verdict.assigned_engineer:
-        return [f"@{verdict.assigned_engineer}"]
-    return []
+# Tokenize on alphanumerics; drop very short fragments ("a", "to", "5xx" -> "5xx"
+# kept because length ≥3). Categories' keywords_csv stores lower-case canonical
+# terms ("payment", "gateway", "cart", "kubernetes") so case-folding on this
+# side keeps the join symmetric.
+_TOKEN_RE = re.compile(r"[a-z0-9]{3,}")
 
 
-def _render_body(verdict: TriageVerdict, reason: str) -> str:
-    lines = [
-        f"Service: {verdict.affected_service}",
-        f"Severity: {verdict.severity}",
-        f"Owning team: {verdict.assigned_team}",
+def _category_keywords_for(verdict: TriageVerdict) -> list[str]:
+    """Pull candidate sub-domain keywords out of the verdict.
+
+    Combines service name, alert summary, and recommended runbook into a
+    stable de-duplicated lower-case token list. The on-call DB matches
+    these against each failure-category's ``keywords_csv`` and picks the
+    specialist on shift for that sub-domain (e.g. ``payment-gateway`` vs
+    ``payment-database`` within the Payments Team).
+
+    No NLP — pure regex. The match table is operator-curated in
+    ``scripts/seed_oncall.py:CATEGORIES``, so any false negative is a
+    one-line keyword addition there, not a model retrain.
+    """
+    parts: list[str] = []
+    if verdict.affected_service:
+        parts.append(verdict.affected_service)
+    if verdict.alert_summary:
+        parts.append(verdict.alert_summary)
+    if verdict.recommended_runbook:
+        parts.append(verdict.recommended_runbook)
+    text = " ".join(parts).lower()
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in _TOKEN_RE.findall(text):
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
+
+
+def _resolve_oncall(verdict: TriageVerdict) -> dict | None:
+    """One round-trip to the on-call lookup; result feeds mentions + body.
+
+    Returns the raw data dict from ``oncall.schedule.lookup`` (the active
+    provider's shape), or ``None`` if the lookup failed / wasn't
+    registered. Callers must treat ``None`` as "no enrichment available"
+    and fall back to fields already on the verdict.
+
+    Providers that don't accept ``category_keywords`` are handled by the
+    tool registry itself: ``ToolRegistry.call`` filters kwargs against
+    ``inspect.signature(fn)`` before dispatch, so the mock provider
+    (which takes only ``team``) silently ignores the extra argument
+    instead of raising. We therefore don't need a TypeError fallback
+    here — a real TypeError from inside the provider gets converted to
+    a non-ok ToolResult by the registry's own catch.
+    """
+    keywords = _category_keywords_for(verdict)
+    try:
+        result = get_registry().call(
+            "oncall.schedule.lookup",
+            team=verdict.assigned_team,
+            category_keywords=keywords,
+        )
+    except KeyError:
+        return None
+    if result.ok and isinstance(result.data, dict):
+        return result.data
+    return None
+
+
+def _mentions_from(verdict: TriageVerdict, oncall: dict | None) -> list[str]:
+    """Build the @-mentions list from a pre-fetched lookup result.
+
+    Prefers the Slack handle from the on-call DB (``@chinmay``) because
+    the Slack adapter rewrites those to ``<@U…>`` for a real ping. Falls
+    back to the engineer's email when no Slack handle is recorded — still
+    readable, just doesn't ping. Returns ``[]`` when no engineer is
+    assigned at all.
+    """
+    if not verdict.assigned_engineer:
+        return []
+    if oncall is not None:
+        slack_handle = (oncall.get("slack_handle") or "").strip()
+        if slack_handle:
+            return [slack_handle if slack_handle.startswith("@") else f"@{slack_handle}"]
+    return [f"@{verdict.assigned_engineer}"]
+
+
+def _render_body(
+    verdict: TriageVerdict,
+    reason: str,
+    oncall: dict | None = None,
+) -> str:
+    """Compose the human-readable body block for the chat message.
+
+    The body is intentionally structured (one ``key: value`` per line) so
+    every renderer — Slack Block Kit, the React dashboard, the JSON audit
+    log, terminal `tail` — produces the same legible layout. Order
+    matters: the operator's eye should land on *what failed* and *where*
+    before the routing reason, which is metadata they care about second.
+    """
+    matched_display = (oncall or {}).get("matched_category_display") if oncall else None
+    specialist_name = (oncall or {}).get("engineer_name") if oncall else None
+
+    lines: list[str] = [
+        f"What failed: {verdict.alert_summary}",
+        f"Application: {verdict.affected_service}",
     ]
-    if verdict.assigned_engineer:
+    if matched_display:
+        lines.append(f"Sub-domain: {matched_display}")
+    lines.append(f"Severity: {verdict.severity}")
+    lines.append(f"Owning team: {verdict.assigned_team}")
+    if specialist_name:
+        # The "for X" framing is accurate even when the engineer isn't a
+        # specialist in X — it describes *what* they're being paged for,
+        # not what they're best at.
+        suffix = f" — paged for {matched_display}" if matched_display else ""
+        lines.append(f"On-call: {specialist_name}{suffix}")
+    elif verdict.assigned_engineer:
         lines.append(f"On-call: {verdict.assigned_engineer}")
     if verdict.recommended_runbook:
         lines.append(f"Runbook: {verdict.recommended_runbook}")
@@ -92,6 +197,15 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
         f"hour={now.hour:02d}Z, business_hours={'yes' if in_hours else 'no'}",
     ]
 
+    # Resolve on-call ONCE so the same lookup result feeds mentions, body,
+    # and the structured ``category_display`` field on the ChatMessage.
+    oncall = _resolve_oncall(verdict)
+    if oncall and oncall.get("matched_category"):
+        audit.append(
+            f"expertise: matched category={oncall['matched_category']!r} → "
+            f"engineer={oncall.get('engineer_name')!r}"
+        )
+
     # RA-001 marked this verdict Suppressed (duplicate of an existing cluster).
     # Routing must be a no-op: empty actions → route() skips the chatops emit.
     if verdict.status == "Suppressed":
@@ -101,19 +215,20 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
             chat_severity=Severity.INFO,
             channel="suppressed",
             title=title,
-            body=_render_body(verdict, reason),
+            body=_render_body(verdict, reason, oncall=oncall),
             mentions=[],
             actions=[],
             reason=reason,
             audit_trace=audit,
             decided_at=now,
+            category_display=(oncall or {}).get("matched_category_display"),
         )
 
     chat_sev: Severity
     channel: str
     actions: list[str]
     reason: str
-    mentions = _mentions_for(verdict)
+    mentions = _mentions_from(verdict, oncall)
 
     if sev == "Sev-1":
         chat_sev = Severity.P1
@@ -152,7 +267,7 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
         reason = "Sev-4 noise — quiet log, no human attention required"
         audit.append("rule: Sev-4 → INFO chat only (alerts-noise)")
 
-    body = _render_body(verdict, reason)
+    body = _render_body(verdict, reason, oncall=oncall)
 
     return RoutingDecision(
         chat_severity=chat_sev,
@@ -164,6 +279,7 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
         reason=reason,
         audit_trace=audit,
         decided_at=now,
+        category_display=(oncall or {}).get("matched_category_display"),
     )
 
 
@@ -178,6 +294,7 @@ def _decision_to_chat_message(
         body=decision.body,
         incident_id=verdict.incident_id,
         service=verdict.affected_service,
+        category_display=decision.category_display,
         mentions=list(decision.mentions),
         # CHAT-5 prep: the PagerDuty adapter filters on this list (only
         # acts when "page_oncall" is present). Other adapters can also

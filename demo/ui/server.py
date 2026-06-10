@@ -107,6 +107,9 @@ from aiops.tools import (  # noqa: E402
     feature_flags,  # noqa: F401  — ARCH-1 @tool registration
     get_registry,
 )
+from aiops.tools import (  # noqa: E402
+    oncall as _oncall_tool,  # noqa: F401  — DB-backed oncall provider registration
+)
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import register_env_adapters  # noqa: E402
 from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
@@ -129,6 +132,46 @@ def _warn_if_approval_token_unset() -> None:
     knows demo mode is on."""
     if not os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip():
         logger.warning("HITL web endpoints are unauthenticated")
+
+
+def _activate_db_oncall_provider() -> None:
+    """Switch the active ``oncall.schedule.lookup`` provider from the mock
+    to the DB-backed one once the engineers table has been populated.
+
+    The mock auto-registers via @tool decorators in ``mock_providers``;
+    the DB provider registers the same way in ``aiops.tools.oncall``.
+    The mock is the default winner because it registered first. We flip
+    the active pointer here, in lifespan startup, after ``init_db()`` so
+    the DB exists. If the engineers table is empty (dev forgot to seed),
+    we leave the mock active and log a single warning — paging-by-DB on
+    an empty roster would silently page nobody.
+    """
+    from sqlmodel import Session, func, select
+
+    from aiops.state import get_engine
+    from aiops.state.models import EngineerRow
+
+    with Session(get_engine()) as session:
+        # COUNT(*) over scalar — avoid materialising every row just to
+        # length-check (negligible at POC scale, but it's the right
+        # shape and one fewer thing to grow).
+        engineer_count = int(session.exec(select(func.count()).select_from(EngineerRow)).one() or 0)
+
+    if engineer_count == 0:
+        logger.warning(
+            "oncall: engineers table empty; keeping mock provider active. "
+            "Run `uv run python -m scripts.seed_oncall` to populate it."
+        )
+        return
+
+    try:
+        get_registry().select_provider("oncall.schedule.lookup", "db.oncall.schedule.lookup")
+        logger.info(
+            "oncall: activated DB provider (%d engineers in roster)",
+            engineer_count,
+        )
+    except (KeyError, ValueError):
+        logger.exception("oncall: failed to activate DB provider; mock stays active")
 
 
 def _register_chatops_adapters() -> None:
@@ -192,6 +235,7 @@ async def lifespan(app: FastAPI):
     """
     init_db()
     _warn_if_approval_token_unset()
+    _activate_db_oncall_provider()
     install_chatops_listener()
     install_default_approver()
     _register_chatops_adapters()

@@ -160,6 +160,7 @@ def test_to_record_full_key_contract():
         "body",
         "incident_id",
         "service",
+        "category_display",
         "mentions",
         "actions",
         "interactive",
