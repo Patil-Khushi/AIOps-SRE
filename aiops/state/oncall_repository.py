@@ -22,7 +22,7 @@ context — callers don't pass a session in. Keeps the seam clean.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from sqlmodel import Session, select
@@ -77,6 +77,15 @@ class OnCallEngineer:
     :func:`find_best_for_team_and_category` — they tell the caller *which*
     failure sub-domain drove the pick (e.g. ``payment-gateway`` /
     "Payment Gateway"). Plain shift lookup leaves them ``None``.
+
+    ``via_wildcard`` is ``True`` iff the engineer came from the global
+    wildcard rung (no team-specific coverage was found and the alert
+    fell through to ``ShiftRow.team == "*"``). The role string alone
+    cannot discriminate this: both team-specific manager_escalation
+    rows AND the wildcard fallback return ``role="manager_escalation"``.
+    Downstream (RA-005's body renderer, Slack adapters) reads this
+    flag to mark the page as "platform escalation — no team owner"
+    so the paged engineer knows *why* they were chosen.
     """
 
     id: int
@@ -90,6 +99,7 @@ class OnCallEngineer:
     timezone: str
     matched_category: str | None = None
     matched_category_display: str | None = None
+    via_wildcard: bool = False
 
 
 def _shift_covers_now(shift: ShiftRow, now: datetime) -> bool:
@@ -167,6 +177,7 @@ def _find_global_escalation(
         role="manager_escalation",
         skills=chosen.skills,
         timezone=chosen.timezone,
+        via_wildcard=True,
     )
 
 
@@ -443,14 +454,26 @@ def find_best_for_team_and_category(
         )
 
     # No on-shift expert in any role bucket — fall back to plain lookup
-    # so the alert is still routed somewhere.
+    # so the alert is still routed somewhere. When the fallback resolves
+    # via team-specific role buckets OR the wildcard rung, we re-attach
+    # the alert's top-overlap category so RA-005's Slack "Sub-domain:"
+    # field still surfaces — otherwise the engineer paged via wildcard
+    # would see no sub-domain, silently dropping the most informative
+    # metadata exactly on the alerts the wildcard exists to serve.
     logger.info(
         "oncall(expertise): no on-shift expert for team=%r matched=%s; "
         "falling back to plain on-call lookup",
         team,
         matched_names,
     )
-    return find_oncall_for_team(team, now=now, required_skills=required)
+    fallback = find_oncall_for_team(team, now=now, required_skills=required)
+    if fallback is None:
+        return None
+    return replace(
+        fallback,
+        matched_category=alert_top_cat.name,
+        matched_category_display=alert_top_cat.display_name,
+    )
 
 
 __all__ = [

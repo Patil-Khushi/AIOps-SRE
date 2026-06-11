@@ -1120,3 +1120,192 @@ def test_wildcard_only_engages_for_manager_escalation_role():
 
     r = find_oncall_for_team("Ads Team", now=now)
     assert r is None
+
+
+# ─── Wildcard discriminator + sub-domain threading (PR #167 self-review) ─
+
+
+def test_wildcard_returned_engineer_carries_via_wildcard_flag():
+    """OnCallEngineer.via_wildcard must be True iff the global wildcard
+    rung fired. Without this discriminator, downstream consumers can't
+    tell a team-specific manager_escalation row apart from the platform
+    safety net (both produce role='manager_escalation')."""
+    now = datetime(2026, 5, 18, 6, 0, tzinfo=UTC)
+    with Session(get_engine()) as s:
+        team_primary = _seed_engineer(s, name="TeamPrimary", team="Payments")
+        commander = _seed_engineer(s, name="Commander", team="Platform")
+        _seed_shift(
+            s,
+            engineer_id=team_primary.id or 0,
+            team="Payments",
+            day_of_week=now.weekday(),
+            start_hour_utc=3,
+            end_hour_utc=12,
+            role="primary",
+        )
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=now.weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+
+    # Team-specific path: via_wildcard MUST be False.
+    r_team = find_oncall_for_team("Payments", now=now)
+    assert r_team is not None and r_team.name == "TeamPrimary"
+    assert r_team.via_wildcard is False, "team-specific primary must NOT be marked via_wildcard"
+
+    # Wildcard path: via_wildcard MUST be True.
+    r_wildcard = find_oncall_for_team("Ads Team", now=now)
+    assert r_wildcard is not None and r_wildcard.name == "Commander"
+    assert r_wildcard.via_wildcard is True
+    assert r_wildcard.role == "manager_escalation"
+
+
+def test_expertise_wildcard_fallback_preserves_matched_category():
+    """When find_best_for_team_and_category falls through to the wildcard
+    rung (specialist off-shift), the alert's primary sub-domain must
+    survive on the returned OnCallEngineer.matched_category so RA-005
+    can render the Sub-domain Slack field. This regression was caught
+    by the self-review of PR #167."""
+    sat = datetime(
+        2026, 5, 23, 6, 0, tzinfo=UTC
+    )  # Saturday — primary's Mon-Fri shift doesn't cover
+    with Session(get_engine()) as s:
+        specialist = _seed_engineer(s, name="Specialist", team="Payments")
+        commander = _seed_engineer(s, name="Commander", team="Platform")
+        # Specialist only on Mon-Fri 03-12; nobody else on Payments.
+        for dow in range(0, 5):
+            _seed_shift(
+                s,
+                engineer_id=specialist.id or 0,
+                team="Payments",
+                day_of_week=dow,
+                start_hour_utc=3,
+                end_hour_utc=12,
+                role="primary",
+            )
+        # Global wildcard always-on.
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=sat.weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+        cat = _seed_category(
+            s,
+            name="payment-gateway",
+            team="Payments",
+            keywords_csv="payment,gateway,5xx",
+        )
+        _seed_expertise(
+            s,
+            engineer_id=specialist.id or 0,
+            category_id=cat.id or 0,
+            proficiency="expert",
+            incidents=15,
+            feedback=4.5,
+        )
+
+    # Saturday: specialist off-shift, no team primary on shift. Expertise
+    # match was payment-gateway (overlap weight 3). Fallback should hit
+    # the wildcard but PRESERVE the matched category.
+    r = find_best_for_team_and_category("Payments", ["payment", "gateway", "5xx"], now=sat)
+    assert r is not None
+    assert r.name == "Commander", "wildcard rung must serve the page"
+    assert r.via_wildcard is True
+    assert r.matched_category == "payment-gateway", (
+        "matched_category must survive the wildcard fallback so the Slack "
+        "Sub-domain field still renders"
+    )
+    assert r.matched_category_display == "payment-gateway"
+
+
+def test_db_oncall_lookup_tool_carries_via_wildcard():
+    """The tool layer's data dict must include via_wildcard so RA-005
+    can read it from the lookup result without a second round-trip."""
+    with Session(get_engine()) as s:
+        commander = _seed_engineer(
+            s,
+            name="Commander",
+            team="Platform",
+            slack_handle="@commander",
+            slack_user_id="U0CMD",
+        )
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=datetime.now(UTC).weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+
+    from aiops.tools.oncall import db_oncall_lookup
+
+    r = db_oncall_lookup(team="Ads Team")
+    assert r.ok is True
+    assert r.data["via_wildcard"] is True
+    assert r.data["engineer_name"] == "Commander"
+    assert r.data["role"] == "manager_escalation"
+
+
+def test_ra005_body_marks_platform_escalation_when_via_wildcard(monkeypatch):
+    """RA-005's rendered body must surface the wildcard origin so the
+    paged engineer knows they're the platform safety net, not the team
+    owner. Without this signal, the page is ambiguous: role='manager_
+    escalation' alone can be a team-specific escalation OR the global
+    fallback."""
+    with Session(get_engine()) as s:
+        commander = _seed_engineer(
+            s,
+            name="Commander",
+            team="Platform",
+            slack_handle="@commander",
+            slack_user_id="U0CMD",
+        )
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=datetime.now(UTC).weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+
+    import aiops.tools.oncall  # noqa: F401  — registers the DB provider
+    from aiops.tools import get_registry
+
+    get_registry().select_provider("oncall.schedule.lookup", "db.oncall.schedule.lookup")
+
+    from agents.alert_triage import AuditMetadata, TriageVerdict
+    from agents.notification_router import decide
+
+    verdict = TriageVerdict(
+        affected_service="ad",
+        severity="Sev-1",  # type: ignore[arg-type]
+        confidence_score=0.9,
+        alert_summary="ad service producing errors",
+        assigned_team="Ads Team",
+        assigned_engineer="someone@example.com",
+        status="Active",
+        audit_metadata=AuditMetadata(
+            created_at=datetime(2026, 5, 18, 6, 0, tzinfo=UTC),
+            source_alerts=["a-1"],
+        ),
+    )
+
+    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC))
+    assert "platform escalation" in d.body, (
+        "body must surface platform escalation for wildcard-served pages"
+    )
+    assert "Ads Team" in d.body, "body must name the team that's missing coverage"
+    assert d.mentions == ["@commander"]
