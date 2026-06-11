@@ -414,11 +414,48 @@ class EngineerExpertiseRow(SQLModel, table=True):
     )
 
 
+class ExecutionRow(SQLModel, table=True):
+    """Persists one Auto-Healer Lite (PRS-002) execution attempt.
+
+    One row per ``execute()`` call regardless of outcome — including
+    REFUSED and BLOCKED. The dashboard's history view + future
+    historical-effectiveness feedback to PRS-001 both query this table.
+
+    ``tool_args`` / ``tool_result`` / ``decision`` / ``audit_trace`` are
+    JSON columns so callers can pass through whatever the upstream agent
+    or platform tool produced without an additional schema migration each
+    time. Indexed columns are the ones the dashboard filters / sorts on.
+    """
+
+    __tablename__ = "executions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    request_id: str = Field(index=True, unique=True)  # stable per execute() call
+    option_id: str = Field(index=True)  # cross-ref to PRS-001's verdict
+    incident_id: str | None = Field(default=None, index=True)
+    affected_service: str = Field(index=True)
+    status: str = Field(index=True)  # ExecutionStatus.value
+    dry_run: bool = Field(default=True, index=True)
+    tool_capability: str | None = Field(default=None, index=True)
+    tool_args: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    tool_result: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    decision: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    operator: str | None = Field(default=None, index=True)
+    error: str | None = None
+    rationale: str = ""
+    decision_trace: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+
+
 __all__ = [
     "ClassificationRow",
     "ClusterRow",
     "EngineerExpertiseRow",
     "EngineerRow",
+    "ExecutionRow",
     "FailureCategoryRow",
     "HistoricalIncidentRow",
     "KBArticleRow",

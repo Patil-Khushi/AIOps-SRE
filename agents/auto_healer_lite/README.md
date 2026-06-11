@@ -1,6 +1,6 @@
 # Auto-Healer Lite — two surfaces in one agent
 
-**Status:** Day-1 scaffold (PRS-002 generic surface, deterministic stub, no LLM, never fires the tool). The legacy HITL-1 narrow surface (issue #77) coexists and is unchanged.
+**Status:** **v1 — fires the tool for real when ``dry_run=False`` and the gate clears.** Every attempt is persisted to ``aiops.state.ExecutionRow``. The legacy HITL-1 narrow surface (issue #77) coexists and is unchanged.
 
 **Phase:** Prescriptive-Adaptive · **HITL:** Required (platform-enforced at the tool gate)
 
@@ -25,9 +25,9 @@ outcome = recommend_restart(
 
 Tests in `tests/test_auto_healer_lite.py` cover this path with a background-thread approver. The `__main__.py` CLI exposes it for reviewers without standing up the FastAPI server. **This surface is untouched by PRS-002.**
 
-### 2. PRS-002 generic surface (Day-1 scaffold, this PR)
+### 2. PRS-002 generic surface (v1, this agent)
 
-Receives a chosen `RemediationOption` from PRS-001 and produces a structured `ExecutionVerdict` after the platform HITL gate runs. **Never fires the tool in Day-1.** Even when the gate clears, the verdict reports `dry_run_ok` + `would_execute=True` so an operator can compare against expectation before unlocking v1's real-execute path.
+Receives a chosen `RemediationOption` from PRS-001 and produces a structured `ExecutionVerdict` after the platform HITL gate runs. When `dry_run=True` (default — safer), the agent stops at `DRY_RUN_OK` and records what *would* have run via `would_execute=True`. When `dry_run=False` and the gate clears, the agent **dispatches the tool for real** via `aiops.tools.get_registry().call(tool_capability, **tool_args)` and maps the `ToolResult` to `EXECUTED` (ok=True) or `EXECUTION_FAILED` (ok=False, capability not registered, or tool raised). Every attempt is persisted to `aiops.state.ExecutionRow`.
 
 ```python
 from agents.auto_healer_lite import execute, ExecutionRequest
@@ -110,17 +110,16 @@ The agent enforces on a dedicated action: `auto_heal.lite.execute`, declared `RE
 
 The agent calls `get_gate().check(...)` (not `enforce`) so the verdict carries the gate's full `Decision` payload regardless of outcome. The dashboard / chatops sink can render it without re-deriving fields.
 
-**Day-1 invariants enforced at the model layer:**
+**Invariants enforced at the model layer:**
 
 - `ExecutionVerdict.requires_hitl: Literal[True]` — pydantic rejects any verdict that tries to declare itself non-gated.
 - The validator in `_validate_option` rejects an option whose own `requires_hitl` is not truthy. The agent never overrides the upstream's autonomy declaration.
 
-**Day-1 does NOT:**
+**v1 still does NOT:**
 
-- Fire the tool. `aiops.tools.get_registry().call(...)` is not invoked in this path even when the gate clears.
-- Roll back. The verdict reports the rollback string but the agent has no rollback executor.
-- Persist to `aiops.state`. v1 will add an audit row so historical effectiveness can feed back to PRS-001's ranking.
-- Honour `dry_run=False`. Day-1 forces dry-run regardless of caller intent.
+- Roll back automatically. The verdict reports the rollback string but the agent does not invoke the reverse capability on `EXECUTION_FAILED`. The operator follows the option's rollback plan manually.
+- Pre-flight blast-radius re-validation. The option's stored radius is taken on trust; future work compares against current CMDB / topology.
+- Rollback rehearsal. v-next will confirm the rollback string maps to a registered reverse capability before forward fire.
 
 ---
 
@@ -146,9 +145,22 @@ uv run python -m evals.harness --agent auto_healer_lite
 
 The 6 goldens pin to REFUSED and BLOCKED outcomes because the eval harness runs with the default `_no_approver`. A valid option correctly comes back BLOCKED (the gate did its job; nobody approved). Refused outcomes prove the validator catches malformed options before the gate ever sees them.
 
-### Happy path (DRY_RUN_OK with an approver)
+### v1 happy + failure paths (with an installed approver)
 
-The DRY_RUN_OK path requires an approver installed in the gate. That's a unit test, not an eval — see `tests/test_auto_healer_lite.py` for the pattern (background-thread approver). v1 will add a dedicated `tests/test_auto_healer_lite_prs002.py` mirroring that.
+The DRY_RUN_OK / EXECUTED / EXECUTION_FAILED paths all require an approver installed in the gate AND a registered tool capability. Those live in `tests/test_auto_healer_lite_prs002.py`:
+
+```powershell
+uv run pytest tests/test_auto_healer_lite_prs002.py -v
+```
+
+Nine cases cover:
+- Gate clears + `dry_run=True` → `DRY_RUN_OK`, no tool call
+- Gate clears + `dry_run=False` + tool ok → `EXECUTED`, `tool_result` populated, captured args asserted
+- Gate clears + tool returns `ok=False` → `EXECUTION_FAILED` with the error string
+- Gate clears + tool capability not registered → `EXECUTION_FAILED` with "not registered"
+- Gate clears + tool raises → `EXECUTION_FAILED` (registry catches; agent surfaces)
+- Gate denies → `BLOCKED`
+- `ExecutionRow` persisted on `EXECUTED`, `REFUSED`, and `BLOCKED` outcomes
 
 ### Legacy HITL-1 path
 
@@ -162,18 +174,17 @@ uv run python -m agents.auto_healer_lite --deployment product-catalog --auto-app
 
 ---
 
-## v1 cut line
+## What v1 ships (this PR) vs what's deferred
 
-| Day-1 stub | v1 (next) |
+| v1 (this PR) | v-next (deferred) |
 |---|---|
-| Never fires the tool | Real `aiops.tools.get_registry().call(tool_capability, **tool_args)` when `dry_run=False` AND gate cleared |
-| `dry_run=True` forced | Honour caller's `dry_run` flag |
-| `tool_result` always null | Populate with the tool's response envelope |
-| No rollback rehearsal | Pre-flight: confirm the rollback string maps to a known reverse operation |
-| No audit-trail row | Write to `aiops.state` so historical effectiveness feeds PRS-001's ranking |
-| Pre-flight blast-radius from the option's stored value | Re-validate against current CMDB / topology at execution time |
+| ✅ Real `aiops.tools.get_registry().call(tool_capability, **tool_args)` when `dry_run=False` AND gate clears | Pre-flight blast-radius re-validation against current CMDB / topology |
+| ✅ Honours caller's `dry_run` flag | Rollback rehearsal — confirm the rollback string maps to a registered reverse capability before forward fire |
+| ✅ `tool_result` populated on `EXECUTED` / `EXECUTION_FAILED` | Automatic rollback on `EXECUTION_FAILED` (today: surfaces the rollback string for the operator) |
+| ✅ Audit-trail row in `aiops.state.ExecutionRow` on every attempt | Caller-supplied `approval_id` for deterministic test seeding |
+| ✅ `list_executions()` repository query for dashboard history | Dashboard panel that renders the option list + Execute buttons |
 
-The contract is **locked** — v1 swaps the internals without breaking PRS-001 callers or the dashboard.
+The contract is **locked** — the wire shape (`ExecutionRequest` / `ExecutionVerdict`) is stable across v1, v-next, and future LLM-driven re-ranking, so PRS-001 callers and the dashboard never break on agent upgrades.
 
 ---
 

@@ -21,6 +21,7 @@ from aiops.state import get_engine
 from aiops.state.models import (
     ClassificationRow,
     ClusterRow,
+    ExecutionRow,
     HistoricalIncidentRow,
     KBArticleRow,
     NotificationRow,
@@ -391,6 +392,94 @@ def _notification_row_to_dict(row: NotificationRow) -> dict[str, Any]:
         "actions": list(row.actions) if row.actions else [],
         "reason": row.reason,
         "audit_trace": list(row.audit_trace or []),
+    }
+
+
+# ─── executions (PRS-002 Auto-Healer Lite output) ──────────────────────────
+
+
+def save_execution(verdict: Any) -> int:
+    """Persist one Auto-Healer Lite ``ExecutionVerdict``. Returns the row id.
+
+    Called by ``agents.auto_healer_lite.execute`` after every attempt
+    (REFUSED / BLOCKED / DRY_RUN_OK / EXECUTED / EXECUTION_FAILED) so
+    the dashboard's history view + future historical-effectiveness feed
+    to PRS-001 both have a single source of truth.
+
+    The ``decision`` and ``audit_trace`` columns are JSON so this can
+    accept whatever the upstream gate / executor emits without a schema
+    migration each release. ``request_id`` is uniquely indexed — a
+    second save with the same id raises an IntegrityError, which is the
+    right behaviour because the request_id is generated per call.
+    """
+    audit = verdict.audit_metadata
+    row = ExecutionRow(
+        request_id=verdict.request_id,
+        option_id=verdict.option_id,
+        incident_id=getattr(verdict, "incident_id", None),
+        affected_service=verdict.affected_service,
+        status=str(verdict.status.value if hasattr(verdict.status, "value") else verdict.status),
+        dry_run=bool(verdict.dry_run),
+        tool_capability=verdict.tool_capability,
+        tool_args=dict(verdict.tool_args or {}),
+        tool_result=dict(verdict.tool_result) if verdict.tool_result else None,
+        decision=verdict.decision.model_dump(mode="json")
+        if hasattr(verdict.decision, "model_dump")
+        else dict(verdict.decision or {}),
+        operator=getattr(verdict, "operator", None),
+        error=getattr(verdict, "error", None),
+        rationale=verdict.rationale,
+        decision_trace=list(getattr(audit, "decision_trace", []) or []),
+        created_at=audit.created_at,
+    )
+    with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return int(row.id)  # type: ignore[arg-type]
+
+
+def list_executions(
+    *,
+    limit: int = 50,
+    affected_service: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """Newest-first list of persisted executions. Filters by service and/or
+    status. Returns plain dicts safe to serialize to JSON.
+    """
+    stmt = (
+        select(ExecutionRow)
+        .order_by(ExecutionRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(limit)
+    )
+    if affected_service:
+        stmt = stmt.where(ExecutionRow.affected_service == affected_service)
+    if status:
+        stmt = stmt.where(ExecutionRow.status == status)
+    with _session() as s:
+        rows = s.exec(stmt).all()
+    return [_execution_row_to_dict(r) for r in rows]
+
+
+def _execution_row_to_dict(row: ExecutionRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "request_id": row.request_id,
+        "option_id": row.option_id,
+        "incident_id": row.incident_id,
+        "affected_service": row.affected_service,
+        "status": row.status,
+        "dry_run": row.dry_run,
+        "tool_capability": row.tool_capability,
+        "tool_args": row.tool_args,
+        "tool_result": row.tool_result,
+        "decision": row.decision,
+        "operator": row.operator,
+        "error": row.error,
+        "rationale": row.rationale,
+        "decision_trace": row.decision_trace,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
 

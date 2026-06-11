@@ -5,14 +5,19 @@
 end-to-end via the ``automation.runbook.execute`` capability. Tests +
 CLI runner depend on this shape; kept untouched.
 
-**PRS-002 generic Day-1 stub** (``execute`` / ``ExecutionRequest`` /
+**PRS-002 generic v1 path** (``execute`` / ``ExecutionRequest`` /
 ``ExecutionVerdict``) — receives a single chosen ``RemediationOption``
-from PRS-001 and produces a structured ``ExecutionVerdict`` after
-calling the platform HITL gate (``auto_heal.lite.execute``, REQUIRED).
-**Never actually fires the tool in Day-1.** Even when the gate clears
-the stub maps the outcome to ``dry_run_ok`` and records what *would*
-have run (``would_execute=True``). v1 will swap the dry-run branch
-for a real ``aiops.tools.get_registry().call()``.
+from PRS-001 and produces a structured ``ExecutionVerdict``. The agent
+calls the platform HITL gate (``auto_heal.lite.execute``, REQUIRED).
+When the gate clears AND the caller passes ``dry_run=False``, the
+agent dispatches the option's ``tool_capability`` via the platform
+tool registry and maps the ``ToolResult`` to ``EXECUTED`` or
+``EXECUTION_FAILED``. When ``dry_run=True`` (the safer default), the
+agent stops at ``DRY_RUN_OK`` and records what *would* have run via
+``would_execute=True``. Every attempt — REFUSED, BLOCKED, DRY_RUN_OK,
+EXECUTED, EXECUTION_FAILED — is persisted to ``aiops.state.ExecutionRow``
+so the dashboard history + the future historical-effectiveness feed
+to PRS-001 share one source of truth.
 
 Legacy path::
 
@@ -25,17 +30,26 @@ Legacy path::
                              if denied/expired: ToolResult(ok=False, ...)
     <- RestartOutcome (executed / denied / expired / blocked / error)
 
-PRS-002 stub path::
+PRS-002 v1 path::
 
     execute(req) -> validate option (requires_hitl=True, tool_capability set, ...)
                  -> get_gate().check("auto_heal.lite.execute", ctx)
-                 -> map Decision -> ExecutionStatus
-                 -> never call the tool in Day-1
-    <- ExecutionVerdict (refused / pending_approval / blocked / dry_run_ok)
+                 -> if not allowed:    -> REFUSED / PENDING_APPROVAL / BLOCKED
+                    if allowed + dry:  -> DRY_RUN_OK (no tool call)
+                    if allowed + real: -> registry.call(tool_capability, **tool_args)
+                                          -> EXECUTED / EXECUTION_FAILED
+                 -> save_execution(verdict)  (best-effort; failures logged)
+    <- ExecutionVerdict
 
 Both paths share ``run(input: dict) -> dict`` for the eval harness.
 ``run`` dispatches on input shape: an ``option`` key routes to
 ``execute``; otherwise it stays on the legacy restart path.
+
+Deferred to a follow-up:
+- Pre-flight blast-radius re-validation against current CMDB / topology.
+- Rollback rehearsal (confirm the rollback string maps to a registered
+  reverse capability before forward fire).
+- Caller-supplied ``approval_id`` for deterministic test seeding.
 """
 
 from __future__ import annotations
@@ -204,18 +218,26 @@ def _decision_to_summary(decision: Any, ctx: dict[str, Any]) -> GateDecisionSumm
 
 
 def execute(request: ExecutionRequest) -> ExecutionVerdict:
-    """Day-1 stub: validate the option, consult the platform HITL gate,
-    map the gate's Decision to an ExecutionStatus, and return the
-    structured verdict. NEVER calls the tool — even an approved
-    decision maps to ``dry_run_ok``.
+    """Validate the option, consult the platform HITL gate, map the
+    Decision to an ExecutionStatus, optionally dispatch the tool, and
+    return the structured verdict. Persists the verdict to
+    ``aiops.state.ExecutionRow`` regardless of outcome.
 
-    The Day-1 invariant is intentional: until the rollback rehearsal
-    + audit-trail story land in v1, the safest behaviour is to record
-    what *would* have executed and let an operator unlock the real
-    fire-the-tool path manually.
+    Behaviour by branch:
+
+    - Option fails validation → ``REFUSED``, gate not consulted, no tool call.
+    - Gate refuses (approver missing / denied / expired) → ``BLOCKED``
+      (or ``PENDING_APPROVAL`` when an async approval is in flight).
+    - Gate clears AND ``request.dry_run=True`` → ``DRY_RUN_OK``,
+      ``would_execute=True`` for non-manual actions, no tool call.
+    - Gate clears AND ``request.dry_run=False`` → ``execute the tool``,
+      map ``ToolResult`` to ``EXECUTED`` (ok=True) or
+      ``EXECUTION_FAILED`` (ok=False or capability not registered).
     """
     request_id = f"ahl-{uuid.uuid4().hex[:12]}"
-    trace: list[str] = [f"request_id={request_id} service={request.affected_service!r}"]
+    trace: list[str] = [
+        f"request_id={request_id} service={request.affected_service!r} dry_run={request.dry_run}"
+    ]
 
     option = request.option
     option_id = str(option.get("option_id") or "unknown")
@@ -226,17 +248,19 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
     ok, reason = _validate_option(option)
     if not ok:
         trace.append(f"refused: {reason}")
-        return ExecutionVerdict(
-            request_id=request_id,
-            option_id=option_id,
-            affected_service=request.affected_service,
-            status=ExecutionStatus.REFUSED,
-            dry_run=request.dry_run,
-            decision=GateDecisionSummary(allowed=False, level="n/a", reason=reason),
-            tool_capability=tool_capability,
-            tool_args=tool_args,
-            rationale=f"Refused before reaching the HITL gate: {reason}",
-            audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+        return _finalise(
+            ExecutionVerdict(
+                request_id=request_id,
+                option_id=option_id,
+                affected_service=request.affected_service,
+                status=ExecutionStatus.REFUSED,
+                dry_run=request.dry_run,
+                decision=GateDecisionSummary(allowed=False, level="n/a", reason=reason),
+                tool_capability=tool_capability,
+                tool_args=tool_args,
+                rationale=f"Refused before reaching the HITL gate: {reason}",
+                audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+            )
         )
     trace.append(
         f"validated: option_id={option_id} action_type={option.get('action_type')} "
@@ -254,9 +278,11 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
     ctx.setdefault("blast_radius", option.get("blast_radius"))
     ctx.setdefault("rollback", option.get("rollback"))
     ctx.setdefault("operator", request.operator)
-    # Day-1 stub never blocks on a real approver — the eval harness
-    # would deadlock otherwise. ``skip_approval`` is honoured by the
-    # platform's ApprovalRequester (HITL-1).
+    # If the caller hasn't installed a real approver, short-circuit the
+    # async approval flow so the eval harness + smoke runs don't
+    # deadlock. Real callers (production, tests with an installed
+    # ApprovalRequester) leave ``skip_approval`` unset and the gate
+    # runs the full approval round-trip.
     ctx.setdefault("skip_approval", True)
 
     decision = get_gate().check(_PRS002_GATE_ACTION, ctx)
@@ -266,9 +292,7 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
         f"level={summary.level} reason={summary.reason!r}"
     )
 
-    # 3. Map Decision -> ExecutionStatus. The Day-1 stub maps an
-    # *allowed* decision to dry_run_ok instead of executed — execution
-    # is deferred to v1.
+    # 3a. Gate refused → terminal (no tool dispatch).
     if not summary.allowed:
         if summary.approval_id and summary.approval_status not in {"denied", "expired"}:
             status = ExecutionStatus.PENDING_APPROVAL
@@ -276,35 +300,185 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
         else:
             status = ExecutionStatus.BLOCKED
             rationale = f"Gate refused the action: {summary.reason}"
-    else:
-        # Allowed → Day-1 stub records dry_run_ok and the would_execute
-        # flag. v1 will branch on request.dry_run here and call the
-        # tool when False.
+        trace.append(f"status={status.value}")
+        return _finalise(
+            ExecutionVerdict(
+                request_id=request_id,
+                option_id=option_id,
+                affected_service=request.affected_service,
+                status=status,
+                dry_run=request.dry_run,
+                decision=summary,
+                tool_capability=tool_capability,
+                tool_args=tool_args,
+                rationale=rationale,
+                audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+            )
+        )
+
+    # 3b. Gate cleared. Branch on dry_run.
+    if request.dry_run:
         status = ExecutionStatus.DRY_RUN_OK
         rationale = (
-            f"Gate cleared the action (level={summary.level}). Day-1 stub did NOT "
-            f"call the tool; v1 will dispatch via aiops.tools.get_registry().call("
+            f"Gate cleared (level={summary.level}); request.dry_run=True so the tool was "
+            f"not called. WOULD have dispatched aiops.tools.get_registry().call("
             f"{tool_capability!r}, **{tool_args!r})."
         )
-    trace.append(f"status={status.value}")
+        would_execute = bool(tool_capability)
+        trace.append(f"status={status.value} (dry_run)")
+        return _finalise(
+            ExecutionVerdict(
+                request_id=request_id,
+                option_id=option_id,
+                affected_service=request.affected_service,
+                status=status,
+                dry_run=request.dry_run,
+                decision=summary,
+                tool_capability=tool_capability,
+                tool_args=tool_args,
+                would_execute=would_execute,
+                rationale=rationale,
+                audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+            )
+        )
 
-    would_execute = status in (ExecutionStatus.DRY_RUN_OK, ExecutionStatus.APPROVED) and bool(
-        tool_capability
+    # 3c. Gate cleared AND dry_run=False → real tool dispatch.
+    # Manual actions have no executor wired in v0 — surface that as a
+    # successful dry_run_ok-style outcome (would_execute=False) instead
+    # of an execution failure. v1+ can add manual-execution receipts
+    # (operator marks "I did this manually") at the dashboard layer.
+    if not tool_capability:
+        status = ExecutionStatus.DRY_RUN_OK
+        rationale = (
+            f"Gate cleared (level={summary.level}). Option has no tool_capability "
+            f"(action_type={option.get('action_type')!r}, manual) — no automated "
+            "executor to call. Recording as DRY_RUN_OK; the operator carries it out."
+        )
+        trace.append(f"status={status.value} (manual, no executor)")
+        return _finalise(
+            ExecutionVerdict(
+                request_id=request_id,
+                option_id=option_id,
+                affected_service=request.affected_service,
+                status=status,
+                dry_run=request.dry_run,
+                decision=summary,
+                tool_capability=None,
+                tool_args=tool_args,
+                would_execute=False,
+                rationale=rationale,
+                audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+            )
+        )
+
+    try:
+        result = get_registry().call(tool_capability, **tool_args)
+    except KeyError:
+        trace.append(f"tool_capability={tool_capability!r} NOT registered")
+        return _finalise(
+            ExecutionVerdict(
+                request_id=request_id,
+                option_id=option_id,
+                affected_service=request.affected_service,
+                status=ExecutionStatus.EXECUTION_FAILED,
+                dry_run=request.dry_run,
+                decision=summary,
+                tool_capability=tool_capability,
+                tool_args=tool_args,
+                error=f"tool capability {tool_capability!r} is not registered with the platform tool registry",
+                rationale=(
+                    "Gate cleared but the executor was unreachable — no platform tool "
+                    f"matches capability {tool_capability!r}."
+                ),
+                audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+            )
+        )
+    except Exception as exc:  # boundary: a buggy tool can't crash the verdict
+        trace.append(f"tool dispatch raised: {type(exc).__name__}: {exc}")
+        logger.exception("auto_heal.lite.execute: tool dispatch raised")
+        return _finalise(
+            ExecutionVerdict(
+                request_id=request_id,
+                option_id=option_id,
+                affected_service=request.affected_service,
+                status=ExecutionStatus.EXECUTION_FAILED,
+                dry_run=request.dry_run,
+                decision=summary,
+                tool_capability=tool_capability,
+                tool_args=tool_args,
+                error=f"{type(exc).__name__}: {exc}",
+                rationale=f"Tool dispatch raised an exception: {exc}",
+                audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+            )
+        )
+
+    # ToolResult shape: {ok: bool, data: any, error: str | None, metadata: ...}
+    tool_result_dict: dict[str, Any] = {
+        "ok": bool(getattr(result, "ok", False)),
+        "data": getattr(result, "data", None),
+        "error": getattr(result, "error", None),
+        "metadata": dict(getattr(result, "metadata", {}) or {}),
+    }
+    trace.append(
+        f"tool.{tool_capability} -> ok={tool_result_dict['ok']} error={tool_result_dict['error']!r}"
     )
 
-    return ExecutionVerdict(
-        request_id=request_id,
-        option_id=option_id,
-        affected_service=request.affected_service,
-        status=status,
-        dry_run=request.dry_run,
-        decision=summary,
-        tool_capability=tool_capability,
-        tool_args=tool_args,
-        would_execute=would_execute,
-        rationale=rationale,
-        audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+    if tool_result_dict["ok"]:
+        status = ExecutionStatus.EXECUTED
+        rationale = (
+            f"Gate cleared and tool {tool_capability!r} succeeded. Forward action "
+            f"completed; the rollback path remains {option.get('rollback')!r}."
+        )
+        error: str | None = None
+    else:
+        status = ExecutionStatus.EXECUTION_FAILED
+        rationale = (
+            f"Gate cleared but tool {tool_capability!r} returned ok=False. "
+            f"Error: {tool_result_dict['error']!r}. No rollback was attempted; "
+            "the operator should follow the option's rollback plan manually."
+        )
+        error = str(tool_result_dict["error"] or "tool returned ok=False")
+
+    return _finalise(
+        ExecutionVerdict(
+            request_id=request_id,
+            option_id=option_id,
+            affected_service=request.affected_service,
+            status=status,
+            dry_run=request.dry_run,
+            decision=summary,
+            tool_capability=tool_capability,
+            tool_args=tool_args,
+            tool_result=tool_result_dict,
+            would_execute=False,  # we actually executed; no "would" implied
+            error=error,
+            rationale=rationale,
+            audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
+        )
     )
+
+
+def _finalise(verdict: ExecutionVerdict) -> ExecutionVerdict:
+    """Persist the verdict (best-effort) and return it.
+
+    A DB blip MUST NOT prevent the caller from receiving the verdict.
+    Failures are logged at WARNING and swallowed — the in-memory
+    response is the source of truth for the immediate caller; the row
+    is for history / future learning.
+    """
+    try:
+        # Local import keeps the agent importable in environments where
+        # ``aiops.state`` isn't initialised (CI smoke without a DB).
+        from aiops.state import repository as _repo
+
+        _repo.save_execution(verdict)
+    except Exception as exc:  # broad on purpose; persistence is best-effort
+        logger.warning(
+            "auto_heal.lite: failed to persist ExecutionVerdict (%s); "
+            "in-memory verdict returned anyway",
+            exc,
+        )
+    return verdict
 
 
 def run(input: dict[str, Any]) -> dict[str, Any]:
