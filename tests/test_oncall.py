@@ -984,3 +984,139 @@ def test_slack_bot_dm_includes_subdomain_field(tmp_path):
     field_texts = " ".join(f["text"] for f in fields_section["fields"])
     assert "Application:" in field_texts and "payment" in field_texts
     assert "Sub-domain:" in field_texts and "Payment Gateway" in field_texts
+
+
+# ─── Global wildcard fallback (never drop a Sev-1) ───────────────────────
+
+
+def test_wildcard_escalation_engages_for_un_onboarded_team():
+    """A team with zero engineers but a wildcard escalation in the DB
+    still pages the wildcard engineer — the never-drop rung."""
+    now = datetime(2026, 5, 18, 6, 0, tzinfo=UTC)
+    with Session(get_engine()) as s:
+        commander = _seed_engineer(s, name="Commander", team="Platform")
+        # Wildcard manager_escalation: team='*', always-on.
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=now.weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+
+    # No engineer / shift exists for "Ads Team" — wildcard MUST take over.
+    r = find_oncall_for_team("Ads Team", now=now)
+    assert r is not None and r.name == "Commander"
+    assert r.role == "manager_escalation"
+    # Team context preserved so the audit trail shows what was queried.
+    assert r.team == "Ads Team"
+
+
+def test_team_specific_primary_beats_wildcard():
+    """When a team-specific primary IS on shift, the wildcard must not
+    fire. Wildcard is the floor, not a priority override."""
+    now = datetime(2026, 5, 18, 6, 0, tzinfo=UTC)
+    with Session(get_engine()) as s:
+        primary = _seed_engineer(s, name="TeamPrimary", team="Payments")
+        commander = _seed_engineer(s, name="Commander", team="Platform")
+        _seed_shift(
+            s,
+            engineer_id=primary.id or 0,
+            team="Payments",
+            day_of_week=now.weekday(),
+            start_hour_utc=3,
+            end_hour_utc=12,
+            role="primary",
+        )
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=now.weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+
+    r = find_oncall_for_team("Payments", now=now)
+    assert r is not None and r.name == "TeamPrimary"
+    assert r.role == "primary"
+
+
+def test_wildcard_falls_back_when_team_primary_off_shift():
+    """Team has a primary but the primary's shift doesn't cover now,
+    AND the team has no team-specific escalation. Wildcard fires."""
+    now = datetime(2026, 5, 18, 18, 0, tzinfo=UTC)  # Monday evening
+    with Session(get_engine()) as s:
+        primary = _seed_engineer(s, name="OffShiftPrimary", team="Payments")
+        commander = _seed_engineer(s, name="Commander", team="Platform")
+        # Primary's morning shift doesn't cover 18:00.
+        _seed_shift(
+            s,
+            engineer_id=primary.id or 0,
+            team="Payments",
+            day_of_week=0,
+            start_hour_utc=3,
+            end_hour_utc=12,
+            role="primary",
+        )
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=0,
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+
+    r = find_oncall_for_team("Payments", now=now)
+    assert r is not None and r.name == "Commander"
+    assert r.role == "manager_escalation"
+
+
+def test_expertise_routing_inherits_wildcard_fallback():
+    """find_best_for_team_and_category for an un-onboarded team with no
+    categories must still page someone via the wildcard rung. (Routing
+    via expertise must not silently drop alerts on unknown teams.)"""
+    now = datetime(2026, 5, 18, 6, 0, tzinfo=UTC)
+    with Session(get_engine()) as s:
+        commander = _seed_engineer(s, name="Commander", team="Platform")
+        _seed_shift(
+            s,
+            engineer_id=commander.id or 0,
+            team="*",
+            day_of_week=now.weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="manager_escalation",
+        )
+
+    r = find_best_for_team_and_category("Ads Team", ["ad", "latency", "high"], now=now)
+    assert r is not None and r.name == "Commander"
+    assert r.role == "manager_escalation"
+
+
+def test_wildcard_only_engages_for_manager_escalation_role():
+    """A wildcard shift with role!='manager_escalation' must NOT fire
+    the fallback — only true safety-net shifts are wildcard-eligible.
+    Guards against a primary on team='*' accidentally hijacking every
+    team's lookup."""
+    now = datetime(2026, 5, 18, 6, 0, tzinfo=UTC)
+    with Session(get_engine()) as s:
+        # An engineer on a wildcard PRIMARY shift — should be ignored.
+        accidental = _seed_engineer(s, name="Accidental", team="Platform")
+        _seed_shift(
+            s,
+            engineer_id=accidental.id or 0,
+            team="*",
+            day_of_week=now.weekday(),
+            start_hour_utc=0,
+            end_hour_utc=24,
+            role="primary",
+        )
+
+    r = find_oncall_for_team("Ads Team", now=now)
+    assert r is None

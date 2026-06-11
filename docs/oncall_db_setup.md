@@ -30,9 +30,13 @@ After running `uv run python -m scripts.seed_oncall`, the DB contains
 | riya      | Riya    | Payments Team    | payments, kubernetes      | Mon–Fri 11–20       | primary (evening)   |
 | arjun     | Arjun   | Order Experience | cart, checkout, payments  | Mon–Fri 03–12       | primary             |
 | meera     | Meera   | Order Experience | cart, kubernetes          | Mon–Fri 11–20       | primary (evening)   |
-| vikram    | Vikram  | Payments + Order Exp. + Platform | kubernetes, observability | All days, always-on | manager_escalation  |
+| vikram    | Vikram  | Platform         | kubernetes, observability | All days, always-on | **wildcard** manager_escalation |
 
-Vikram is the 24/7 safety net for all three teams.
+Vikram is the 24/7 **global** safety net — shift row tagged with the
+special team key `"*"`, so any alert on a team that isn't otherwise
+covered (Catalog Team, Ads Team, Communications, etc., from the
+OpenTelemetry demo's CMDB) still pages Vikram on Sev-1 / Sev-2
+after-hours. See §5 for the lookup ladder.
 
 The Slack handles in the DB are `@chinmay`, `@riya`, … and the user IDs
 are placeholders (`UPLACEHOLDER1`..`UPLACEHOLDER5`). Until you supply
@@ -242,6 +246,30 @@ red dot, phone buzz, the whole thing.
         │     2. Same Block Kit fields as the webhook adapter
         └─► PagerDutyAdapter (if "page_oncall" in actions) → phone call
 ```
+
+### Lookup ladder — never drop a Sev-1
+
+`find_oncall_for_team(team)` walks the following ladder top-down and
+returns the first match:
+
+1. **Team-specific primary** on shift right now.
+2. **Team-specific secondary** on shift.
+3. **Team-specific manager_escalation** (treated as always-on regardless
+   of stored hours; the role flag overrides the hours).
+4. **Global wildcard escalation** — `ShiftRow.team == "*"` with role
+   `manager_escalation`. Engaged when the requested team has no
+   engineers in the DB at all (e.g. an OTel-demo alert for the `ad`
+   service whose CMDB team `Ads Team` isn't onboarded yet). The
+   returned `OnCallEngineer.team` keeps the original requested team so
+   the audit trail / channel name stays honest; the `role` field is
+   `manager_escalation` so RA-005 + Slack can mark the page as
+   "platform escalation."
+
+Returns `None` only when BOTH the team-specific ladder AND the
+wildcard rung are empty — typically because the DB has been wiped and
+not re-seeded. RA-005's Sev-3 / Sev-4 anti-fatigue rule clears
+`mentions` anyway, so the missing engineer only matters for Sev-1 +
+Sev-2 after-hours where a `page_oncall` action would otherwise fire.
 
 ### Specialist selection — overlap-weighted scoring
 

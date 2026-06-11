@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 # always-on safety net.
 _ROLE_FALLBACK = ("primary", "secondary", "manager_escalation")
 
+# Special ``ShiftRow.team`` value that signals "covers ANY team that has
+# no other coverage". When the team-specific ladder yields nobody, the
+# repository searches for rows tagged with this value and returns the
+# matching ``manager_escalation`` engineer. This is the
+# never-drop-an-alert rung: a Sev-1 on a service whose team isn't even
+# in the on-call DB still pages the platform-wide escalation rather
+# than silently dropping the page.
+_GLOBAL_TEAM_KEY = "*"
+
 # Proficiency level → base score. Tuned so expert dominates intermediate
 # but not by so much that an intermediate with strong feedback + many
 # resolved incidents can't beat a fresh expert.
@@ -104,6 +113,63 @@ def _engineer_has_skills(engineer: EngineerRow, required: list[str]) -> bool:
     return all(s in have for s in required)
 
 
+def _find_global_escalation(
+    requested_team: str,
+    *,
+    now: datetime,
+    required_skills: list[str],
+) -> OnCallEngineer | None:
+    """Look up the platform-wide ``manager_escalation`` engineer.
+
+    Backs the *never-drop-an-alert* rung. Returns the engineer registered
+    against ``ShiftRow.team == "*"`` with role ``manager_escalation``.
+    The returned :class:`OnCallEngineer` keeps ``team`` set to the
+    caller's ``requested_team`` so the routing context (channel name,
+    audit trail, "On-call for which team?") stays honest even though
+    the engineer's primary team may differ — the role string
+    (``manager_escalation``) is the signal that this is the safety-net
+    rung, not the team owner.
+
+    Skill filtering is honoured but falls back to "anyone wildcard on
+    shift" if no skill match — same anti-fatigue heuristic as
+    :func:`find_oncall_for_team`.
+    """
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(ShiftRow, EngineerRow)
+            .join(EngineerRow, ShiftRow.engineer_id == EngineerRow.id)
+            .where(ShiftRow.team == _GLOBAL_TEAM_KEY)
+            .where(ShiftRow.role == "manager_escalation")
+            .where(EngineerRow.active.is_(True))  # type: ignore[attr-defined]
+        ).all()
+
+    candidates = [(s, e) for s, e in rows if _engineer_has_skills(e, required_skills)]
+    if not candidates and required_skills:
+        candidates = list(rows)
+    if not candidates:
+        return None
+
+    # Deterministic pick: lowest engineer id wins (same proxy as the
+    # team-specific path uses).
+    _shift, chosen = min(candidates, key=lambda pair: pair[1].id or 0)
+    logger.info(
+        "oncall(global): team=%r had no coverage -> wildcard engineer=%r",
+        requested_team,
+        chosen.name,
+    )
+    return OnCallEngineer(
+        id=chosen.id or -1,
+        name=chosen.name,
+        email=chosen.email,
+        slack_handle=chosen.slack_handle,
+        slack_user_id=chosen.slack_user_id,
+        team=requested_team,
+        role="manager_escalation",
+        skills=chosen.skills,
+        timezone=chosen.timezone,
+    )
+
+
 def find_oncall_for_team(
     team: str,
     *,
@@ -112,17 +178,22 @@ def find_oncall_for_team(
 ) -> OnCallEngineer | None:
     """Look up the on-call engineer for ``team`` at ``now``.
 
-    The query is split into three role-buckets (primary → secondary →
-    manager_escalation) so a partial-coverage roster degrades gracefully:
-    if nobody primary is on shift, we try secondaries; if no secondaries
-    either, we fall back to the manager-escalation rotation. Each bucket
-    is filtered by ``required_skills`` first, then re-tried without
-    skill filtering — "wake someone unskilled" beats "wake nobody on a
-    Sev-1."
+    Lookup ladder, top-down:
 
-    Returns ``None`` only when the team has zero candidates of any role
-    in the database. In production that means the team isn't onboarded
-    yet — RA-005 should fall back to a generic ``#unrouted`` channel.
+    1. **Team-specific roles** (primary → secondary → manager_escalation):
+       each bucket is filtered by ``required_skills`` first, then re-tried
+       without skill filtering — "wake someone unskilled" beats "wake
+       nobody on a Sev-1."
+    2. **Global wildcard escalation** (``ShiftRow.team == "*"``,
+       role ``manager_escalation``): the never-drop rung. Engaged when
+       the team isn't onboarded in the DB or its full ladder is off-shift.
+       Common for OTel-demo services whose CMDB team has no engineers
+       seeded (Catalog Team, Ads Team, etc.) — without this rung, a
+       Sev-1 on those services would silently page nobody.
+
+    Returns ``None`` only when *both* the team-specific ladder AND the
+    wildcard rung are empty — e.g. the DB has been wiped and not
+    re-seeded.
     """
     required = list(required_skills or [])
 
@@ -179,7 +250,18 @@ def find_oncall_for_team(
             timezone=chosen.timezone,
         )
 
-    logger.info("oncall: no engineer found for team=%r at %s", team, now.isoformat())
+    # Team-specific ladder exhausted; try the global wildcard rung so
+    # services on un-onboarded teams still page someone on Sev-1.
+    fallback = _find_global_escalation(team, now=now, required_skills=required)
+    if fallback is not None:
+        return fallback
+
+    logger.info(
+        "oncall: no engineer found for team=%r at %s (no team coverage, "
+        "no wildcard escalation either — Sev-1 on this team would page nobody)",
+        team,
+        now.isoformat(),
+    )
     return None
 
 
