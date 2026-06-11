@@ -106,6 +106,35 @@ def _install_no_approver():
     get_gate().set_approver(_no)
 
 
+def _install_pending_approver():
+    """Approver that opens an async approval and hasn't been resolved yet.
+
+    Models the production state where ``ApprovalRequester`` posted to
+    chatops, populated ``ctx['pending_approval_id']``, and is waiting on
+    a human. The approver returns ``approver=None`` (no human yet) with
+    ``status=None`` (in flight, not denied/expired). The agent should
+    map this to ``PENDING_APPROVAL`` so the dashboard can render an
+    "awaiting approval" card linked to the approval id.
+    """
+
+    def _pending(action: str, ctx: dict[str, Any]) -> ApproverResult:
+        # Mirror what ApprovalRequester writes when it opens a request:
+        # the pending_approval_id MUST land on ctx for the agent to
+        # discriminate PENDING_APPROVAL from BLOCKED.
+        ctx["pending_approval_id"] = "appr-test-pending"
+        return ApproverResult(
+            approver=None,
+            summary=ApprovalSummary(
+                id="appr-test-pending",
+                status="approved",  # placeholder; the agent checks the id, not the status here
+                approver=None,
+                reason="async approval in flight",
+            ),
+        )
+
+    get_gate().set_approver(_pending)
+
+
 def _register_tool(capability: str, *, ok: bool = True, error: str | None = None):
     """Register a synthetic ``feature_flags.set_variant`` test tool.
 
@@ -362,3 +391,81 @@ def test_blocked_row_persisted(_isolate_gate):
     assert len(rows) == 1
     assert rows[0]["status"] == "blocked"
     assert rows[0]["decision"]["allowed"] is False
+
+
+# ─── Reachability gaps closed in self-review of PR #170 ────────────────────
+
+
+def test_pending_approval_when_async_approval_in_flight(_isolate_gate):
+    """Approver returns approver=None + an approval_id (the "async
+    approval opened, not yet resolved" state). The agent must map this
+    to ``PENDING_APPROVAL`` so the dashboard can render an "awaiting
+    approval" card linked to the approval id — distinct from
+    ``BLOCKED``, which means the approver actively refused.
+
+    The current production ``ApprovalRequester`` blocks until
+    resolution so this state is forward-looking — exercised by the
+    test, but realistically arises only with a future non-blocking
+    approver implementation.
+    """
+    _install_pending_approver()
+
+    req = ExecutionRequest(
+        option=_option(),
+        affected_service="payment",
+        dry_run=False,
+        hitl_context={"skip_approval": False},
+    )
+
+    v = execute(req)
+
+    assert v.status == ExecutionStatus.PENDING_APPROVAL
+    assert v.decision.allowed is False
+    assert v.decision.approval_id == "appr-test-pending"
+    # Body of the rationale references the approval id so a Slack
+    # consumer can deep-link the operator to the approval page.
+    assert "appr-test-pending" in v.rationale
+    # Tool was NOT dispatched while approval is pending.
+    assert v.tool_result is None
+
+
+def test_manual_action_with_dry_run_false_short_circuits(_isolate_gate):
+    """An option with ``action_type=manual`` (no automated executor)
+    and ``dry_run=False`` must NOT raise — the agent has no tool to
+    call, so it short-circuits to ``DRY_RUN_OK`` with
+    ``would_execute=False``. The operator carries the action out manually;
+    a future "manual-receipt" UI affordance closes the loop.
+
+    Asserts the graceful-degradation branch + the audit row still
+    captures the attempt with ``tool_capability=None``.
+    """
+    _install_yes_approver()
+
+    req = ExecutionRequest(
+        option=_option(
+            option_id="manual-investigate",
+            action_type="manual",
+            tool_capability=None,
+            tool_args={},
+        ),
+        affected_service="cart",
+        dry_run=False,
+        hitl_context={"skip_approval": False},
+    )
+
+    v = execute(req)
+
+    assert v.status == ExecutionStatus.DRY_RUN_OK
+    assert v.decision.allowed is True  # gate cleared
+    assert v.tool_capability is None
+    assert v.would_execute is False  # no automated executor exists
+    assert v.tool_result is None
+    # Rationale should explain that the agent dropped to manual handoff,
+    # not that the operator asked for a dry-run.
+    assert "manual" in v.rationale.lower()
+
+    rows = list_executions(affected_service="cart")
+    assert len(rows) == 1
+    assert rows[0]["status"] == "dry_run_ok"
+    assert rows[0]["tool_capability"] is None
+    assert rows[0]["dry_run"] is False  # caller asked for real execute

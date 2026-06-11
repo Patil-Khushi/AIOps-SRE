@@ -278,12 +278,17 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
     ctx.setdefault("blast_radius", option.get("blast_radius"))
     ctx.setdefault("rollback", option.get("rollback"))
     ctx.setdefault("operator", request.operator)
-    # If the caller hasn't installed a real approver, short-circuit the
-    # async approval flow so the eval harness + smoke runs don't
-    # deadlock. Real callers (production, tests with an installed
-    # ApprovalRequester) leave ``skip_approval`` unset and the gate
-    # runs the full approval round-trip.
-    ctx.setdefault("skip_approval", True)
+    # We deliberately DO NOT default ``skip_approval`` here. The gate's
+    # default approver (``_no_approver``) already fail-closes REQUIRED
+    # actions to BLOCKED when no real approver is installed — so the
+    # eval harness + smoke runs that haven't wired ``ApprovalRequester``
+    # still get a deterministic BLOCKED outcome without needing the
+    # short-circuit. In production (with ``ApprovalRequester`` installed)
+    # the full approval round-trip runs unless the caller explicitly
+    # opts out via ``hitl_context={"skip_approval": True}``. An earlier
+    # iteration defaulted to True here and produced a silent BLOCKED on
+    # every production execute call regardless of dry_run — caught in
+    # self-review of PR #170.
 
     decision = get_gate().check(_PRS002_GATE_ACTION, ctx)
     summary = _decision_to_summary(decision, ctx)
