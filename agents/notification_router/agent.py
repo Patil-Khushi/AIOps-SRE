@@ -155,6 +155,7 @@ def _render_body(
     """
     matched_display = (oncall or {}).get("matched_category_display") if oncall else None
     specialist_name = (oncall or {}).get("engineer_name") if oncall else None
+    via_wildcard = bool((oncall or {}).get("via_wildcard")) if oncall else False
 
     lines: list[str] = [
         f"What failed: {verdict.alert_summary}",
@@ -167,9 +168,18 @@ def _render_body(
     if specialist_name:
         # The "for X" framing is accurate even when the engineer isn't a
         # specialist in X — it describes *what* they're being paged for,
-        # not what they're best at.
-        suffix = f" — paged for {matched_display}" if matched_display else ""
-        lines.append(f"On-call: {specialist_name}{suffix}")
+        # not what they're best at. The wildcard suffix tells the paged
+        # engineer they're being woken as the *platform* safety net (no
+        # team owner is seeded for this team), not as the team's
+        # dedicated on-call — important context when the engineer is
+        # deciding how to respond.
+        for_clause = f" — paged for {matched_display}" if matched_display else ""
+        wildcard_clause = (
+            f" (platform escalation — no on-call seeded for {verdict.assigned_team})"
+            if via_wildcard
+            else ""
+        )
+        lines.append(f"On-call: {specialist_name}{for_clause}{wildcard_clause}")
     elif verdict.assigned_engineer:
         lines.append(f"On-call: {verdict.assigned_engineer}")
     if verdict.recommended_runbook:
