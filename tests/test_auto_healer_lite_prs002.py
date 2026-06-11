@@ -43,6 +43,25 @@ def _in_memory_state(monkeypatch):
     state_pkg.reset_engine_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_registry():
+    """Snapshot + restore the global tool registry around each test.
+
+    Without this, ``_register_tool`` leaks its stub into the singleton
+    ``get_registry()`` and downstream test files (e.g. the flagd
+    adapter's suite) inherit our fake. CI catches this — local runs
+    pass because pytest may collect those tests in a different order.
+    """
+    reg = get_registry()
+    snapshot_active = dict(reg._active)  # type: ignore[attr-defined]
+    snapshot_tools = dict(reg._tools)  # type: ignore[attr-defined]
+    yield
+    reg._active.clear()  # type: ignore[attr-defined]
+    reg._active.update(snapshot_active)  # type: ignore[attr-defined]
+    reg._tools.clear()  # type: ignore[attr-defined]
+    reg._tools.update(snapshot_tools)  # type: ignore[attr-defined]
+
+
 @pytest.fixture
 def _isolate_gate():
     """Reset the singleton gate approver around each test."""
