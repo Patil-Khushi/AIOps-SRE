@@ -117,7 +117,7 @@ def test_send_includes_service_channel_incident_fields_when_present() -> None:
     fields_section = next((b for b in blocks if b["type"] == "section" and "fields" in b), None)
     assert fields_section is not None
     field_texts = " ".join(f["text"] for f in fields_section["fields"])
-    assert "Service:" in field_texts and "payment" in field_texts
+    assert "Application:" in field_texts and "payment" in field_texts
     assert "Channel:" in field_texts and "incidents" in field_texts
     assert "Incident:" in field_texts and "INC0010099" in field_texts
 

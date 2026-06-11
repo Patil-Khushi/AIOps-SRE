@@ -50,6 +50,10 @@ class RoutingDecision(BaseModel):
     reason: str
     audit_trace: list[str] = Field(default_factory=list)
     decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    category_display: str | None = None
+    """Human-readable failure sub-domain ("Payment Gateway"). Populated
+    when the expertise-aware on-call lookup matched a category; ``None``
+    when no match (no keywords, off-shift specialist, mock provider)."""
 
 
 class RoutingOutcome(BaseModel):

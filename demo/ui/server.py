@@ -107,6 +107,9 @@ from aiops.tools import (  # noqa: E402
     feature_flags,  # noqa: F401  — ARCH-1 @tool registration
     get_registry,
 )
+from aiops.tools import (  # noqa: E402
+    oncall as _oncall_tool,  # noqa: F401  — DB-backed oncall provider registration
+)
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import register_env_adapters  # noqa: E402
 from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
@@ -129,6 +132,46 @@ def _warn_if_approval_token_unset() -> None:
     knows demo mode is on."""
     if not os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip():
         logger.warning("HITL web endpoints are unauthenticated")
+
+
+def _activate_db_oncall_provider() -> None:
+    """Switch the active ``oncall.schedule.lookup`` provider from the mock
+    to the DB-backed one once the engineers table has been populated.
+
+    The mock auto-registers via @tool decorators in ``mock_providers``;
+    the DB provider registers the same way in ``aiops.tools.oncall``.
+    The mock is the default winner because it registered first. We flip
+    the active pointer here, in lifespan startup, after ``init_db()`` so
+    the DB exists. If the engineers table is empty (dev forgot to seed),
+    we leave the mock active and log a single warning — paging-by-DB on
+    an empty roster would silently page nobody.
+    """
+    from sqlmodel import Session, func, select
+
+    from aiops.state import get_engine
+    from aiops.state.models import EngineerRow
+
+    with Session(get_engine()) as session:
+        # COUNT(*) over scalar — avoid materialising every row just to
+        # length-check (negligible at POC scale, but it's the right
+        # shape and one fewer thing to grow).
+        engineer_count = int(session.exec(select(func.count()).select_from(EngineerRow)).one() or 0)
+
+    if engineer_count == 0:
+        logger.warning(
+            "oncall: engineers table empty; keeping mock provider active. "
+            "Run `uv run python -m scripts.seed_oncall` to populate it."
+        )
+        return
+
+    try:
+        get_registry().select_provider("oncall.schedule.lookup", "db.oncall.schedule.lookup")
+        logger.info(
+            "oncall: activated DB provider (%d engineers in roster)",
+            engineer_count,
+        )
+    except (KeyError, ValueError):
+        logger.exception("oncall: failed to activate DB provider; mock stays active")
 
 
 def _register_chatops_adapters() -> None:
@@ -192,6 +235,7 @@ async def lifespan(app: FastAPI):
     """
     init_db()
     _warn_if_approval_token_unset()
+    _activate_db_oncall_provider()
     install_chatops_listener()
     install_default_approver()
     _register_chatops_adapters()
@@ -773,6 +817,71 @@ def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
     if approval_id in _HITL_OUTCOMES:
         return _HITL_OUTCOMES[approval_id]
     return {"status": "pending", "approval_id": approval_id}
+
+
+# ─── RCA fix-step remediation (RCA → approve → apply) ──────────────────────
+#
+# The RCA panel's "Approve & apply" button POSTs here. Same shape as the
+# auto-heal restart above: fire the gated executor on a background thread,
+# return the approval id immediately, and park the outcome in the shared
+# _HITL_OUTCOMES store (polled via /api/demo/auto-heal/outcome/{id}).
+#
+# The executor calls the REQUIRED-gated rca.fix_step.execute capability, so the
+# platform HITL gate posts the Slack approve/deny prompt and blocks until a
+# human resolves it — then flips the flag through the feature_flags seam.
+
+
+class RcaApplyFixRequest(BaseModel):
+    flag: str = Field(..., min_length=1, description="flagd flag to flip (e.g. paymentFailure)")
+    variant: str = Field("off", description="Target defaultVariant — 'off' disables the failure")
+    action_type: str = Field(
+        "set_flag",
+        description="The RCA fix step's action_type. v0 only executes 'set_flag'.",
+    )
+    reason: str = Field("RCA-recommended remediation: disable the injected failure flag.")
+    timeout_seconds: int = Field(120, ge=5, le=900)
+
+
+@app.post("/api/demo/rca/apply-fix")
+async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
+    """Kick off the gated RCA fix-step remediation and return the approval id.
+
+    The executor follows the fix step's ``action_type`` (v0 runs ``set_flag``;
+    other types come back ``unsupported``). It blocks inside the HITL gate
+    until the human resolves the Slack/dashboard approval; we don't wait for
+    that here. Poll ``/api/demo/auto-heal/outcome/{approval_id}`` for the
+    result.
+    """
+    from aiops.tools.rca_remediation import request_fix_step
+
+    approval_id = _uuid_hex()
+    ctx: dict[str, Any] = {
+        "approval_id": approval_id,
+        "approval_timeout_seconds": req.timeout_seconds,
+        "reason": req.reason,
+        "action_type": req.action_type,
+        "flag": req.flag,
+        "variant": req.variant,
+    }
+
+    def _run_executor() -> None:
+        _HITL_OUTCOMES[approval_id] = request_fix_step(
+            action_type=req.action_type,
+            flag=req.flag,
+            variant=req.variant,
+            hitl_context=ctx,
+        )
+
+    _HITL_AGENT_POOL.submit(_run_executor)
+
+    return {
+        "approval_id": approval_id,
+        "action_type": req.action_type,
+        "flag": req.flag,
+        "variant": req.variant,
+        "status": "pending",
+        "timeout_seconds": req.timeout_seconds,
+    }
 
 
 # ─── HITL approval surface (issue #77) ─────────────────────────────────────

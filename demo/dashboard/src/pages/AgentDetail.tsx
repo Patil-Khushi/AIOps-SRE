@@ -1,16 +1,7 @@
-import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import {
-  ArrowLeft,
-  ArrowRight,
-  CheckCircle2,
-  Lightbulb,
-  Plug,
-  Rocket,
-  ShieldCheck,
-  Workflow,
-} from 'lucide-react';
-import { getAgentById, type AgentPhase, type AgentSetupItem } from '@/data/agentCatalog';
+import { ArrowLeft, Check, ChevronRight, Rocket, Settings, ShieldCheck, X } from 'lucide-react';
+import { getAgentById, type AgentCatalogItem, type AgentPhase } from '@/data/agentCatalog';
 
 const PHASE_SWATCH: Record<AgentPhase, string> = {
   'Reactive-Active':       '#4f46e5',
@@ -22,20 +13,56 @@ const PHASE_SWATCH: Record<AgentPhase, string> = {
 const CHIP =
   'inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/5 px-3 py-1 font-mono text-[11px] text-white/80';
 
-// Small uppercase eyebrow above each section — the recurring "website" rhythm.
-function Eyebrow({ icon, swatch, children }: { icon: ReactNode; swatch: string; children: ReactNode }) {
-  return (
-    <p className="flex items-center gap-2 font-mono text-[10px] uppercase text-white/50" style={{ letterSpacing: '0.3em' }}>
-      <span style={{ color: swatch }}>{icon}</span>
-      {children}
-    </p>
-  );
+// The LLM edition toggle — open-weight/self-hosted vs. paid hosted APIs.
+const LLM_EDITIONS = {
+  oss:  { label: 'Open Source', note: 'Llama 3 · Mistral · Qwen — self-hosted via Ollama. No API cost, full data control.' },
+  paid: { label: 'Paid',        note: 'Claude · GPT · Gemini — hosted API. Top accuracy, usage-based pricing.' },
+} as const;
+type Edition = keyof typeof LLM_EDITIONS;
+
+// Vendor-neutral integration slots — for each, the interchangeable providers a
+// user can plug in. (LLM is handled by the edition toggle, so it's not here.)
+type IntegrationKey =
+  | 'observability' | 'itsm' | 'cmdb' | 'chatops' | 'oncall' | 'vector' | 'policy' | 'automation';
+
+const INTEGRATIONS: Record<IntegrationKey, { label: string; options: string[] }> = {
+  observability: { label: 'Observability',          options: ['Prometheus', 'Datadog', 'CloudWatch', 'Grafana', 'Jaeger'] },
+  itsm:          { label: 'Ticketing (ITSM)',       options: ['ServiceNow', 'Jira'] },
+  cmdb:          { label: 'Service catalog / CMDB',  options: ['ServiceNow CMDB', 'In-process JSON'] },
+  chatops:       { label: 'ChatOps',                 options: ['Slack', 'Microsoft Teams'] },
+  oncall:        { label: 'On-call / paging',        options: ['PagerDuty', 'Opsgenie'] },
+  vector:        { label: 'Vector store',            options: ['pgvector', 'Qdrant'] },
+  policy:        { label: 'Policy / governance',     options: ['OPA'] },
+  automation:    { label: 'Automation / runbooks',   options: ['Ansible', 'Kubernetes Jobs', 'Shell runbooks'] },
+};
+
+// Infer which integration slots are relevant to an agent from its tools/setup.
+function relevantIntegrations(agent: AgentCatalogItem): IntegrationKey[] {
+  const hay = [
+    ...(agent.setup?.map((s) => s.tool) ?? []),
+    ...agent.tools,
+  ].join(' ').toLowerCase();
+  const keys: IntegrationKey[] = [];
+  const add = (k: IntegrationKey) => { if (!keys.includes(k)) keys.push(k); };
+  if (/prometheus|metric|trace|jaeger|grafana|observ|datadog|cloudwatch|telemetry|signal|baseline/.test(hay)) add('observability');
+  if (/servicenow|itsm|ticket|jira|service desk/.test(hay)) add('itsm');
+  if (/cmdb|catalog/.test(hay)) add('cmdb');
+  if (/slack|teams|chat/.test(hay)) add('chatops');
+  if (/pagerduty|on-call|oncall|paging|routing|notif/.test(hay)) add('oncall');
+  if (/vector|pgvector|qdrant|embedding|historical|knowledge/.test(hay)) add('vector');
+  if (/opa|policy|hitl|governance|gate/.test(hay)) add('policy');
+  if (/runbook|automation|auto-heal|remediat|rollback|chaos|scale/.test(hay)) add('automation');
+  if (keys.length === 0) { add('observability'); add('chatops'); }
+  return keys;
 }
 
 export default function AgentDetail() {
   const { agentId } = useParams();
   const navigate = useNavigate();
   const agent = agentId ? getAgentById(agentId) : undefined;
+  const [edition, setEdition] = useState<Edition>('oss');
+  const [configOpen, setConfigOpen] = useState(false);
+  const [picks, setPicks] = useState<Record<string, string>>({});
 
   if (!agent) {
     return (
@@ -62,269 +89,226 @@ export default function AgentDetail() {
   };
 
   const plain = agent.plainSummary ?? agent.summary;
-  const benefits = agent.benefits ?? [];
   const steps = agent.howItWorks ?? [];
-  const setup: AgentSetupItem[] =
-    agent.setup ?? agent.tools.map((t) => ({ tool: t, detail: `Connect ${t} to this agent.` }));
-
-  const TryButton = ({ block = false }: { block?: boolean }) =>
-    agent.liveSurface ? (
-      <button
-        type="button"
-        onClick={launch}
-        className={`inline-flex items-center justify-center gap-2 rounded-full bg-white px-7 py-3.5 font-body text-[12px] font-bold uppercase text-black shadow-lg shadow-black/20 transition-all hover:-translate-y-0.5 hover:bg-white/90 ${block ? 'w-full' : ''}`}
-        style={{ letterSpacing: '0.18em' }}
-      >
-        <Rocket className="h-4 w-4" /> Try it
-      </button>
-    ) : (
-      <span
-        className={`inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/5 px-7 py-3.5 font-body text-[12px] font-bold uppercase text-white/40 ${block ? 'w-full' : ''}`}
-        style={{ letterSpacing: '0.18em' }}
-      >
-        Dashboard coming soon
-      </span>
-    );
+  const slots = relevantIntegrations(agent);
 
   return (
-    <div className="space-y-20 pb-8">
-      {/* ════ HERO ════ */}
-      <section className="relative">
-        {/* big ambient swatch glow behind the hero */}
-        <div
-          className="pointer-events-none absolute -top-24 left-1/4 h-[28rem] w-[28rem] -translate-x-1/2 rounded-full opacity-30 blur-[120px]"
-          style={{ background: swatch }}
-        />
-        <div className="relative">
-          <Link
-            to="/agents"
-            className="inline-flex items-center gap-2 font-body text-[11px] font-medium uppercase text-white/60 transition-colors hover:text-white"
-            style={{ letterSpacing: '0.15em' }}
+    <div className="space-y-6">
+      {/* ── top action bar: back + Configure + LLM edition toggle ── */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          to="/agents"
+          className="inline-flex items-center gap-2 font-body text-[11px] font-medium uppercase text-white/60 transition-colors hover:text-white"
+          style={{ letterSpacing: '0.15em' }}
+        >
+          <ArrowLeft className="h-4 w-4" /> All agents
+        </Link>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setConfigOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/5 px-3 py-1.5 font-body text-[11px] font-semibold uppercase text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+            style={{ letterSpacing: '0.12em' }}
           >
-            <ArrowLeft className="h-4 w-4" /> All agents
-          </Link>
+            <Settings className="h-3.5 w-3.5" /> Configure
+          </button>
 
-          <div className="mt-8 grid items-start gap-10 lg:grid-cols-[1.4fr_1fr]">
-            {/* left — identity + CTA */}
-            <div className="space-y-6">
-              <div className="flex items-center gap-3">
-                <span className="h-2.5 w-2.5 flex-none rounded-full" style={{ backgroundColor: swatch, boxShadow: `0 0 12px ${swatch}` }} />
-                <p className="font-mono text-[11px] uppercase text-white/50" style={{ letterSpacing: '0.3em' }}>
-                  {agent.phase} · Agent #{String(agent.position).padStart(2, '0')}
-                </p>
-              </div>
-
-              <h1
-                className="font-display text-5xl font-black uppercase text-white md:text-6xl"
-                style={{ letterSpacing: '-0.04em', lineHeight: 0.92 }}
-              >
-                {agent.name}
-              </h1>
-
-              <p className="max-w-2xl font-body text-lg leading-relaxed text-white/75">{plain}</p>
-
-              <div className="flex flex-wrap items-center gap-3 pt-2">
-                <TryButton />
-                <span className="font-body text-[12px] text-white/40">
-                  {agent.liveSurface
-                    ? 'Opens the working demo dashboard.'
-                    : 'On the roadmap — dashboard not built yet.'}
-                </span>
-              </div>
-            </div>
-
-            {/* right — quick-facts panel */}
-            <div className="glass-card rounded-3xl p-6" style={{ borderTop: `3px solid ${swatch}` }}>
-              <Eyebrow icon={<ShieldCheck className="h-3.5 w-3.5" />} swatch={swatch}>
-                At a glance
-              </Eyebrow>
-              <dl className="mt-4 divide-y divide-white/10">
-                {[
-                  ['Phase', agent.phase],
-                  ['Status', agent.status],
-                  ['Human-in-the-loop', agent.hitl],
-                  ['Live dashboard', agent.liveSurface ? 'Available' : 'Coming soon'],
-                ].map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between gap-3 py-2.5">
-                    <dt className="font-body text-[13px] text-white/50">{k}</dt>
-                    <dd className="font-body text-[13px] font-semibold text-white/90">{v}</dd>
-                  </div>
-                ))}
-              </dl>
+          {/* LLM edition segmented control */}
+          <div className="inline-flex items-center gap-2">
+            <span className="font-mono text-[10px] uppercase text-white/40" style={{ letterSpacing: '0.15em' }}>LLM</span>
+            <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-0.5">
+              {(Object.keys(LLM_EDITIONS) as Edition[]).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setEdition(k)}
+                  className={`rounded-full px-3 py-1 font-body text-[11px] font-semibold uppercase transition-colors ${
+                    edition === k ? 'bg-white text-black' : 'text-white/55 hover:text-white'
+                  }`}
+                  style={{ letterSpacing: '0.1em' }}
+                >
+                  {LLM_EDITIONS[k].label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
-      </section>
+      </div>
 
-      {/* ════ WHY IT MATTERS ════ */}
-      {benefits.length > 0 && (
-        <section className="space-y-8">
-          <div className="space-y-3">
-            <Eyebrow icon={<Lightbulb className="h-3.5 w-3.5" />} swatch={swatch}>
-              Why it matters
-            </Eyebrow>
-            <h2 className="font-display text-3xl font-extrabold uppercase text-white" style={{ letterSpacing: '-0.02em' }}>
-              What your team gets
-            </h2>
-          </div>
-          <div className="grid gap-5 md:grid-cols-3">
-            {benefits.map((b) => (
-              <div key={b} className="group rounded-3xl border border-white/10 bg-white/[0.03] p-6 transition-colors hover:bg-white/[0.06]">
-                <div
-                  className="flex h-11 w-11 items-center justify-center rounded-2xl"
-                  style={{ backgroundColor: `${swatch}22`, border: `1px solid ${swatch}55` }}
+      {/* ── one screen: left hero | right "how it works" ── */}
+      <div className="grid gap-6 lg:grid-cols-2 lg:items-stretch">
+        {/* LEFT — hero */}
+        <div className="relative overflow-hidden rounded-3xl p-2">
+          <div
+            className="pointer-events-none absolute -left-10 -top-10 h-56 w-56 rounded-full opacity-30 blur-[90px]"
+            style={{ background: swatch }}
+          />
+          <div className="relative space-y-5">
+            <div className="flex items-center gap-3">
+              <span className="h-2.5 w-2.5 flex-none rounded-full" style={{ backgroundColor: swatch, boxShadow: `0 0 12px ${swatch}` }} />
+              <p className="font-mono text-[11px] uppercase text-white/50" style={{ letterSpacing: '0.3em' }}>
+                {agent.phase} · Agent #{String(agent.position).padStart(2, '0')}
+              </p>
+            </div>
+
+            <h1
+              className="font-display text-4xl font-black uppercase text-white md:text-5xl"
+              style={{ letterSpacing: '-0.03em', lineHeight: 0.95 }}
+            >
+              {agent.name}
+            </h1>
+
+            <p className="max-w-xl font-body text-base leading-relaxed text-white/75">{plain}</p>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={CHIP}>
+                <ShieldCheck className="h-3.5 w-3.5" /> HITL {agent.hitl}
+              </span>
+              <span className={CHIP}>{agent.status}</span>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              {agent.liveSurface ? (
+                <button
+                  type="button"
+                  onClick={launch}
+                  className="inline-flex items-center gap-2 rounded-full bg-white px-7 py-3.5 font-body text-[12px] font-bold uppercase text-black shadow-lg shadow-black/20 transition-all hover:-translate-y-0.5 hover:bg-white/90"
+                  style={{ letterSpacing: '0.18em' }}
                 >
-                  <CheckCircle2 className="h-5 w-5" style={{ color: swatch }} />
-                </div>
-                <p className="mt-4 font-body text-[15px] leading-relaxed text-white/80">{b}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* ════ HOW IT WORKS ════ */}
-      {steps.length > 0 && (
-        <section className="space-y-8">
-          <div className="space-y-3">
-            <Eyebrow icon={<Workflow className="h-3.5 w-3.5" />} swatch={swatch}>
-              How it works
-            </Eyebrow>
-            <h2 className="font-display text-3xl font-extrabold uppercase text-white" style={{ letterSpacing: '-0.02em' }}>
-              From signal to answer
-            </h2>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {steps.map((s, i) => (
-              <div key={s} className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] p-6">
-                {/* big faded step watermark */}
+                  <Rocket className="h-4 w-4" /> Try it
+                </button>
+              ) : (
                 <span
-                  className="pointer-events-none absolute -right-2 -top-4 font-display text-7xl font-black opacity-10"
-                  style={{ color: swatch }}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/5 px-7 py-3.5 font-body text-[12px] font-bold uppercase text-white/40"
+                  style={{ letterSpacing: '0.18em' }}
                 >
-                  {i + 1}
+                  Dashboard coming soon
                 </span>
-                <span
-                  className="flex h-8 w-8 items-center justify-center rounded-full font-mono text-[12px] font-bold text-white"
-                  style={{ backgroundColor: `${swatch}33`, border: `1px solid ${swatch}` }}
-                >
-                  {i + 1}
-                </span>
-                <p className="relative mt-4 font-body text-sm leading-relaxed text-white/80">{s}</p>
-                {i < steps.length - 1 && (
-                  <ArrowRight className="absolute bottom-5 right-5 h-4 w-4 text-white/20" />
-                )}
-              </div>
-            ))}
+              )}
+              <p className="font-mono text-[10px] uppercase text-white/40" style={{ letterSpacing: '0.12em' }}>
+                LLM · {LLM_EDITIONS[edition].label} — {LLM_EDITIONS[edition].note}
+              </p>
+            </div>
           </div>
-        </section>
-      )}
+        </div>
 
-      {/* ════ TOOLS TO CONFIGURE ════ */}
-      <section className="space-y-8">
-        <div className="space-y-3">
-          <Eyebrow icon={<Plug className="h-3.5 w-3.5" />} swatch={swatch}>
-            Tools to configure
-          </Eyebrow>
-          <h2 className="font-display text-3xl font-extrabold uppercase text-white" style={{ letterSpacing: '-0.02em' }}>
-            Connect once, run anywhere
-          </h2>
-          <p className="max-w-2xl font-body text-sm text-white/50">
-            Wire these up before going live. For this demo they are pre-connected to synthetic data,
-            so you can press <span className="text-white/80">Try it</span> right away.
+        {/* RIGHT — how it works */}
+        <div className="glass-card rounded-3xl p-6" style={{ borderTop: `3px solid ${swatch}` }}>
+          <p className="font-mono text-[10px] uppercase text-white/50" style={{ letterSpacing: '0.25em' }}>
+            How it works
           </p>
+
+          {steps.length > 0 ? (
+            <ol className="relative mt-5">
+              {steps.map((s, i) => {
+                const last = i === steps.length - 1;
+                return (
+                  <li key={s} className="relative flex gap-4 pb-5 last:pb-0">
+                    {!last && (
+                      <span
+                        aria-hidden
+                        className="absolute left-[17px] top-9 bottom-0 w-px"
+                        style={{ background: `linear-gradient(to bottom, ${swatch}99, ${swatch}22)` }}
+                      />
+                    )}
+                    <span
+                      className="relative z-10 flex h-[34px] w-[34px] flex-none items-center justify-center rounded-full font-mono text-[12px] font-bold text-white"
+                      style={{ backgroundColor: `${swatch}33`, border: `1px solid ${swatch}` }}
+                    >
+                      {i + 1}
+                    </span>
+                    <p className="pt-1.5 font-body text-sm leading-relaxed text-white/80">{s}</p>
+                  </li>
+                );
+              })}
+            </ol>
+          ) : (
+            <p className="mt-4 font-body text-sm text-white/50">
+              Detailed steps for this agent are coming soon. In short: {agent.summary}
+            </p>
+          )}
         </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          {setup.map((s, i) => (
-            <div key={s.tool} className="flex gap-4 rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-              <div
-                className="flex h-10 w-10 flex-none items-center justify-center rounded-xl font-mono text-[12px] font-bold"
-                style={{ backgroundColor: `${swatch}22`, color: swatch, border: `1px solid ${swatch}44` }}
-              >
-                {String(i + 1).padStart(2, '0')}
-              </div>
+      </div>
+
+      {/* ── Configure popover: vendor-neutral provider choices ── */}
+      {configOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => setConfigOpen(false)}
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          />
+          <div className="glass-card animate-slide-up relative max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-3xl p-6" style={{ borderTop: `3px solid ${swatch}` }}>
+            <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="font-body text-[15px] font-semibold text-white">{s.tool}</p>
-                <p className="mt-1 font-body text-[13px] leading-relaxed text-white/55">{s.detail}</p>
+                <p className="font-mono text-[10px] uppercase text-white/50" style={{ letterSpacing: '0.3em' }}>
+                  Configure
+                </p>
+                <h2 className="mt-1.5 font-display text-xl font-extrabold uppercase text-white" style={{ letterSpacing: '-0.02em' }}>
+                  Choose your providers
+                </h2>
               </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ════ UNDER THE HOOD (technical) ════ */}
-      <section className="space-y-6">
-        <Eyebrow icon={<ShieldCheck className="h-3.5 w-3.5" />} swatch={swatch}>
-          Under the hood
-        </Eyebrow>
-        <div className="grid gap-5 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-            <p className="font-mono text-[10px] uppercase text-white/40" style={{ letterSpacing: '0.2em' }}>Inputs</p>
-            <ul className="mt-3 space-y-2 font-body text-sm text-white/75">
-              {agent.inputs.map((x) => (
-                <li key={x} className="flex gap-2">
-                  <span className="mt-1.5 h-1.5 w-1.5 flex-none rounded-full" style={{ backgroundColor: swatch }} />
-                  {x}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-            <p className="font-mono text-[10px] uppercase text-white/40" style={{ letterSpacing: '0.2em' }}>Outputs</p>
-            <ul className="mt-3 space-y-2 font-body text-sm text-white/75">
-              {agent.outputs.map((x) => (
-                <li key={x} className="flex gap-2">
-                  <span className="mt-1.5 h-1.5 w-1.5 flex-none rounded-full" style={{ backgroundColor: swatch }} />
-                  {x}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-            <p className="font-mono text-[10px] uppercase text-white/40" style={{ letterSpacing: '0.2em' }}>Tools used</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {agent.tools.map((t) => (
-                <span key={t} className={CHIP}>{t}</span>
-              ))}
-            </div>
-          </div>
-        </div>
-        <p className="font-body text-[13px] text-white/55">
-          <span className="text-white/70">Role:</span> {agent.role}
-        </p>
-      </section>
-
-      {/* ════ CTA BAND ════ */}
-      <section
-        className="relative overflow-hidden rounded-[2rem] border border-white/10 p-10 text-center md:p-14"
-        style={{ background: `linear-gradient(120deg, ${swatch}33, rgba(255,255,255,0.02) 60%)` }}
-      >
-        <div
-          className="pointer-events-none absolute -bottom-24 right-0 h-72 w-72 rounded-full opacity-40 blur-[100px]"
-          style={{ background: swatch }}
-        />
-        <div className="relative mx-auto max-w-xl space-y-5">
-          <h2 className="font-display text-3xl font-black uppercase text-white md:text-4xl" style={{ letterSpacing: '-0.02em' }}>
-            {agent.liveSurface ? 'See it in action' : 'Coming to a future release'}
-          </h2>
-          <p className="font-body text-sm text-white/60">
-            {agent.liveSurface
-              ? `Launch the ${agent.name} dashboard and watch it work on live demo data.`
-              : `${agent.name} is on the roadmap. Explore the shipped agents in the meantime.`}
-          </p>
-          <div className="flex justify-center pt-1">
-            {agent.liveSurface ? <TryButton /> : (
-              <Link
-                to="/agents"
-                className="inline-flex items-center gap-2 rounded-full bg-white px-7 py-3.5 font-body text-[12px] font-bold uppercase text-black transition-colors hover:bg-white/90"
-                style={{ letterSpacing: '0.18em' }}
+              <button
+                type="button"
+                onClick={() => setConfigOpen(false)}
+                aria-label="Close"
+                className="flex h-8 w-8 flex-none items-center justify-center rounded-full border border-white/15 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
               >
-                <ArrowLeft className="h-4 w-4" /> Back to agents
-              </Link>
-            )}
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="mt-2 font-body text-[13px] text-white/50">
+              Vendor-neutral by design — pick any provider for each slot this agent uses. Swapping one
+              is a config change, not a rewrite.
+            </p>
+
+            <div className="mt-5 space-y-5">
+              {slots.map((key) => {
+                const cat = INTEGRATIONS[key];
+                const selected = picks[key] ?? cat.options[0];
+                return (
+                  <div key={key}>
+                    <p className="font-mono text-[10px] uppercase text-white/50" style={{ letterSpacing: '0.2em' }}>
+                      {cat.label}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {cat.options.map((opt) => {
+                        const active = opt === selected;
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setPicks((p) => ({ ...p, [key]: opt }))}
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 font-body text-[12px] transition-colors ${
+                              active ? 'text-white' : 'border-white/15 bg-white/5 text-white/60 hover:text-white'
+                            }`}
+                            style={active ? { borderColor: swatch, background: `${swatch}22` } : undefined}
+                          >
+                            {active && <Check className="h-3.5 w-3.5" style={{ color: swatch }} />}
+                            {opt}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setConfigOpen(false)}
+              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-white px-5 py-2.5 font-body text-[11px] font-bold uppercase text-black transition-colors hover:bg-white/90"
+              style={{ letterSpacing: '0.15em' }}
+            >
+              Done <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
         </div>
-      </section>
+      )}
     </div>
   );
 }

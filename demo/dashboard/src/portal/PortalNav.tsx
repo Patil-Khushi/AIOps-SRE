@@ -11,9 +11,9 @@ interface PortalNavProps {
 const NAV_ITEMS: { label: string; to: string }[] = [
   { label: 'Agents',       to: '/agents' },
   { label: 'Architecture', to: '/console/topology' },
-  { label: 'Integrations', to: '/console/health' },
-  { label: 'SRE Ops',      to: '/console/alerts' },
-  { label: 'RCA Agent',    to: '/console/reasoning' },
+  { label: 'Integrations', to: '/integrations' },
+  { label: 'SRE Ops',      to: '/sre-ops' },
+  { label: 'RCA Agent',    to: '/agents/rca-agent' },
 ];
 
 const REVEAL_AT = 0.95;

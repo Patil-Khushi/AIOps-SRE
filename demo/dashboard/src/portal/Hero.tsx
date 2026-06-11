@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import PhasesCard from './PhasesCard';
+import OutcomesCard from './OutcomesCard';
 
 // The hero — what the platform "boots into".
 //
@@ -15,11 +15,12 @@ import PhasesCard from './PhasesCard';
 
 interface HeroProps {
   progress: number;
+  onExplore?: () => void;
 }
 
 const REVEAL_AT = 0.95;
 
-export default function Hero({ progress }: HeroProps) {
+export default function Hero({ progress, onExplore }: HeroProps) {
   const [revealStarted, setRevealStarted] = useState(false);
   useEffect(() => {
     if (progress >= REVEAL_AT && !revealStarted) setRevealStarted(true);
@@ -34,7 +35,7 @@ export default function Hero({ progress }: HeroProps) {
       <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-black/50" />
 
       <div
-        className={`absolute inset-0 flex items-center justify-center px-8 ${
+        className={`absolute inset-0 flex items-center justify-center px-8 pt-28 md:pt-32 ${
           revealStarted ? 'hero-burnoff pointer-events-auto' : 'pointer-events-none opacity-0'
         }`}
       >
@@ -71,13 +72,14 @@ export default function Hero({ progress }: HeroProps) {
               every action gated by policy-as-code and a human in the loop.
             </p>
             <div className="flex flex-wrap items-center gap-3">
-              <Link
-                to="/agents"
+              <button
+                type="button"
+                onClick={onExplore}
                 className="rounded-full bg-white px-6 py-3 font-body text-[12px] font-bold uppercase text-black transition-colors hover:bg-white/90"
                 style={{ letterSpacing: '0.2em' }}
               >
                 Explore Agents
-              </Link>
+              </button>
               <Link
                 to="/console/topology"
                 className="rounded-full border border-white/30 px-6 py-3 font-body text-[12px] font-bold uppercase text-white transition-colors hover:bg-white/10"
@@ -88,9 +90,9 @@ export default function Hero({ progress }: HeroProps) {
             </div>
           </div>
 
-          {/* Right column: glassmorphic phases card */}
+          {/* Right column: outcome-targets panel (animated counters) */}
           <div className="w-full max-w-md justify-self-center md:justify-self-end">
-            <PhasesCard />
+            <OutcomesCard revealed={revealStarted} />
           </div>
         </div>
       </div>

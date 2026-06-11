@@ -5,6 +5,8 @@ import Landing from '@/pages/Landing';
 import Overview from '@/pages/Overview';
 import Agents from '@/pages/Agents';
 import AgentDetail from '@/pages/AgentDetail';
+import SreOps from '@/pages/SreOps';
+import Integrations from '@/pages/Integrations';
 import AlertStream from '@/pages/AlertStream';
 import Notifications from '@/pages/Notifications';
 import Reasoning from '@/pages/Reasoning';
@@ -21,6 +23,8 @@ export default function App() {
       <Route element={<BrowseLayout />}>
         <Route path="/agents" element={<Agents />} />
         <Route path="/agents/:agentId" element={<AgentDetail />} />
+        <Route path="/sre-ops" element={<SreOps />} />
+        <Route path="/integrations" element={<Integrations />} />
       </Route>
 
       {/* Operations console — existing dashboard, now nested under /console. */}

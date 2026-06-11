@@ -219,9 +219,11 @@ function Invoke-SpaBuild($name, $dir, $missingMsg) {
 $dashDir       = Join-Path $RepoRoot 'demo\dashboard'
 $dashDist      = Join-Path $dashDir 'dist\index.html'
 $classifierDir = Join-Path $RepoRoot 'demo\classifier-ui'
+$hitlDir       = Join-Path $RepoRoot 'demo\hitl-ui'
 
 Invoke-SpaBuild 'React dashboard'   $dashDir       '/dashboard/ will 503.'
 Invoke-SpaBuild 'classifier UI'     $classifierDir '/classifier will 503.'
+Invoke-SpaBuild 'HITL approver UI'  $hitlDir       '/hitl will 503.'
 
 # --- 2c. ensure the right extras are synced into .venv ---
 # Without `--extra ui`, `uv run uvicorn` silently falls back to a uvicorn
@@ -318,6 +320,7 @@ Write-Host ''
 Write-Host '== Up and running ==' -ForegroundColor Green
 Write-Host "  Dashboard:    http://localhost:$UiPort/dashboard/   (RA-001)"
 Write-Host "  Classifier:   http://localhost:$UiPort/classifier   (RA-002 SPA)"
+Write-Host "  HITL console: http://localhost:$UiPort/hitl          (approver UI)"
 Write-Host "  Demo UI:      http://localhost:$UiPort/             (vanilla)"
 Write-Host "  API docs:     http://localhost:$UiPort/docs         (Swagger)"
 Write-Host "  Grafana:      http://localhost:8080/grafana/"

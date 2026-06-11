@@ -44,7 +44,7 @@ const ANCHOR_COUNT         = 4;
 const CONNECT_DISTANCE     = 90;
 const CONNECT_DIST_SQ      = CONNECT_DISTANCE * CONNECT_DISTANCE;
 const CONNECT_MAX_OPACITY  = 0.08;
-const SCATTER_START        = 0.95;
+const SETTLE_START         = 0.9;
 const BASE_INWARD_PX_PER_S = 4;
 const MAX_DPR              = 1.5;
 
@@ -132,8 +132,10 @@ function ParticleFieldImpl({ progress }: ParticleFieldProps) {
       }
 
       const inwardVel = BASE_INWARD_PX_PER_S * (1 + p * 12);
-      const scatterT  = p > SCATTER_START ? (p - SCATTER_START) / (1 - SCATTER_START) : 0;
-      const scatterVel = scatterT * 600;
+      // Past SETTLE_START the boot is essentially done: ease the accumulated
+      // inward pull back to zero so the field relaxes into its original
+      // dispersed constellation instead of clumping at the centre.
+      const settleT = p > SETTLE_START ? (p - SETTLE_START) / (1 - SETTLE_START) : 0;
 
       // ── Update positions + cache display coords ──────────────────
       for (let i = 0; i < particles.length; i++) {
@@ -143,16 +145,17 @@ function ParticleFieldImpl({ progress }: ParticleFieldProps) {
         const driftX = Math.sin(part.phaseX) * part.amplitudeX;
         const driftY = Math.sin(part.phaseY) * part.amplitudeY;
 
-        const curX = part.baseX + driftX + part.offsetX;
-        const curY = part.baseY + driftY + part.offsetY;
-        const dx = cx - curX;
-        const dy = cy - curY;
-        const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-
-        if (scatterT > 0) {
-          part.offsetX -= (dx / dist) * scatterVel * dt;
-          part.offsetY -= (dy / dist) * scatterVel * dt;
+        if (settleT > 0) {
+          // Exponential ease of the offset back toward 0 → dispersed rest.
+          const k = Math.min(1, dt * (1.5 + settleT * 4));
+          part.offsetX += (0 - part.offsetX) * k;
+          part.offsetY += (0 - part.offsetY) * k;
         } else {
+          const curX = part.baseX + driftX + part.offsetX;
+          const curY = part.baseY + driftY + part.offsetY;
+          const dx = cx - curX;
+          const dy = cy - curY;
+          const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
           part.offsetX += (dx / dist) * inwardVel * dt;
           part.offsetY += (dy / dist) * inwardVel * dt;
         }
@@ -177,7 +180,8 @@ function ParticleFieldImpl({ progress }: ParticleFieldProps) {
 
       // ── Draw connections ─────────────────────────────────────────
       ctx.lineWidth = 0.5;
-      const fadeOut = 1 - scatterT;
+      // Settle to a calmer 55% at rest so it reads as ambient background.
+      const fadeOut = 1 - settleT * 0.45;
       for (let i = 0; i < particles.length; i++) {
         const cxi = Math.max(0, Math.min(cols - 1, Math.floor(px[i] / cellSize)));
         const cyi = Math.max(0, Math.min(rows - 1, Math.floor(py[i] / cellSize)));

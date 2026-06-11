@@ -29,12 +29,14 @@ from typing import Any
 
 from agents.rca_agent.models import (
     BlastRadius,
+    FixActionType,
     RankedFixStep,
     RCAAuditMetadata,
     RCAInput,
     RCAVerdict,
 )
-from agents.rca_agent.prompts import RCA_PROMPT_USER_V1, SYSTEM_PROMPT_V2
+from agents.rca_agent.prompts import RCA_PROMPT_USER_V1, SYSTEM_PROMPT_V3
+from agents.rca_agent.remediation_map import flag_for_service
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
 
@@ -102,6 +104,9 @@ def _fallback_verdict(
                     ),
                     blast_radius=BlastRadius.LOW,
                     rollback="Re-flip the flag back to 'on' — instant.",
+                    action_type=FixActionType.SET_FLAG,
+                    flag="productCatalogFailure",
+                    variant="off",
                 ),
                 RankedFixStep(
                     description=(
@@ -110,6 +115,7 @@ def _fallback_verdict(
                     ),
                     blast_radius=BlastRadius.MEDIUM,
                     rollback="helm rollback otel-demo to the prior revision.",
+                    action_type=FixActionType.ROLLBACK_DEPLOY,
                 ),
             ],
             confidence_score=0.85,
@@ -197,6 +203,83 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _coerce_action(step: dict[str, Any]) -> tuple[FixActionType, str | None, str]:
+    """Pull the machine-readable action out of one LLM-emitted fix step.
+
+    Defensive: an unknown / missing ``action_type`` becomes ``manual``, and a
+    ``set_flag`` step with no usable ``flag`` is downgraded to ``manual`` —
+    the executor must never be handed a flag-flip with no flag to flip.
+    Returns ``(action_type, flag, variant)``.
+    """
+    raw_type = str(step.get("action_type", "")).strip().lower()
+    try:
+        action_type = FixActionType(raw_type)
+    except ValueError:
+        action_type = FixActionType.MANUAL
+
+    flag = step.get("flag")
+    flag = str(flag).strip() if flag else None
+    variant = str(step.get("variant") or "off").strip() or "off"
+
+    if action_type is FixActionType.SET_FLAG and not flag:
+        # set_flag with no flag is not executable — keep it honest.
+        return FixActionType.MANUAL, None, variant
+    if action_type is not FixActionType.SET_FLAG:
+        # flag/variant are only meaningful for set_flag; drop stray values.
+        return action_type, None, "off"
+    return action_type, flag, variant
+
+
+def _ensure_executable_action(
+    steps: list[RankedFixStep],
+    *,
+    service: str,
+    decision_trace: list[str],
+) -> list[RankedFixStep]:
+    """Make the curated service→flag map authoritative for the executable step.
+
+    When the affected service maps to a known flagd failure flag, this both
+    *backstops* (annotates the primary step ``set_flag`` if the LLM left it
+    manual) and *corrects* (overrides a flag the LLM guessed wrong). The LLM
+    follows the ``<service>Failure`` naming pattern and sometimes emits a flag
+    that does not exist — e.g. ``recommendationFailure`` instead of the real
+    ``recommendationCacheFailure`` — which makes the executor fail with "flag
+    not present in flagd config". The map values are real flagd flags, so we
+    trust them over the model's spelling.
+
+    For services the map doesn't know, the LLM's ``set_flag`` step is left as-is
+    and the executor validates it against the live flagd config (rejecting an
+    unknown flag with the available list), so we never silently flip the wrong
+    thing.
+    """
+    mapped = flag_for_service(service)
+    if not mapped:
+        return steps
+    # Target the first set_flag step the LLM proposed; if it proposed none,
+    # fall back to the top-ranked step so the demo still offers one-click apply.
+    target_idx = next(
+        (i for i, s in enumerate(steps) if s.action_type is FixActionType.SET_FLAG),
+        0,
+    )
+    before = steps[target_idx]
+    if before.action_type is FixActionType.SET_FLAG and before.flag == mapped:
+        return steps  # already correct — nothing to do
+    steps[target_idx] = before.model_copy(
+        update={"action_type": FixActionType.SET_FLAG, "flag": mapped, "variant": "off"}
+    )
+    if before.action_type is FixActionType.SET_FLAG and before.flag and before.flag != mapped:
+        decision_trace.append(
+            f"corrected fix step #{target_idx + 1} flag {before.flag!r} → {mapped!r} "
+            f"(authoritative map for affected_service={service!r})"
+        )
+    else:
+        decision_trace.append(
+            f"annotated fix step #{target_idx + 1} with executable action "
+            f"set_flag(flag={mapped}, off) from affected_service={service!r}"
+        )
+    return steps
+
+
 def _coerce_verdict(
     raw: dict[str, Any],
     *,
@@ -221,16 +304,21 @@ def _coerce_verdict(
             br = str(s.get("blast_radius", "")).lower()
             if br not in {"low", "medium", "high"}:
                 br = "medium"
+            action_type, flag, variant = _coerce_action(s)
             steps.append(
                 RankedFixStep(
                     description=str(s.get("description", "")).strip(),
                     blast_radius=BlastRadius(br),
                     rollback=str(s.get("rollback", "")).strip(),
                     requires_hitl=True,  # invariant — never trust the LLM here
+                    action_type=action_type,
+                    flag=flag,
+                    variant=variant,
                 )
             )
         if not steps:
             return None
+        steps = _ensure_executable_action(steps, service=service, decision_trace=decision_trace)
         return RCAVerdict(
             affected_service=service,
             root_cause=str(raw.get("root_cause", "")).strip(),
@@ -285,7 +373,7 @@ def analyze(triage_verdict: dict[str, Any], *, scenario_id: str | None = None) -
         # parse defensively. 1500 tokens covers reasoning + a 2-3 step plan.
         resp = llm_complete(
             messages=[
-                Message(role="system", content=SYSTEM_PROMPT_V2),
+                Message(role="system", content=SYSTEM_PROMPT_V3),
                 Message(role="user", content=user_prompt),
             ],
             provider=_RCA_PROVIDER,
