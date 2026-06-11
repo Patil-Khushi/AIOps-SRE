@@ -112,6 +112,11 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     # Prescriptive-Adaptive phase
     "remediation.recommend": AutonomyLevel.REQUIRED,
     "auto_heal.execute": AutonomyLevel.OPTIONAL,
+    # PRS-002 auto_healer_lite: every execution is human-gated, no
+    # exceptions. Stricter than the OPTIONAL ``auto_heal.execute`` above
+    # because the "lite" path is the Day-1 scaffold — we trade autonomy
+    # for safety until the policy story matures.
+    "auto_heal.lite.execute": AutonomyLevel.REQUIRED,
     "policy.optimize": AutonomyLevel.REQUIRED,
     "feedback.promote_model": AutonomyLevel.REQUIRED,
     "knowledge.publish": AutonomyLevel.REQUIRED,

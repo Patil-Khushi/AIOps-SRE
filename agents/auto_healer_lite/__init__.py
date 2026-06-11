@@ -1,21 +1,39 @@
-"""Auto-Healer-lite — the Phase-2 HITL demo agent (issue #77).
+"""Auto-Healer-lite — two coexisting surfaces.
 
-Not the real Auto-Healer from the catalog (PA-002).  Built specifically to
-exercise the HITL approval flow end-to-end so the platform principle "HITL
-is platform-enforced, not agent-enforced" (CLAUDE.md #3) becomes a runnable
-demo rather than an architectural claim.
-
-The agent recommends a deployment restart through the
-``automation.runbook.execute`` capability, which is REQUIRED in the gate's
-default level map.  The gate blocks the call, the approval registry posts
-to chatops, a human approves via Slack or the dashboard, the action runs.
-
-Public surface::
+Legacy HITL-1 narrow surface (issue #77, kept untouched for the demo
+that exercises the platform HITL gate end-to-end)::
 
     from agents.auto_healer_lite import recommend_restart, RestartRecommendation
+
+PRS-002 generic surface (Day-1 scaffold — receives a chosen
+``RemediationOption`` from PRS-001 and produces a structured
+``ExecutionVerdict`` after the platform HITL gate clears; NEVER
+fires the tool in Day-1)::
+
+    from agents.auto_healer_lite import execute, ExecutionRequest, ExecutionVerdict
 """
 
-from agents.auto_healer_lite.agent import recommend_restart
-from agents.auto_healer_lite.models import RestartOutcome, RestartRecommendation
+from agents.auto_healer_lite.agent import execute, recommend_restart, reset_state, run
+from agents.auto_healer_lite.models import (
+    AuditMetadata,
+    ExecutionRequest,
+    ExecutionStatus,
+    ExecutionVerdict,
+    GateDecisionSummary,
+    RestartOutcome,
+    RestartRecommendation,
+)
 
-__all__ = ["RestartOutcome", "RestartRecommendation", "recommend_restart"]
+__all__ = [
+    "AuditMetadata",
+    "ExecutionRequest",
+    "ExecutionStatus",
+    "ExecutionVerdict",
+    "GateDecisionSummary",
+    "RestartOutcome",
+    "RestartRecommendation",
+    "execute",
+    "recommend_restart",
+    "reset_state",
+    "run",
+]
