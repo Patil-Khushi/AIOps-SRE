@@ -27,9 +27,12 @@ in `docs/Adaptive_AIOps_Unified_Architecture.pptx`; everything below is that pic
 
 The runtime today is the four seams plus the agents. The six-component "Agentic Runtime" the
 deck names (Planner, Router, Orchestrator, Memory, Tool Registry, Eval Harness) is partially
-realized: **Tool Registry** (`aiops/tools`) and **Eval Harness** (`evals/`) exist; orchestration
-is hand-wired through the demo server's `/api/triage` route rather than an orchestrator object
-(see [ADR-002](docs/adr/0002-agent-framework-choice.md)).
+realized: **Tool Registry** (`aiops/tools`), **Eval Harness** (`evals/`), and now a v0
+**Orchestrator** (`aiops/runtime/orchestrator.py`, INFRA-2 / #74) exist. The orchestrator's
+`run_reactive_flow(alert)` is the single seam for the RA-001 → RA-002 → RA-003 → RA-005 chain;
+the `/api/triage` route, the auto-triage loop, and the RA-008 Incident Commander all call it
+instead of re-wiring the chain (see [ADR-002](docs/adr/0002-agent-framework-choice.md)). Planner /
+Router / Memory remain deferred to Phase 3.
 
 ---
 

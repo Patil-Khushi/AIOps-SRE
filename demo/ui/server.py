@@ -89,10 +89,8 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
-from agents.alert_triage import Alert, triage  # noqa: E402
-from agents.auto_ticketing import ticket as auto_ticket  # noqa: E402
-from agents.incident_classifier import ClassificationInput, classify  # noqa: E402
-from agents.notification_router import route as route_notification  # noqa: E402
+from agents.alert_triage import Alert  # noqa: E402
+from agents.incident_commander import command as incident_command  # noqa: E402
 from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
@@ -101,6 +99,7 @@ from aiops.policy import (  # noqa: E402
     install_chatops_listener,
     install_default_approver,
 )
+from aiops.runtime.orchestrator import run_reactive_flow  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import (  # noqa: E402
@@ -354,71 +353,12 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
 
-    # #61: ``triage`` returns ``(verdict, verdict_id)`` and persists the row
-    # itself. The route used to call ``save_verdict`` again here to capture
-    # an id for the classification/notification FKs — that was the source
-    # of the double-save (verdict_id growing 2× per /api/triage call).
-    verdict, verdict_id = triage(alert_obj)
-
-    # Classify BEFORE ticketing (DEMO-3 / #55): RA-002 does not depend on the
-    # ticket id, and the ServiceNow incident's ``category`` + description
-    # block are only useful if classification is available at create time.
-    classification = classify(ClassificationInput(alert=alert_obj, triage_verdict=verdict))
-    # #61: classification persistence requires a verdict_id FK. If the
-    # agent-side ``save_verdict`` failed (verdict_id is None), skip the
-    # downstream persistence rather than crash on the FK.
-    classification_id: int | None = None
-    if verdict_id is not None:
-        classification_id = state_repo.save_classification(classification, verdict_id=verdict_id)
-
-    # alert_name (DEMO-8 / #60): the Prometheus alert rule name, used by
-    # auto_ticket to look up the matching Grafana panel and attach a
-    # screenshot to the ServiceNow incident.
-    ticket_record = auto_ticket(
-        verdict,
-        classification=classification,
-        alert_name=alert_obj.metric,
-    )
-
-    notifications: dict[str, Any] | None = None
-    deliveries: dict[str, Any] | None = None
-    notification_id: int | None = None
-    try:
-        # #84: route() returns a RoutingOutcome bundling the decision with
-        # per-adapter DeliveryResults. Persistence + the existing response
-        # shape want the flat decision; deliveries surface as a sibling key.
-        outcome = route_notification(verdict)
-        decision = outcome.decision
-        # CHAT-2 (#82): persist the structured row alongside the existing
-        # JSONL audit log. Persistence failure must not break the pipeline —
-        # the JSONL adapter (the source of truth) already wrote.
-        try:
-            if verdict_id is not None:
-                notification_id = state_repo.save_notification(decision, verdict_id=verdict_id)
-        except Exception:
-            logger.exception(
-                "RA-005: persist save_notification failed for verdict %s on %s "
-                "(JSONL audit log still written)",
-                verdict_id,
-                verdict.affected_service,
-            )
-        notifications = decision.model_dump(mode="json")
-        deliveries = {name: r.model_dump(mode="json") for name, r in outcome.deliveries.items()}
-    except Exception:
-        logger.exception("RA-005: routing failed for verdict on %s", verdict.affected_service)
-
-    return {
-        "verdict": verdict.model_dump(mode="json"),
-        "ticket": ticket_record.model_dump(mode="json"),
-        "classification": classification.model_dump(mode="json"),
-        "notifications": notifications,
-        "deliveries": deliveries,
-        "persisted": {
-            "verdict_id": verdict_id,
-            "classification_id": classification_id,
-            "notification_id": notification_id,
-        },
-    }
+    # INFRA-2 (#74): the RA-001 → RA-002 → RA-003 → RA-005 chain now lives in
+    # the orchestrator seam. ``to_api_dict`` reproduces this route's historical
+    # response shape verbatim, so the dashboard / SPA / existing tests are
+    # unaffected. Alert construction + the 400 mapping stay here because they
+    # are HTTP concerns, not pipeline logic.
+    return run_reactive_flow(alert_obj).to_api_dict()
 
 
 @app.post("/api/triage/fixture/{fixture_id}", response_model=None)
@@ -630,6 +570,48 @@ async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
         )
         raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
     return verdict.model_dump(mode="json")
+
+
+class IncidentCommandRequest(BaseModel):
+    alert: dict[str, Any] = Field(..., description="Canonical Alert payload")
+    scenario_id: str | None = Field(
+        None,
+        description=(
+            "Optional locked-scenario hint forwarded to the RCA Agent (e.g. "
+            "'slow-product-catalog'). Lets RCA pick its deterministic fallback "
+            "verdict when the LLM provider is unavailable. Safe to omit."
+        ),
+    )
+
+
+@app.post("/api/incident-commander", response_model=None)
+async def incident_commander_endpoint(req: IncidentCommandRequest) -> dict[str, Any]:
+    """Run the Incident Commander (RA-008) for a single alert.
+
+    Body: ``{"alert": {<Alert payload>}, "scenario_id"?: str}``. RA-008 chains
+    the Reactive-Active flow (RA-001 → RA-002 → RA-003 → RA-005, via the
+    orchestrator seam) and — for Sev-1/Sev-2 — runs RCA, posts an IC context
+    pack + human-IC handoff through chatops, and seeds a postmortem.
+
+    RA-008 takes no destructive action: RCA fix-step execution stays on the
+    separately HITL-gated ``/api/demo/rca/apply-fix`` path. The agent is sync +
+    blocking (reactive flow + RCA LLM call), so we wrap it in
+    ``asyncio.to_thread`` to keep the event loop free.
+
+    Returns an ``IncidentCommandResult`` dict: ``engaged``, ``severity``,
+    ``reactive`` (the ``/api/triage`` bundle), ``rca`` (null below Sev-2),
+    ``timeline``, ``postmortem_seed`` (null below Sev-2), ``handoff_requested``.
+    """
+    try:
+        alert_obj = Alert(**req.alert)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
+    try:
+        result = await asyncio.to_thread(incident_command, alert_obj, scenario_id=req.scenario_id)
+    except Exception as exc:
+        logger.exception("RA-008 raised on alert for %s", alert_obj.service)
+        raise HTTPException(status_code=500, detail=f"incident command failed: {exc}") from exc
+    return result.model_dump(mode="json")
 
 
 @app.get("/api/verdicts")
