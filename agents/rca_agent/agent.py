@@ -35,7 +35,15 @@ from agents.rca_agent.models import (
     RCAInput,
     RCAVerdict,
 )
+<<<<<<< HEAD
 from agents.rca_agent.prompts import RCA_PROMPT_USER_V1, SYSTEM_PROMPT_V3
+=======
+from agents.rca_agent.prompts import (
+    CORRELATION_EVIDENCE_BLOCK,
+    RCA_PROMPT_USER_V1,
+    SYSTEM_PROMPT_V3,
+)
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 from agents.rca_agent.remediation_map import flag_for_service
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
@@ -337,7 +345,24 @@ def _coerce_verdict(
 # ─── prompt rendering ───────────────────────────────────────────────────────
 
 
-def _render_user_prompt(triage: dict[str, Any]) -> str:
+def _render_evidence_block(correlation: dict[str, Any] | None) -> str:
+    """Render the optional Log Correlation (RA-007) evidence into a prompt
+    block. Returns an empty string when no correlation is supplied so the base
+    prompt is unchanged (backward-compatible)."""
+    if not correlation:
+        return ""
+    suspects = correlation.get("suspected_dependencies") or []
+    sigs = correlation.get("top_signatures") or []
+    summary = str(correlation.get("summary") or "(none)")
+    rendered_sigs = "\n".join(f"- {s}" for s in sigs) if sigs else "- (none)"
+    return CORRELATION_EVIDENCE_BLOCK.format(
+        suspect_components=", ".join(str(s) for s in suspects) or "(undetermined)",
+        top_signatures=rendered_sigs,
+        summary=summary,
+    )
+
+
+def _render_user_prompt(triage: dict[str, Any], correlation: dict[str, Any] | None = None) -> str:
     service = str(triage.get("affected_service") or "unknown")
     severity = str(triage.get("severity") or "unknown")
     summary = str(triage.get("alert_summary") or "(no summary)")
@@ -352,21 +377,38 @@ def _render_user_prompt(triage: dict[str, Any]) -> str:
         severity=severity,
         summary=summary,
         decision_trace=rendered_trace,
+        evidence_block=_render_evidence_block(correlation),
     )
 
 
 # ─── entry point ────────────────────────────────────────────────────────────
 
 
-def analyze(triage_verdict: dict[str, Any], *, scenario_id: str | None = None) -> RCAVerdict:
-    """Produce an RCA verdict for one triaged incident."""
+def analyze(
+    triage_verdict: dict[str, Any],
+    *,
+    scenario_id: str | None = None,
+    correlation: dict[str, Any] | None = None,
+) -> RCAVerdict:
+    """Produce an RCA verdict for one triaged incident.
+
+    ``correlation`` is the optional ``CorrelationResult`` (dict form) from the
+    Log Correlation agent (RA-007). When supplied, its suspect components, top
+    signatures, and evidence summary are folded into the reasoning prompt.
+    """
     decision_trace: list[str] = [
         f"received triage_verdict for service={triage_verdict.get('affected_service')!r} "
         f"severity={triage_verdict.get('severity')!r}"
     ]
+    if correlation:
+        suspects = correlation.get("suspected_dependencies") or []
+        decision_trace.append(
+            f"received RA-007 correlation evidence: {len(correlation.get('top_signatures') or [])} "
+            f"signature(s), suspect components={suspects}"
+        )
     service = str(triage_verdict.get("affected_service") or "unknown")
 
-    user_prompt = _render_user_prompt(triage_verdict)
+    user_prompt = _render_user_prompt(triage_verdict, correlation)
     try:
         # JSON mode would be ideal but the gateway is provider-agnostic and
         # not every backend supports it; we ask for JSON in the prompt and
@@ -415,7 +457,9 @@ def analyze(triage_verdict: dict[str, Any], *, scenario_id: str | None = None) -
 def run(input: dict[str, Any]) -> dict[str, Any]:
     """Eval-harness contract: dict-in, dict-out shim around ``analyze``."""
     parsed = RCAInput(**input)
-    verdict = analyze(parsed.triage_verdict, scenario_id=parsed.scenario_id)
+    verdict = analyze(
+        parsed.triage_verdict, scenario_id=parsed.scenario_id, correlation=parsed.correlation
+    )
     return verdict.model_dump(mode="json")
 
 

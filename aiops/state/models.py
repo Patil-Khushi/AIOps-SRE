@@ -196,6 +196,78 @@ class HistoricalIncidentRow(SQLModel, table=True):
     )
 
 
+<<<<<<< HEAD
+=======
+class KBArticleRow(SQLModel, table=True):
+    """Knowledge-base article produced by the Knowledge Synthesizer (PRS-007).
+
+    Drafts and published articles share this table, distinguished by
+    ``status`` (draft | pending_review | published | rejected). Publication is
+    platform-HITL-gated (``knowledge.publish``, Required) — a row only reaches
+    ``published`` after a human approves — so this table doubles as the
+    draft-pending-review store for the review workflow.
+
+    ``incident_id`` is the idempotency key: ``find_kb_by_incident_id`` guards
+    against synthesizing the same resolved incident into a second article.
+
+    Embedding storage mirrors ``HistoricalIncidentRow``: an L2-normalized
+    vector as a JSON list of floats, so dedup ("is there a near-identical
+    article?") and the v0 RAG retrieval both run as brute-force cosine via dot
+    product. Swap to pgvector when row count makes scanning slow.
+    """
+
+    __tablename__ = "kb_articles"
+
+    id: int | None = Field(default=None, primary_key=True)
+    incident_id: str | None = Field(default=None, index=True)
+    title: str
+    summary: str = ""
+    body: str  # redacted markdown
+    service: str = Field(default="", index=True)
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    status: str = Field(default="pending_review", index=True)
+    quality_score: float = 0.0
+    related_runbook_id: str | None = None
+    # HITL linkage: the approval request gating publication, and who approved.
+    approval_id: str | None = Field(default=None, index=True)
+    approved_by: str | None = None
+    source: str = "PRS-007"
+    embedding: list[float] = Field(default_factory=list, sa_column=Column(JSON))
+    embedding_text: str = ""
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True)),
+    )
+    audit_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class RCAResultRow(SQLModel, table=True):
+    """RCA verdict stored keyed by incident id.
+
+    RCA is otherwise computed on demand and not persisted. The SNOW watcher and
+    resolution verifier need the RCA context for a resolved ticket without
+    re-running RCA, so the verdict is stashed here (populated additively at
+    fix-apply time). One row per persistence; ``get_rca_result`` returns the
+    most recent for an incident id.
+    """
+
+    __tablename__ = "rca_results"
+
+    id: int | None = Field(default=None, primary_key=True)
+    incident_id: str = Field(index=True)
+    affected_service: str = Field(default="", index=True)
+    verdict: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+
+
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 class EngineerRow(SQLModel, table=True):
     """An on-call engineer / SRE who can be paged.
 
@@ -352,7 +424,12 @@ __all__ = [
     "EngineerRow",
     "FailureCategoryRow",
     "HistoricalIncidentRow",
+    "KBArticleRow",
     "NotificationRow",
+<<<<<<< HEAD
+=======
+    "RCAResultRow",
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
     "ShiftRow",
     "TicketRow",
     "VerdictRow",

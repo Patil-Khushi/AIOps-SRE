@@ -3,10 +3,13 @@ import type {
   ApprovalRecord,
   ApprovalsResponse,
   HealthResponse,
+  KbListResponse,
+  KBArticleRow,
   LiveAlertsResponse,
   PrometheusAlert,
   RCAVerdict,
   ScenariosResponse,
+  SynthesisResult,
   SystemPodsResponse,
   TopologyResponse,
   TriageResult,
@@ -63,7 +66,16 @@ export const api = {
 
   // RCA → approve → apply. Fires the REQUIRED-HITL-gated flag flip; returns an
   // approval id immediately while the platform blocks on human approval.
-  applyRcaFix: (flag: string, variant = 'off', actionType = 'set_flag', reason?: string) =>
+  applyRcaFix: (
+    flag: string,
+    variant = 'off',
+    actionType = 'set_flag',
+    reason?: string,
+    // Optional resolution-verifier context: incident_id (ServiceNow number),
+    // service, alert/metric/threshold, and rca_verdict. When incident_id is
+    // present the backend persists the RCA verdict and fires the verifier.
+    context?: Record<string, unknown>,
+  ) =>
     unwrap<{
       approval_id: string;
       action_type: string;
@@ -72,7 +84,13 @@ export const api = {
       status: string;
       timeout_seconds: number;
     }>(
-      http.post('/api/demo/rca/apply-fix', { flag, variant, action_type: actionType, reason }),
+      http.post('/api/demo/rca/apply-fix', {
+        flag,
+        variant,
+        action_type: actionType,
+        reason,
+        ...(context ?? {}),
+      }),
     ),
   // Poll the shared HITL outcome store for an approval id (returns
   // {status:'pending'} until the executor thread finishes).
@@ -98,4 +116,23 @@ export const api = {
     unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/approve`, { approver, reason })),
   deny: (id: string, approver: string, reason = '') =>
     unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/deny`, { approver, reason })),
+
+  // ─── Knowledge Synthesizer (PRS-007) ──────────────────────────────────────
+  // Synthesize a resolved-incident bundle → postmortem + runbook + KB draft.
+  synthesize: (bundle: Record<string, unknown>) =>
+    unwrap<SynthesisResult>(http.post('/api/synthesize', bundle)),
+  listKb: (params?: { status?: string; service?: string; limit?: number }) =>
+    unwrap<KbListResponse>(http.get('/api/kb', { params })),
+  getKb: (id: number) => unwrap<KBArticleRow>(http.get(`/api/kb/${id}`)),
+  // Demo-only: clear all KB articles so a presentation starts from an empty table.
+  resetKb: () => unwrap<{ deleted: number }>(http.post('/api/kb/reset', {})),
+  // Request HITL-gated publication; returns an approval id to poll.
+  publishKb: (id: number) =>
+    unwrap<{ approval_id: string; article_id: number; status: string; timeout_seconds: number }>(
+      http.post(`/api/kb/${id}/publish`, {}),
+    ),
+  kbPublishOutcome: (approvalId: string) =>
+    unwrap<{ status: string; approval_id?: string; approver?: string | null; error?: string | null }>(
+      http.get(`/api/kb/publish/outcome/${approvalId}`),
+    ),
 };

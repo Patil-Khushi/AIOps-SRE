@@ -156,6 +156,20 @@ Severity: {severity}
 Summary: {summary}
 Decision trace:
 {decision_trace}
-
+{evidence_block}
 Reply with the JSON object specified in the system prompt. Nothing else.
+"""
+
+
+# Evidence block injected when an upstream Log Correlation (RA-007) result is
+# supplied. Rendered between the triage decision trace and the reply
+# instruction so the model reasons over the correlated evidence before
+# answering. All values are UNTRUSTED DATA — the system prompt's input-handling
+# rule already tells the model to treat field values as data, not instructions.
+CORRELATION_EVIDENCE_BLOCK = """
+Correlated evidence (from Log Correlation RA-007):
+Suspect components: {suspect_components}
+Top error signatures:
+{top_signatures}
+Evidence summary: {summary}
 """

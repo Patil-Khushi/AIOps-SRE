@@ -1,0 +1,161 @@
+{
+  "agent": "RA-007",
+  "version": "v1",
+  "description": "Golden fixtures for Log Correlation. Each case is an incident (service + window) and the expected rule-based evidence: top error signature(s) and the suspect component. Assertions target only the DETERMINISTIC fields (service, top_signatures, suspected_dependencies, confidence) — not the LLM summary, which is non-deterministic for non-stub providers. Cases assume the offline/synthetic-signal path (no cluster up), which is the CI contract; with a live Loki/Jaeger/Prometheus the signatures reflect real data instead.",
+  "cases": [
+    {
+      "id": "slow_product_catalog",
+      "description": "product-catalog slow (self-injected GetProduct delay). Delay is inside the service boundary -> suspect is the service itself.",
+      "scenario": "slow-product-catalog",
+      "input": {
+        "service": "product-catalog",
+        "window": {
+          "start": "2026-06-10T10:00:00Z",
+          "end": "2026-06-10T10:05:00Z"
+        },
+        "triage_verdict": {
+          "affected_service": "product-catalog",
+          "severity": "Sev-2",
+          "alert_summary": "product-catalog latency p95 5.2s above 1.0s threshold."
+        }
+      },
+      "expected": {
+        "service": "product-catalog",
+        "top_signatures_contains": "GetProduct handler exceeded <n>ms (slow path)",
+        "suspected_dependencies_contains": "product-catalog",
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "id": "cart_failure",
+      "description": "cart service RPC failures (cartFailure flag). Self-injected -> suspect cart.",
+      "scenario": "cart_failure",
+      "input": {
+        "service": "cart",
+        "window": {
+          "start": "2026-06-10T11:00:00Z",
+          "end": "2026-06-10T11:05:00Z"
+        }
+      },
+      "expected": {
+        "service": "cart",
+        "top_signatures_contains": "CartService RPC failed: could not retrieve cart",
+        "suspected_dependencies_contains": "cart",
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "id": "payment_failure",
+      "description": "payment charge failures (paymentFailure flag). Self-injected -> suspect payment.",
+      "scenario": "payment_failure",
+      "input": {
+        "service": "payment",
+        "window": {
+          "start": "2026-06-10T12:00:00Z",
+          "end": "2026-06-10T12:05:00Z"
+        },
+        "classification": {
+          "incident_type": "application",
+          "probable_root_cause": "payment service returning errors on charge"
+        }
+      },
+      "expected": {
+        "service": "payment",
+        "top_signatures_contains": "Payment charge failed: payment service unavailable",
+        "suspected_dependencies_contains": "payment",
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "id": "checkout_payment_dependency",
+      "description": "checkout failing because its downstream payment dependency is erroring. Topology-aware join -> suspect is the dependency (payment), NOT checkout.",
+      "scenario": "payment_failure",
+      "input": {
+        "service": "checkout",
+        "window": {
+          "start": "2026-06-10T12:00:00Z",
+          "end": "2026-06-10T12:05:00Z"
+        },
+        "topology": {
+          "checkout": ["cart", "payment", "shipping", "currency", "email"]
+        }
+      },
+      "expected": {
+        "service": "checkout",
+        "top_signatures_contains": "PlaceOrder failed: payment charge error",
+        "suspected_dependencies_contains": "payment",
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "id": "recommendation_cache_failure",
+      "description": "recommendation cache failure -> memory climbing. Self-internal -> suspect recommendation.",
+      "scenario": "recommendation_cache_failure",
+      "input": {
+        "service": "recommendation",
+        "window": {
+          "start": "2026-06-10T13:00:00Z",
+          "end": "2026-06-10T13:05:00Z"
+        }
+      },
+      "expected": {
+        "service": "recommendation",
+        "top_signatures_contains": "Recommendation cache miss storm; memory climbing",
+        "suspected_dependencies_contains": "recommendation",
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "id": "ad_high_cpu",
+      "description": "ad service high CPU / GC pauses. Self-internal -> suspect ad.",
+      "scenario": "ad_high_cpu",
+      "input": {
+        "service": "ad",
+        "window": {
+          "start": "2026-06-10T14:00:00Z",
+          "end": "2026-06-10T14:05:00Z"
+        }
+      },
+      "expected": {
+        "service": "ad",
+        "top_signatures_contains": "AdService high CPU / manual GC pauses",
+        "suspected_dependencies_contains": "ad",
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "id": "currency_unreachable",
+      "description": "currency conversion failing (pod kill). Self-internal -> suspect currency.",
+      "scenario": "currency-pod-kill",
+      "input": {
+        "service": "currency",
+        "window": {
+          "start": "2026-06-10T15:00:00Z",
+          "end": "2026-06-10T15:05:00Z"
+        }
+      },
+      "expected": {
+        "service": "currency",
+        "top_signatures_contains": "Currency conversion failed: connection refused",
+        "suspected_dependencies_contains": "currency",
+        "min_confidence": 0.7
+      }
+    },
+    {
+      "id": "unknown_service_generic",
+      "description": "A service with no catalog entry still produces a valid evidence pack (generic error signal, suspect = the service itself).",
+      "input": {
+        "service": "image-provider",
+        "window": {
+          "start": "2026-06-10T16:00:00Z",
+          "end": "2026-06-10T16:05:00Z"
+        }
+      },
+      "expected": {
+        "service": "image-provider",
+        "suspected_dependencies_contains": "image-provider",
+        "min_confidence": 0.4
+      }
+    }
+  ]
+}

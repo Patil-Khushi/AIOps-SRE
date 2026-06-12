@@ -22,7 +22,11 @@ context — callers don't pass a session in. Keeps the seam clean.
 from __future__ import annotations
 
 import logging
+<<<<<<< HEAD
 from dataclasses import dataclass
+=======
+from dataclasses import dataclass, replace
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 from datetime import datetime
 
 from sqlmodel import Session, select
@@ -41,6 +45,18 @@ logger = logging.getLogger(__name__)
 # always-on safety net.
 _ROLE_FALLBACK = ("primary", "secondary", "manager_escalation")
 
+<<<<<<< HEAD
+=======
+# Special ``ShiftRow.team`` value that signals "covers ANY team that has
+# no other coverage". When the team-specific ladder yields nobody, the
+# repository searches for rows tagged with this value and returns the
+# matching ``manager_escalation`` engineer. This is the
+# never-drop-an-alert rung: a Sev-1 on a service whose team isn't even
+# in the on-call DB still pages the platform-wide escalation rather
+# than silently dropping the page.
+_GLOBAL_TEAM_KEY = "*"
+
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 # Proficiency level → base score. Tuned so expert dominates intermediate
 # but not by so much that an intermediate with strong feedback + many
 # resolved incidents can't beat a fresh expert.
@@ -68,6 +84,18 @@ class OnCallEngineer:
     :func:`find_best_for_team_and_category` — they tell the caller *which*
     failure sub-domain drove the pick (e.g. ``payment-gateway`` /
     "Payment Gateway"). Plain shift lookup leaves them ``None``.
+<<<<<<< HEAD
+=======
+
+    ``via_wildcard`` is ``True`` iff the engineer came from the global
+    wildcard rung (no team-specific coverage was found and the alert
+    fell through to ``ShiftRow.team == "*"``). The role string alone
+    cannot discriminate this: both team-specific manager_escalation
+    rows AND the wildcard fallback return ``role="manager_escalation"``.
+    Downstream (RA-005's body renderer, Slack adapters) reads this
+    flag to mark the page as "platform escalation — no team owner"
+    so the paged engineer knows *why* they were chosen.
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
     """
 
     id: int
@@ -81,6 +109,10 @@ class OnCallEngineer:
     timezone: str
     matched_category: str | None = None
     matched_category_display: str | None = None
+<<<<<<< HEAD
+=======
+    via_wildcard: bool = False
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 
 
 def _shift_covers_now(shift: ShiftRow, now: datetime) -> bool:
@@ -104,6 +136,67 @@ def _engineer_has_skills(engineer: EngineerRow, required: list[str]) -> bool:
     return all(s in have for s in required)
 
 
+<<<<<<< HEAD
+=======
+def _find_global_escalation(
+    requested_team: str,
+    *,
+    now: datetime,
+    required_skills: list[str],
+) -> OnCallEngineer | None:
+    """Look up the platform-wide ``manager_escalation`` engineer.
+
+    Backs the *never-drop-an-alert* rung. Returns the engineer registered
+    against ``ShiftRow.team == "*"`` with role ``manager_escalation``.
+    The returned :class:`OnCallEngineer` keeps ``team`` set to the
+    caller's ``requested_team`` so the routing context (channel name,
+    audit trail, "On-call for which team?") stays honest even though
+    the engineer's primary team may differ — the role string
+    (``manager_escalation``) is the signal that this is the safety-net
+    rung, not the team owner.
+
+    Skill filtering is honoured but falls back to "anyone wildcard on
+    shift" if no skill match — same anti-fatigue heuristic as
+    :func:`find_oncall_for_team`.
+    """
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(ShiftRow, EngineerRow)
+            .join(EngineerRow, ShiftRow.engineer_id == EngineerRow.id)
+            .where(ShiftRow.team == _GLOBAL_TEAM_KEY)
+            .where(ShiftRow.role == "manager_escalation")
+            .where(EngineerRow.active.is_(True))  # type: ignore[attr-defined]
+        ).all()
+
+    candidates = [(s, e) for s, e in rows if _engineer_has_skills(e, required_skills)]
+    if not candidates and required_skills:
+        candidates = list(rows)
+    if not candidates:
+        return None
+
+    # Deterministic pick: lowest engineer id wins (same proxy as the
+    # team-specific path uses).
+    _shift, chosen = min(candidates, key=lambda pair: pair[1].id or 0)
+    logger.info(
+        "oncall(global): team=%r had no coverage -> wildcard engineer=%r",
+        requested_team,
+        chosen.name,
+    )
+    return OnCallEngineer(
+        id=chosen.id or -1,
+        name=chosen.name,
+        email=chosen.email,
+        slack_handle=chosen.slack_handle,
+        slack_user_id=chosen.slack_user_id,
+        team=requested_team,
+        role="manager_escalation",
+        skills=chosen.skills,
+        timezone=chosen.timezone,
+        via_wildcard=True,
+    )
+
+
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 def find_oncall_for_team(
     team: str,
     *,
@@ -112,6 +205,7 @@ def find_oncall_for_team(
 ) -> OnCallEngineer | None:
     """Look up the on-call engineer for ``team`` at ``now``.
 
+<<<<<<< HEAD
     The query is split into three role-buckets (primary → secondary →
     manager_escalation) so a partial-coverage roster degrades gracefully:
     if nobody primary is on shift, we try secondaries; if no secondaries
@@ -123,6 +217,24 @@ def find_oncall_for_team(
     Returns ``None`` only when the team has zero candidates of any role
     in the database. In production that means the team isn't onboarded
     yet — RA-005 should fall back to a generic ``#unrouted`` channel.
+=======
+    Lookup ladder, top-down:
+
+    1. **Team-specific roles** (primary → secondary → manager_escalation):
+       each bucket is filtered by ``required_skills`` first, then re-tried
+       without skill filtering — "wake someone unskilled" beats "wake
+       nobody on a Sev-1."
+    2. **Global wildcard escalation** (``ShiftRow.team == "*"``,
+       role ``manager_escalation``): the never-drop rung. Engaged when
+       the team isn't onboarded in the DB or its full ladder is off-shift.
+       Common for OTel-demo services whose CMDB team has no engineers
+       seeded (Catalog Team, Ads Team, etc.) — without this rung, a
+       Sev-1 on those services would silently page nobody.
+
+    Returns ``None`` only when *both* the team-specific ladder AND the
+    wildcard rung are empty — e.g. the DB has been wiped and not
+    re-seeded.
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
     """
     required = list(required_skills or [])
 
@@ -179,7 +291,22 @@ def find_oncall_for_team(
             timezone=chosen.timezone,
         )
 
+<<<<<<< HEAD
     logger.info("oncall: no engineer found for team=%r at %s", team, now.isoformat())
+=======
+    # Team-specific ladder exhausted; try the global wildcard rung so
+    # services on un-onboarded teams still page someone on Sev-1.
+    fallback = _find_global_escalation(team, now=now, required_skills=required)
+    if fallback is not None:
+        return fallback
+
+    logger.info(
+        "oncall: no engineer found for team=%r at %s (no team coverage, "
+        "no wildcard escalation either — Sev-1 on this team would page nobody)",
+        team,
+        now.isoformat(),
+    )
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
     return None
 
 
@@ -361,14 +488,34 @@ def find_best_for_team_and_category(
         )
 
     # No on-shift expert in any role bucket — fall back to plain lookup
+<<<<<<< HEAD
     # so the alert is still routed somewhere.
+=======
+    # so the alert is still routed somewhere. When the fallback resolves
+    # via team-specific role buckets OR the wildcard rung, we re-attach
+    # the alert's top-overlap category so RA-005's Slack "Sub-domain:"
+    # field still surfaces — otherwise the engineer paged via wildcard
+    # would see no sub-domain, silently dropping the most informative
+    # metadata exactly on the alerts the wildcard exists to serve.
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
     logger.info(
         "oncall(expertise): no on-shift expert for team=%r matched=%s; "
         "falling back to plain on-call lookup",
         team,
         matched_names,
     )
+<<<<<<< HEAD
     return find_oncall_for_team(team, now=now, required_skills=required)
+=======
+    fallback = find_oncall_for_team(team, now=now, required_skills=required)
+    if fallback is None:
+        return None
+    return replace(
+        fallback,
+        matched_category=alert_top_cat.name,
+        matched_category_display=alert_top_cat.display_name,
+    )
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 
 
 __all__ = [

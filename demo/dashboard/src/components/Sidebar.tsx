@@ -10,6 +10,7 @@ import {
   Network,
   HeartPulse,
   ShieldCheck,
+  BookOpen,
 } from 'lucide-react';
 import { clsx } from '@/lib/format';
 import { api } from '@/lib/api';
@@ -33,6 +34,7 @@ const ITEMS: Record<string, NavItem> = {
   '/console/reasoning':     { to: '/console/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
   '/console/rca':           { to: '/console/rca',           label: 'RCA Agent',     icon: Sparkles,        end: false },
   '/console/notifications': { to: '/console/notifications', label: 'Notifications', icon: Bell,            end: false },
+  '/console/knowledge':     { to: '/console/knowledge',     label: 'Knowledge',     icon: BookOpen,        end: false },
   '/console/approvals':     { to: '/console/approvals',     label: 'Approvals',     icon: Gavel,           end: false },
   '/console/topology':      { to: '/console/topology',      label: 'Topology',      icon: Network,         end: false },
   '/console/health':        { to: '/console/health',        label: 'System Health', icon: HeartPulse,      end: false },
@@ -49,6 +51,8 @@ const AGENT_SURFACES: Record<string, string[]> = {
   // RCA's console is focused on the analysis + approvals — no Overview/Topology.
   'rca-agent':           ['/console/rca', '/console/health'],
   'notification-router': ['/console', '/console/notifications', ...SHARED_TAIL],
+  // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
+  'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],
   // Topology Discovery's live surface IS the topology map (existing page).
   'topology-discovery':  ['/console/topology', '/console/health'],
 };

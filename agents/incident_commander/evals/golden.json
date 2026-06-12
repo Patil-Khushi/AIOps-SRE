@@ -1,0 +1,61 @@
+{
+  "agent": "incident_commander",
+  "catalog_id": "RA-008",
+  "version": "v0",
+  "description": "RA-008 coordinates Sev-1/Sev-2 incidents only. These cases pin RA-008's own contract — severity-gated engagement, severity propagation, and human-IC handoff. RCA content correctness is covered by the rca_agent golden; structural assertions (RCA present, postmortem seed, timeline) are covered by tests/test_incident_commander.py since the eval scorer is flat (top-level keys only).",
+  "cases": [
+    {
+      "id": "sev1_product_catalog_engages_and_hands_off",
+      "description": "A Sev-1 product-catalog incident engages the IC: severity propagates, a human-IC handoff is requested. scenario_id pins the RCA deterministic fallback for the stub-LLM CI path.",
+      "scenario": "slow-product-catalog",
+      "tags": ["v0", "sev-1", "engaged"],
+      "input": {
+        "scenario_id": "slow-product-catalog",
+        "alert": {
+          "alert_id": "ALT-IC-product-catalog-1",
+          "service": "product-catalog",
+          "metric": "latency_p95",
+          "value": 5.2,
+          "threshold": 1.0,
+          "timestamp": "2026-05-21T10:00:00Z",
+          "source": "Prometheus",
+          "severity_hint": "critical",
+          "labels": {},
+          "annotations": {
+            "description": "product-catalog p95 latency 5.2s, well above 1.0s threshold"
+          }
+        }
+      },
+      "expected": {
+        "engaged": true,
+        "severity": "Sev-1",
+        "affected_service": "product-catalog",
+        "handoff_requested": true
+      }
+    },
+    {
+      "id": "sev4_noise_does_not_engage",
+      "description": "A Sev-4 informational alert runs the reactive pipeline but does NOT engage IC coordination: no handoff, engaged=false.",
+      "scenario": "none",
+      "tags": ["v0", "sev-4", "not-engaged"],
+      "input": {
+        "alert": {
+          "alert_id": "ALT-IC-info-1",
+          "service": "recommendation",
+          "metric": "cache_hit_ratio",
+          "value": 0.82,
+          "timestamp": "2026-05-21T10:05:00Z",
+          "source": "Prometheus",
+          "severity_hint": "info",
+          "labels": {},
+          "annotations": {}
+        }
+      },
+      "expected": {
+        "engaged": false,
+        "severity": "Sev-4",
+        "handoff_requested": false
+      }
+    }
+  ]
+}

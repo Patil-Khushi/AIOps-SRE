@@ -17,6 +17,7 @@ real ServiceNow provider can fall back to it when a stock PDI has no
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from aiops.tools.itsm import _demo_cmdb
 
@@ -59,6 +60,103 @@ def mock_create_incident(
         },
         metadata={"provider": "mock"},
     )
+
+
+# In-memory resolved-incident store for the mock ITSM provider, so the SNOW
+# watcher's full flow can be exercised without a real ServiceNow instance
+# (tests inject their own itsm_call; this is for manual/demo use). Append to it
+# via ``add_mock_resolved_incident``.
+_MOCK_RESOLVED_INCIDENTS: list[dict[str, Any]] = []
+
+
+def add_mock_resolved_incident(incident: dict[str, Any]) -> None:
+    """Register a resolved incident the mock ``itsm.incident.query`` will return.
+    Demo/manual-test helper for running the watcher without a real PDI."""
+    _MOCK_RESOLVED_INCIDENTS.append(dict(incident))
+
+
+def clear_mock_resolved_incidents() -> None:
+    _MOCK_RESOLVED_INCIDENTS.clear()
+
+
+# In-memory incident store for mock get/update/close, so the verifier + ticket
+# close flow is exercisable without a real ServiceNow. Keyed by sys_id, with a
+# number→sys_id index. ``add_mock_incident`` seeds one; ``get_mock_incident``
+# lets tests assert on work_notes / state after an update.
+_MOCK_INCIDENTS: dict[str, dict[str, Any]] = {}  # sys_id -> record
+_MOCK_NUMBER_INDEX: dict[str, str] = {}  # number -> sys_id
+
+
+def add_mock_incident(number: str, sys_id: str, **fields: Any) -> None:
+    rec = {"number": number, "sys_id": sys_id, "state": "2"}
+    rec.update(fields)
+    _MOCK_INCIDENTS[sys_id] = rec
+    _MOCK_NUMBER_INDEX[number] = sys_id
+
+
+def get_mock_incident(
+    *, number: str | None = None, sys_id: str | None = None
+) -> dict[str, Any] | None:
+    if sys_id is None and number is not None:
+        sys_id = _MOCK_NUMBER_INDEX.get(number)
+    return _MOCK_INCIDENTS.get(sys_id) if sys_id else None
+
+
+def clear_mock_incidents() -> None:
+    _MOCK_INCIDENTS.clear()
+    _MOCK_NUMBER_INDEX.clear()
+
+
+if _use_mock_itsm():
+
+    @tool(
+        name="mock.itsm.incident.query",
+        capability="itsm.incident.query",
+        provider="mock",
+        description="Return mock resolved incidents (demo/testing without a real PDI).",
+    )
+    def mock_query_incidents(query: str = "", fields: str = "", limit: int = 100) -> ToolResult:
+        """Return the in-memory resolved-incident list. The encoded ``query`` is
+        ignored — idempotency + the watcher's checkpoint handle dedup."""
+        return ToolResult(
+            ok=True,
+            data={"incidents": list(_MOCK_RESOLVED_INCIDENTS)[: max(0, limit)]},
+            metadata={"provider": "mock"},
+        )
+
+    @tool(
+        name="mock.itsm.incident.get",
+        capability="itsm.incident.get",
+        provider="mock",
+        description="Fetch a mock incident by number (resolve number → sys_id).",
+    )
+    def mock_get_incident(number: str = "", fields: str = "") -> ToolResult:
+        rec = get_mock_incident(number=number)
+        if rec is None:
+            return ToolResult(
+                ok=False, error=f"incident {number} not found", metadata={"provider": "mock"}
+            )
+        return ToolResult(ok=True, data={"incident": dict(rec)}, metadata={"provider": "mock"})
+
+    @tool(
+        name="mock.itsm.incident.update",
+        capability="itsm.incident.update",
+        provider="mock",
+        description="Update a mock incident (work_notes / state / close fields).",
+    )
+    def mock_update_incident(sys_id: str = "", fields: dict[str, Any] | None = None) -> ToolResult:
+        rec = _MOCK_INCIDENTS.get(sys_id)
+        if rec is None:
+            # Tolerate updates to unseeded incidents by materializing a record,
+            # so the verifier's work-note write succeeds in a bare demo.
+            rec = {"sys_id": sys_id, "number": sys_id, "state": "2"}
+            _MOCK_INCIDENTS[sys_id] = rec
+        rec.update(fields or {})
+        return ToolResult(
+            ok=True,
+            data={"sys_id": sys_id, "number": rec.get("number"), "state": rec.get("state")},
+            metadata={"provider": "mock"},
+        )
 
 
 @tool(

@@ -14,6 +14,7 @@ import Reasoning from '@/pages/Reasoning';
 import RcaConsole from '@/pages/RcaConsole';
 import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
+import Knowledge from '@/pages/Knowledge';
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
         <Route path="approvals" element={<Approvals />} />
         <Route path="notifications" element={<Notifications />} />
         <Route path="reasoning" element={<Reasoning />} />
+        <Route path="knowledge" element={<Knowledge />} />
         <Route path="topology" element={<Topology />} />
         <Route path="health" element={<SystemHealth />} />
       </Route>

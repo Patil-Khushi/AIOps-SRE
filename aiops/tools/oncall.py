@@ -51,6 +51,10 @@ def _engineer_to_data(eng: OnCallEngineer | None, team: str) -> dict:
             "timezone": None,
             "matched_category": None,
             "matched_category_display": None,
+<<<<<<< HEAD
+=======
+            "via_wildcard": False,
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
         }
     return {
         "team": eng.team,
@@ -63,6 +67,10 @@ def _engineer_to_data(eng: OnCallEngineer | None, team: str) -> dict:
         "timezone": eng.timezone,
         "matched_category": eng.matched_category,
         "matched_category_display": eng.matched_category_display,
+<<<<<<< HEAD
+=======
+        "via_wildcard": eng.via_wildcard,
+>>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
     }
 
 

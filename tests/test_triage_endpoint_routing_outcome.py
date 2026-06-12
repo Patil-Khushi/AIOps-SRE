@@ -1,33 +1,25 @@
-"""Regression for #84: the /api/triage handler in demo/ui/server.py must
-unwrap the ``RoutingOutcome`` returned by ``notification_router.route()``
-before handing the decision to ``save_notification`` and shaping the
-response. Without unwrapping, ``save_notification`` blew up with an
-``AttributeError`` (silently swallowed by the surrounding try/except,
-killing structured-notification persistence) and the response's
-``notifications`` field had the wrong nested shape.
+"""Endpoint-level tests for ``POST /api/triage``.
+
+After INFRA-2 (#74) the RA-001→RA-005 chain lives in
+``aiops.runtime.orchestrator.run_reactive_flow``. The endpoint's remaining
+responsibilities are narrow and are what these tests pin:
+
+1. Construct an ``Alert`` from the request body and map a bad payload to 400.
+2. Delegate to the orchestrator and return its ``to_api_dict()`` verbatim.
+
+The pipeline behaviors that used to be asserted here (the #84 RoutingOutcome
+unwrap, the deliveries sibling key, the Suppressed/empty-deliveries case) now
+live in ``tests/test_orchestrator_reactive_flow.py``, which owns them at the
+layer that implements them.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
-from agents.alert_triage.models import AuditMetadata, TriageVerdict
-from agents.notification_router.models import RoutingDecision, RoutingOutcome
-from aiops import state as state_pkg
-from aiops.tools.chatops import DeliveryResult, Severity
 from demo.ui import server as srv
-
-
-@pytest.fixture(autouse=True)
-def _in_memory_db(monkeypatch):
-    monkeypatch.setenv("AIOPS_STATE_DB_URL", "sqlite:///:memory:")
-    state_pkg.reset_engine_for_tests()
-    state_pkg.init_db()
-    yield
-    state_pkg.reset_engine_for_tests()
 
 
 def _alert_payload() -> dict[str, Any]:
@@ -44,145 +36,54 @@ def _alert_payload() -> dict[str, Any]:
     }
 
 
-def _verdict() -> TriageVerdict:
-    return TriageVerdict(
-        affected_service="payment",
-        severity="Sev-1",  # type: ignore[arg-type]
-        confidence_score=0.9,
-        alert_summary="payment unhealthy",
-        assigned_team="Payments Team",
-        assigned_engineer="oncall@payments.example.com",
-        recommended_runbook=None,
-        duplicate_alert_count=1,
-        status="Active",
-        audit_metadata=AuditMetadata(
-            created_at=datetime.now(UTC),
-            source_alerts=["ALT-OUTCOME-1"],
-            decision_trace=["received"],
-        ),
-    )
+class _FakeFlowResult:
+    """Stand-in for ``ReactiveFlowResult`` — the endpoint only calls
+    ``to_api_dict()`` on whatever the orchestrator returns."""
+
+    SENTINEL: ClassVar[dict[str, Any]] = {
+        "verdict": {"affected_service": "payment"},
+        "persisted": {"verdict_id": 7},
+    }
+
+    def to_api_dict(self) -> dict[str, Any]:
+        return self.SENTINEL
 
 
-def _decision() -> RoutingDecision:
-    return RoutingDecision(
-        chat_severity=Severity.P1,
-        channel="incidents-payments",
-        title="[Sev-1] payment unhealthy",
-        body="Service: payment\nSeverity: Sev-1",
-        mentions=["@payments-oncall"],
-        actions=[],
-        reason="Sev-1 → page + chat",
-        audit_trace=["status=Active → emit"],
-    )
-
-
-def _stub_pipeline(monkeypatch, *, outcome: RoutingOutcome) -> dict[str, Any]:
-    """Stub triage/classify/auto_ticket and capture what save_notification
-    receives. Returns the capture dict so tests can assert on it."""
+def test_triage_alert_delegates_to_orchestrator(monkeypatch):
+    """The handler builds an Alert and returns the orchestrator result's
+    ``to_api_dict()`` unchanged."""
     captured: dict[str, Any] = {}
 
-    # #61: ``triage`` now returns ``(verdict, verdict_id)`` — the agent
-    # persists the row itself and hands the id back to the route.
-    monkeypatch.setattr(srv, "triage", lambda _alert: (_verdict(), 1))
+    def _fake_run(alert):
+        captured["alert"] = alert
+        return _FakeFlowResult()
 
-    class _StubClassification:
-        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
-            return {"category": "infra"}
-
-    monkeypatch.setattr(srv, "classify", lambda _input: _StubClassification())
-
-    class _StubTicket:
-        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
-            return {"id": "INC-1"}
-
-    monkeypatch.setattr(
-        srv,
-        "auto_ticket",
-        # alert_name kwarg added in #60. Accept **kwargs so this stub stays
-        # tolerant of any further auto_ticket signature growth.
-        lambda _verdict, classification=None, **_kw: _StubTicket(),
-    )
-
-    monkeypatch.setattr(srv, "route_notification", lambda _verdict: outcome)
-
-    # Stub upstream persistence calls so the test doesn't depend on the
-    # exact shapes of Classification / Ticket — those have their own tests.
-    # ``save_verdict`` is no longer called from the route (#61) — the
-    # stubbed ``triage`` returns the verdict_id directly.
-    monkeypatch.setattr(srv.state_repo, "save_classification", lambda _c, verdict_id: 2)
-
-    real_save_notification = srv.state_repo.save_notification
-
-    def _capturing_save_notification(decision, *, verdict_id: int) -> int:
-        captured["decision"] = decision
-        captured["verdict_id"] = verdict_id
-        return real_save_notification(decision, verdict_id=verdict_id)
-
-    monkeypatch.setattr(srv.state_repo, "save_notification", _capturing_save_notification)
-    return captured
-
-
-def test_triage_alert_unwraps_routing_outcome_for_persistence_and_response(monkeypatch):
-    decision = _decision()
-    outcome = RoutingOutcome(
-        decision=decision,
-        deliveries={
-            "jsonfile": DeliveryResult(adapter="jsonfile", ok=True, latency_ms=2),
-            "websocket": DeliveryResult(
-                adapter="websocket",
-                ok=False,
-                error="RuntimeError: hub closed",
-                latency_ms=1,
-            ),
-        },
-    )
-    captured = _stub_pipeline(monkeypatch, outcome=outcome)
+    monkeypatch.setattr(srv, "run_reactive_flow", _fake_run)
 
     response = srv.triage_alert(srv.TriageRequest(alert=_alert_payload()))
 
-    # save_notification got the flat RoutingDecision, not the RoutingOutcome.
-    # If the handler stops unwrapping, this assert is what fails first.
-    assert isinstance(captured["decision"], RoutingDecision)
-    assert captured["decision"].channel == "incidents-payments"
-
-    # Persistence actually succeeded — notification_id is non-null. Before the
-    # fix this came back null because save_notification raised AttributeError
-    # inside the swallowed try/except.
-    assert response["persisted"]["notification_id"] is not None
-
-    # Response shape: notifications stays a flat decision dump (no nested
-    # ``decision``/``deliveries`` keys, which would silently break consumers).
-    notifications = response["notifications"]
-    assert notifications is not None
-    assert notifications["channel"] == "incidents-payments"
-    assert notifications["chat_severity"] == "p1"
-    assert "decision" not in notifications
-    assert "deliveries" not in notifications
-
-    # Per-adapter deliveries surface as a sibling top-level key.
-    deliveries = response["deliveries"]
-    assert set(deliveries) == {"jsonfile", "websocket"}
-    assert deliveries["jsonfile"]["ok"] is True
-    assert deliveries["websocket"]["ok"] is False
-    assert deliveries["websocket"]["error"] == "RuntimeError: hub closed"
+    # Alert was constructed from the body and handed to the orchestrator.
+    assert captured["alert"].alert_id == "ALT-OUTCOME-1"
+    assert captured["alert"].service == "payment"
+    # Response is the orchestrator result's dict, passed through untouched.
+    assert response is _FakeFlowResult.SENTINEL
 
 
-def test_triage_alert_exposes_empty_deliveries_when_outcome_suppressed(monkeypatch):
-    """Suppressed verdicts return a RoutingOutcome with an empty
-    ``deliveries`` dict (no chatops emit). The handler must still surface
-    the decision and an empty ``deliveries`` mapping rather than ``None``.
-    """
-    suppressed_decision = _decision().model_copy(
-        update={
-            "channel": "suppressed",
-            "reason": "status=Suppressed → no emit",
-            "audit_trace": ["status=Suppressed → suppress"],
-        }
-    )
-    outcome = RoutingOutcome(decision=suppressed_decision, deliveries={})
-    _stub_pipeline(monkeypatch, outcome=outcome)
+def test_triage_alert_maps_invalid_alert_to_400(monkeypatch):
+    """A malformed alert payload becomes a 400 before the orchestrator runs."""
+    called = False
 
-    response = srv.triage_alert(srv.TriageRequest(alert=_alert_payload()))
+    def _fake_run(_alert):
+        nonlocal called
+        called = True
+        return _FakeFlowResult()
 
-    assert response["notifications"]["channel"] == "suppressed"
-    assert response["deliveries"] == {}
+    monkeypatch.setattr(srv, "run_reactive_flow", _fake_run)
+
+    # Missing required fields (service / metric / value / timestamp).
+    with pytest.raises(srv.HTTPException) as exc_info:
+        srv.triage_alert(srv.TriageRequest(alert={"alert_id": "X"}))
+
+    assert exc_info.value.status_code == 400
+    assert "invalid alert" in str(exc_info.value.detail)
+    assert called is False  # short-circuited before delegation

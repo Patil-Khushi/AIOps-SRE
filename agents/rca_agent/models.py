@@ -109,6 +109,12 @@ class RCAInput(BaseModel):
 
     triage_verdict: dict[str, Any]
     scenario_id: str | None = None
+    # Optional upstream evidence pack from the Log Correlation agent (RA-007),
+    # in its ``CorrelationResult`` dict form. When present, ``analyze`` folds
+    # the suspect components, top signatures, and evidence summary into the
+    # reasoning prompt. Optional + additive — RCA's behavior is unchanged when
+    # it is omitted, so the contract stays backward-compatible.
+    correlation: dict[str, Any] | None = None
 
 
 class RCAVerdict(BaseModel):

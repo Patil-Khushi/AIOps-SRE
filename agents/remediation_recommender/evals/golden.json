@@ -1,0 +1,194 @@
+{
+  "agent": "remediation_recommender",
+  "version": "0.1.0",
+  "description": "Day-1 goldens for PRS-001. Cases cover (a) the headline mapping of RCA fix steps to ranked options, (b) catalog-driven mitigation patterns merging in for symptom-driven options RCA may have missed, (c) the safety-first ranking rule (LOW blast radius beats MEDIUM at the top spot), (d) the requires_hitl invariant on every option, and (e) the manual-investigate fallback when nothing matches.",
+  "cases": [
+    {
+      "id": "kafka_lag_low_blast_set_flag_wins",
+      "description": "RCA proposes restart (medium) + a set_flag fix (low). Catalog adds a circuit-breaker. Expect the set_flag option to win the top spot — safety-first ranking puts LOW blast above MEDIUM.",
+      "input": {
+        "rca_verdict": {
+          "affected_service": "payment",
+          "root_cause": "Kafka consumer lag on payment events; partition rebalance stuck.",
+          "confidence_score": 0.8,
+          "ranked_fix_steps": [
+            {
+              "description": "Restart the payment-kafka consumer pods.",
+              "blast_radius": "medium",
+              "rollback": "Pods auto-restart on failure.",
+              "requires_hitl": true,
+              "action_type": "manual"
+            },
+            {
+              "description": "Disable the payment-events-v2 producer flag.",
+              "blast_radius": "low",
+              "rollback": "Flip the flag back to on.",
+              "requires_hitl": true,
+              "action_type": "set_flag",
+              "flag": "paymentEventsV2",
+              "variant": "off"
+            }
+          ],
+          "audit_metadata": {"created_at": "2026-06-11T10:00:00Z", "created_by": "PRS-008"}
+        },
+        "triage_verdict": {
+          "alert_summary": "Payment consumer lag 5x threshold",
+          "severity": "Sev-2",
+          "assigned_team": "Payments Team"
+        },
+        "environment": "production"
+      },
+      "expected": {
+        "affected_service": "payment",
+        "recommended_option_id": "rca-step-2",
+        "requires_hitl": true,
+        "auto_pick_eligible": false,
+        "min_confidence_score": 0.4
+      }
+    },
+    {
+      "id": "external_dependency_fail_open_pattern_merges",
+      "description": "RCA diagnoses an external-dependency cause but only suggests a manual fix. Catalog should merge in the fail-open-to-secondary-provider mitigation (LOW blast, set_flag) and place it ahead of the manual step.",
+      "input": {
+        "rca_verdict": {
+          "affected_service": "payment",
+          "root_cause": "External dependency degradation: gateway returning 5xx burst.",
+          "confidence_score": 0.65,
+          "ranked_fix_steps": [
+            {
+              "description": "Investigate provider status page; raise ticket with vendor.",
+              "blast_radius": "low",
+              "rollback": "N/A — informational.",
+              "requires_hitl": true,
+              "action_type": "manual"
+            }
+          ],
+          "audit_metadata": {"created_at": "2026-06-11T10:00:00Z", "created_by": "PRS-008"}
+        },
+        "environment": "production"
+      },
+      "expected": {
+        "affected_service": "payment",
+        "recommended_option_id_in": ["external-fail-open-flag", "rca-step-1"],
+        "requires_hitl": true
+      }
+    },
+    {
+      "id": "memory_oom_rollback_deploy",
+      "description": "RCA proposes a rollback_deploy (medium blast). Catalog adds another rollback option. Top pick is one of them; both carry blast=medium so confidence breaks the tie.",
+      "input": {
+        "rca_verdict": {
+          "affected_service": "email",
+          "root_cause": "Memory pressure / OOM kill after recent deploy.",
+          "confidence_score": 0.72,
+          "ranked_fix_steps": [
+            {
+              "description": "Roll back email service to previous revision.",
+              "blast_radius": "medium",
+              "rollback": "Re-apply the current Helm release.",
+              "requires_hitl": true,
+              "action_type": "rollback_deploy"
+            }
+          ],
+          "audit_metadata": {"created_at": "2026-06-11T10:00:00Z", "created_by": "PRS-008"}
+        },
+        "environment": "production"
+      },
+      "expected": {
+        "affected_service": "email",
+        "recommended_option_id_in": ["rca-step-1", "memory-rollback-recent-deploy"],
+        "requires_hitl": true
+      }
+    },
+    {
+      "id": "no_rca_no_catalog_manual_fallback",
+      "description": "RCA produces a single LOW-blast manual step and the root_cause doesn't match any catalog pattern. The verdict must still be valid (>=1 option) and the top pick comes from RCA.",
+      "input": {
+        "rca_verdict": {
+          "affected_service": "frontend",
+          "root_cause": "Image-asset latency under floodgate load test.",
+          "confidence_score": 0.55,
+          "ranked_fix_steps": [
+            {
+              "description": "Throttle image-asset traffic via CDN config.",
+              "blast_radius": "low",
+              "rollback": "Revert CDN config to pre-test value.",
+              "requires_hitl": true,
+              "action_type": "manual"
+            }
+          ],
+          "audit_metadata": {"created_at": "2026-06-11T10:00:00Z", "created_by": "PRS-008"}
+        },
+        "environment": "production"
+      },
+      "expected": {
+        "affected_service": "frontend",
+        "recommended_option_id": "rca-step-1",
+        "requires_hitl": true
+      }
+    },
+    {
+      "id": "cart_redis_catalog_pattern_only",
+      "description": "RCA emits a vague top-level fix. The catalog's cart+redis pattern matches and adds a session-flush option — verifies catalog patterns merge cleanly when their keywords match.",
+      "input": {
+        "rca_verdict": {
+          "affected_service": "cart",
+          "root_cause": "Cart sessions backing in valkey/redis showing working-set pressure.",
+          "confidence_score": 0.6,
+          "ranked_fix_steps": [
+            {
+              "description": "Inspect cart service's connection-pool metrics.",
+              "blast_radius": "low",
+              "rollback": "N/A — observational.",
+              "requires_hitl": true,
+              "action_type": "manual"
+            }
+          ],
+          "audit_metadata": {"created_at": "2026-06-11T10:00:00Z", "created_by": "PRS-008"}
+        },
+        "environment": "production"
+      },
+      "expected": {
+        "affected_service": "cart",
+        "recommended_option_id_in": ["rca-step-1", "cart-flush-stale-sessions"],
+        "requires_hitl": true
+      }
+    },
+    {
+      "id": "staging_env_tolerates_medium_blast",
+      "description": "Same Kafka-lag RCA in STAGING. The staging env_bonus should slightly favour medium-blast options that would lose in production. Confirms environment-aware ranking is wired.",
+      "input": {
+        "rca_verdict": {
+          "affected_service": "payment",
+          "root_cause": "Kafka consumer lag on payment events.",
+          "confidence_score": 0.7,
+          "ranked_fix_steps": [
+            {
+              "description": "Bounce the consumer group.",
+              "blast_radius": "medium",
+              "rollback": "Pods auto-restart.",
+              "requires_hitl": true,
+              "action_type": "manual"
+            },
+            {
+              "description": "Tune the consumer batch-size flag.",
+              "blast_radius": "low",
+              "rollback": "Revert the flag value.",
+              "requires_hitl": true,
+              "action_type": "set_flag",
+              "flag": "paymentConsumerBatchSize",
+              "variant": "doubled"
+            }
+          ],
+          "audit_metadata": {"created_at": "2026-06-11T10:00:00Z", "created_by": "PRS-008"}
+        },
+        "environment": "staging"
+      },
+      "expected": {
+        "affected_service": "payment",
+        "requires_hitl": true,
+        "auto_pick_eligible": false
+      }
+    }
+  ]
+}
