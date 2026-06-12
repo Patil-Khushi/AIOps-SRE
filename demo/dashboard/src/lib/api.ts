@@ -42,6 +42,69 @@ function unwrap<T>(p: Promise<{ data: T }>): Promise<T> {
   });
 }
 
+// ── RA-006 War-Room Assembler shapes (agents/war_room_assembler models) ──
+export interface InvitedSME {
+  handle: string;
+  name?: string | null;
+  team?: string | null;
+  reason: string;
+  source: string;
+}
+export interface ContextPackItem {
+  label: string;
+  value: string;
+  source?: string | null;
+}
+export interface TimelineEvent {
+  at: string;
+  event: string;
+}
+export interface WarRoomAssembly {
+  assembled: boolean;
+  channel: string;
+  title: string;
+  chat_severity: string;
+  invited: InvitedSME[];
+  context_pack: ContextPackItem[];
+  timeline: TimelineEvent[];
+  reason: string;
+  audit_trace: string[];
+  assembled_at: string;
+}
+export interface WarRoomTryRequest {
+  affected_service: string;
+  severity: string;
+  assigned_team: string;
+  assigned_engineer?: string | null;
+  alert_summary?: string | null;
+  recommended_runbook?: string | null;
+  status: string;
+  incident_id?: string | null;
+}
+export interface WarRoomFeedRow {
+  assembled: boolean;
+  channel: string;
+  severity: string;
+  chat_severity: string;
+  service: string;
+  team: string;
+  sme_count: number;
+  reason: string;
+  assembled_at: string;
+  assembly: WarRoomAssembly;
+}
+export interface WarRoomRecentResponse {
+  count: number;
+  war_rooms: WarRoomFeedRow[];
+}
+export interface WarRoomMetrics {
+  total_seen: number;
+  assembled: number;
+  suppressed_or_minor: number;
+  avg_smes: number | null;
+  checked_at: string;
+}
+
 export const api = {
   health:      () => unwrap<HealthResponse>(http.get('/api/health')),
   liveAlerts:  () => unwrap<LiveAlertsResponse>(http.get('/api/live-alerts')),
@@ -141,4 +204,11 @@ export const api = {
     unwrap<{ status: string; approval_id?: string; approver?: string | null; error?: string | null }>(
       http.get(`/api/kb/publish/outcome/${approvalId}`),
     ),
-};
+
+  // ── RA-006 War-Room Assembler ───────────────────────────────────────────
+  warRoomAssemble: (req: WarRoomTryRequest) =>
+    unwrap<WarRoomAssembly>(http.post('/api/war-room/assemble', req)),
+  warRoomRecent: (limit = 50) =>
+    unwrap<WarRoomRecentResponse>(http.get('/api/war-room/recent', { params: { limit } })),
+  warRoomMetrics: () => unwrap<WarRoomMetrics>(http.get('/api/war-room/metrics')),
+
