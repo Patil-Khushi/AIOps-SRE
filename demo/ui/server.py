@@ -241,9 +241,17 @@ async def lifespan(app: FastAPI):
     bootstrap_websocket_adapter()
     _ensure_hitl_agent_pool()
     await _start_auto_triage()
+    # PRS-007 SNOW watcher: poll ServiceNow for resolved tickets → synthesize.
+    # Decoupled + fire-and-forget; never affects the pipeline above.
+    from agents.knowledge_synthesizer.snow_watcher import start_watcher
+
+    await start_watcher()
 
     yield
 
+    from agents.knowledge_synthesizer.snow_watcher import stop_watcher
+
+    await stop_watcher()
     await _stop_auto_triage()
     _shutdown_hitl_agent_pool()
 
@@ -255,6 +263,13 @@ app = FastAPI(
 )
 
 _register_chatops_ws_routes(app)
+
+# PRS-007 Knowledge Synthesizer HTTP surface. Lives in its own module that
+# imports only agents/aiops (never this server), so the synthesizer stays fully
+# decoupled from the core pipeline — see demo/ui/knowledge_routes.py.
+from demo.ui.knowledge_routes import router as knowledge_router  # noqa: E402
+
+app.include_router(knowledge_router)
 
 
 # ─── routes ─────────────────────────────────────────────────────────────────
@@ -822,6 +837,22 @@ class RcaApplyFixRequest(BaseModel):
     )
     reason: str = Field("RCA-recommended remediation: disable the injected failure flag.")
     timeout_seconds: int = Field(120, ge=5, le=900)
+    # ── Resolution-verifier context (all optional + additive). When present,
+    # the RCA verdict is stored keyed by incident_id (so the SNOW watcher can
+    # attach RCA later) and the verifier is fired after a successful apply.
+    incident_id: str | None = Field(
+        None, description="ServiceNow incident number (e.g. INC0010502)"
+    )
+    service: str | None = Field(None, description="Affected service")
+    alert_signature: str | None = Field(
+        None, description="PromQL/expr for the triggering signature"
+    )
+    metric_query: str | None = Field(None, description="PromQL for the key service metric")
+    threshold: float | None = Field(None, description="Normal-range threshold for the metric")
+    health_query: str | None = Field(None, description="PromQL for service health (e.g. up{...})")
+    rca_verdict: dict[str, Any] | None = Field(
+        None, description="Full RCA verdict to persist by incident"
+    )
 
 
 @app.post("/api/demo/rca/apply-fix")
@@ -847,12 +878,21 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
     }
 
     def _run_executor() -> None:
-        _HITL_OUTCOMES[approval_id] = request_fix_step(
+        outcome = request_fix_step(
             action_type=req.action_type,
             flag=req.flag,
             variant=req.variant,
             hitl_context=ctx,
         )
+        _HITL_OUTCOMES[approval_id] = outcome
+        # Fire-and-forget resolution verification after a successful apply.
+        # Wrapped so it can never affect the fix-apply outcome (CLAUDE.md:
+        # the verifier is fully decoupled).
+        if isinstance(outcome, dict) and outcome.get("status") == "executed":
+            try:
+                _post_fix_verify(req)
+            except Exception:
+                logger.exception("post-fix verification trigger failed (non-fatal)")
 
     _HITL_AGENT_POOL.submit(_run_executor)
 
@@ -864,6 +904,37 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
         "status": "pending",
         "timeout_seconds": req.timeout_seconds,
     }
+
+
+def _post_fix_verify(req: RcaApplyFixRequest) -> None:
+    """Persist the RCA verdict by incident id and fire the resolution verifier.
+
+    Additive + decoupled: imports the verifier lazily, needs an incident id to
+    do anything, and the caller already wraps this so it can't affect the
+    fix-apply outcome."""
+    incident_id = (req.incident_id or "").strip()
+    if not incident_id:
+        return  # no ServiceNow ticket to verify/close against
+    service = req.service or (req.rca_verdict or {}).get("affected_service") or "unknown"
+    if req.rca_verdict:
+        with contextlib.suppress(Exception):
+            from aiops.state import repository as _repo
+
+            _repo.save_rca_result(
+                incident_id=incident_id, verdict=req.rca_verdict, affected_service=service
+            )
+    from agents.resolution_verifier.verifier import VerifyContext, trigger
+
+    trigger(
+        VerifyContext(
+            incident_id=incident_id,
+            service=service,
+            alert_signature=req.alert_signature or "",
+            metric_query=req.metric_query or "",
+            threshold=req.threshold,
+            health_query=req.health_query or "",
+        )
+    )
 
 
 # ─── HITL approval surface (issue #77) ─────────────────────────────────────

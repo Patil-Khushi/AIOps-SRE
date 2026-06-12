@@ -22,7 +22,9 @@ from aiops.state.models import (
     ClassificationRow,
     ClusterRow,
     HistoricalIncidentRow,
+    KBArticleRow,
     NotificationRow,
+    RCAResultRow,
     TicketRow,
     VerdictRow,
 )
@@ -619,27 +621,324 @@ def delete_live_historical_incidents() -> int:
         return len(rows)
 
 
+# ─── KB articles (PRS-007 Knowledge Synthesizer output) ─────────────────────
+
+
+def save_kb_article(
+    *,
+    title: str,
+    body: str,
+    incident_id: str | None = None,
+    summary: str = "",
+    service: str = "",
+    tags: list[str] | None = None,
+    status: str = "pending_review",
+    quality_score: float = 0.0,
+    related_runbook_id: str | None = None,
+    approval_id: str | None = None,
+    approved_by: str | None = None,
+    source: str = "PRS-007",
+    embedding: list[float] | None = None,
+    embedding_text: str = "",
+    created_at: datetime | None = None,
+    audit_metadata: dict[str, Any] | None = None,
+) -> int:
+    """Persist a KB article (draft or published). Returns the row id.
+
+    ``body`` is expected to be already PII/secret-redacted by the caller —
+    this layer does not redact. ``embedding`` should be L2-normalized so
+    ``nearest_kb_articles`` can use a plain dot product.
+    """
+    now = datetime.now(UTC)
+    row = KBArticleRow(
+        incident_id=incident_id,
+        title=title,
+        summary=summary,
+        body=body,
+        service=service,
+        tags=list(tags or []),
+        status=status,
+        quality_score=quality_score,
+        related_runbook_id=related_runbook_id,
+        approval_id=approval_id,
+        approved_by=approved_by,
+        source=source,
+        embedding=list(embedding) if embedding is not None else [],
+        embedding_text=embedding_text,
+        created_at=created_at or now,
+        updated_at=now,
+        audit_metadata=audit_metadata or {},
+    )
+    with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return int(row.id)  # type: ignore[arg-type]
+
+
+def get_kb_article(article_id: int) -> dict[str, Any] | None:
+    with _session() as s:
+        row = s.get(KBArticleRow, article_id)
+    return _kb_row_to_dict(row) if row else None
+
+
+def find_kb_by_incident_id(incident_id: str) -> dict[str, Any] | None:
+    """Most recent KB article for ``incident_id``, or None. The synthesizer's
+    idempotency guard: if this returns a row, the incident was already
+    synthesized and we don't create a duplicate article.
+
+    Empty ``incident_id`` is rejected so malformed inputs don't all collide
+    on the same lookup (matches ``find_recent_verdict_by_alert_id``)."""
+    if not incident_id:
+        return None
+    stmt = (
+        select(KBArticleRow)
+        .where(KBArticleRow.incident_id == incident_id)
+        .order_by(KBArticleRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(1)
+    )
+    with _session() as s:
+        row = s.exec(stmt).first()
+    return _kb_row_to_dict(row) if row else None
+
+
+def list_kb_articles(
+    *,
+    limit: int = 50,
+    status: str | None = None,
+    service: str | None = None,
+) -> list[dict[str, Any]]:
+    """Newest-first list of KB articles, optionally filtered by status/service."""
+    stmt = (
+        select(KBArticleRow)
+        .order_by(KBArticleRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(limit)
+    )
+    if status:
+        stmt = stmt.where(KBArticleRow.status == status)
+    if service:
+        stmt = stmt.where(KBArticleRow.service == service)
+    with _session() as s:
+        rows = s.exec(stmt).all()
+    return [_kb_row_to_dict(r) for r in rows]
+
+
+def update_kb_status(
+    article_id: int,
+    status: str,
+    *,
+    approval_id: str | None = None,
+    approved_by: str | None = None,
+) -> dict[str, Any] | None:
+    """Transition an article's review status (e.g. pending_review → published).
+
+    Sets ``approval_id`` / ``approved_by`` when supplied (the HITL outcome) and
+    always bumps ``updated_at``. Returns the updated article, or None if the id
+    doesn't exist."""
+    with _session() as s:
+        row = s.get(KBArticleRow, article_id)
+        if row is None:
+            return None
+        row.status = status
+        if approval_id is not None:
+            row.approval_id = approval_id
+        if approved_by is not None:
+            row.approved_by = approved_by
+        row.updated_at = datetime.now(UTC)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return _kb_row_to_dict(row)
+
+
+def nearest_kb_articles(
+    *,
+    embedding: list[float],
+    k: int = 5,
+    min_similarity: float = 0.6,
+    statuses: set[str] | None = None,
+    exclude_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Brute-force cosine nearest-K over KB-article embeddings — the shared
+    backend for dedup ("is a near-identical article already here?") and the v0
+    RAG retrieval other agents query.
+
+    Requires ``embedding`` to be L2-normalized (so are the stored vectors), so
+    the dot product is cosine similarity. ``statuses`` restricts the candidate
+    pool (e.g. ``{"published", "pending_review"}`` to skip rejected drafts);
+    ``exclude_id`` drops a row from the results (skip self on an update).
+
+    Mirrors ``nearest_historical_incidents`` — same in-memory scan, fine up to
+    a few thousand rows; the schema is ready to swap to pgvector when it isn't.
+    """
+    if not embedding:
+        return []
+    with _session() as s:
+        rows = s.exec(select(KBArticleRow)).all()
+    scored: list[tuple[float, KBArticleRow]] = []
+    for r in rows:
+        if exclude_id is not None and r.id == exclude_id:
+            continue
+        if statuses is not None and r.status not in statuses:
+            continue
+        v = r.embedding or []
+        if len(v) != len(embedding):
+            continue
+        sim = 0.0
+        for a, b in zip(embedding, v, strict=False):
+            sim += a * b
+        if sim >= min_similarity:
+            scored.append((sim, r))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    out: list[dict[str, Any]] = []
+    for sim, r in scored[:k]:
+        d = _kb_row_to_dict(r)
+        d["similarity"] = sim
+        out.append(d)
+    return out
+
+
+def count_kb_articles() -> int:
+    with _session() as s:
+        rows = s.exec(select(KBArticleRow)).all()
+    return len(rows)
+
+
+def delete_all_kb_articles() -> int:
+    """Wipe every KB article row. Eval/test hook; not a production path."""
+    with _session() as s:
+        rows = s.exec(select(KBArticleRow)).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
+def tag_kb_article_source(article_id: int, source: str) -> dict[str, Any] | None:
+    """Merge a ``source`` marker into a KB article's audit_metadata (e.g.
+    ``ticket_only`` for watcher-synthesized articles with no RCA on record).
+    Additive — does not touch the agent. Returns the updated article or None."""
+    with _session() as s:
+        row = s.get(KBArticleRow, article_id)
+        if row is None:
+            return None
+        meta = dict(row.audit_metadata or {})
+        meta["source"] = source
+        row.audit_metadata = meta
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return _kb_row_to_dict(row)
+
+
+# ─── RCA results (keyed by incident id for the watcher / verifier) ──────────
+
+
+def save_rca_result(
+    *, incident_id: str, verdict: dict[str, Any], affected_service: str = ""
+) -> int:
+    """Persist an RCA verdict keyed by incident id. Returns the row id."""
+    row = RCAResultRow(
+        incident_id=incident_id,
+        affected_service=affected_service or str(verdict.get("affected_service", "")),
+        verdict=dict(verdict or {}),
+    )
+    with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return int(row.id)  # type: ignore[arg-type]
+
+
+def get_rca_result(incident_id: str) -> dict[str, Any] | None:
+    """Most recent stored RCA verdict for ``incident_id``, or None."""
+    if not incident_id:
+        return None
+    stmt = (
+        select(RCAResultRow)
+        .where(RCAResultRow.incident_id == incident_id)
+        .order_by(RCAResultRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(1)
+    )
+    with _session() as s:
+        row = s.exec(stmt).first()
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "incident_id": row.incident_id,
+        "affected_service": row.affected_service,
+        "verdict": dict(row.verdict or {}),
+        "created_at": _aware(row.created_at).isoformat() if row.created_at else None,
+    }
+
+
+def delete_all_rca_results() -> int:
+    """Eval/test hook."""
+    with _session() as s:
+        rows = s.exec(select(RCAResultRow)).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
+def _kb_row_to_dict(row: KBArticleRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "incident_id": row.incident_id,
+        "title": row.title,
+        "summary": row.summary,
+        "body": row.body,
+        "service": row.service,
+        "tags": list(row.tags or []),
+        "status": row.status,
+        "quality_score": row.quality_score,
+        "related_runbook_id": row.related_runbook_id,
+        "approval_id": row.approval_id,
+        "approved_by": row.approved_by,
+        "source": row.source,
+        "embedding": list(row.embedding or []),
+        "embedding_text": row.embedding_text,
+        "created_at": _aware(row.created_at).isoformat() if row.created_at else None,
+        "updated_at": _aware(row.updated_at).isoformat() if row.updated_at else None,
+        "audit_metadata": dict(row.audit_metadata or {}),
+    }
+
+
 __all__ = [
     "average_classification_confidence",
     "count_classifications",
     "count_historical_incidents",
+    "count_kb_articles",
     "count_notifications",
     "delete_all_clusters",
     "delete_all_historical_incidents",
+    "delete_all_kb_articles",
+    "delete_all_rca_results",
     "delete_live_historical_incidents",
     "evict_expired_clusters",
     "find_active_cluster",
+    "find_kb_by_incident_id",
     "get_classification",
+    "get_kb_article",
+    "get_rca_result",
     "get_verdict",
     "list_active_clusters",
     "list_classifications",
+    "list_kb_articles",
     "list_notifications",
     "list_verdicts",
     "nearest_historical_incidents",
+    "nearest_kb_articles",
     "save_classification",
     "save_historical_incident",
+    "save_kb_article",
     "save_notification",
+    "save_rca_result",
     "save_ticket",
     "save_verdict",
+    "tag_kb_article_source",
+    "update_kb_status",
     "upsert_cluster",
 ]

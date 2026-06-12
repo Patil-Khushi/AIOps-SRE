@@ -35,6 +35,9 @@ export default function AlertStream() {
   const [sortKey, setSortKey] = useState<SortKey>('severity');
   const [picked, setPicked] = useState<PrometheusAlert | null>(null);
   const [verdict, setVerdict] = useState<TriageVerdict | null>(null);
+  // ServiceNow incident number from the triage result's ticket — passed into
+  // apply-fix so the resolution verifier can verify + propose closure (Gate 2).
+  const [incidentId, setIncidentId] = useState<string | null>(null);
   const [triageBusy, setTriageBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // RCA state lives alongside the triage verdict — generated on demand, cleared
@@ -66,6 +69,7 @@ export default function AlertStream() {
   const runTriage = async (alert: PrometheusAlert) => {
     setPicked(alert);
     setVerdict(null);
+    setIncidentId(null);
     setError(null);
     setRca(null);
     setRcaError(null);
@@ -73,6 +77,7 @@ export default function AlertStream() {
     try {
       const result = await api.triage(alert);
       setVerdict(result.verdict);
+      setIncidentId(result.ticket?.ticket_id ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -245,7 +250,7 @@ export default function AlertStream() {
                       </div>
                     )}
                     {rcaError && <p className="mt-2 text-sm text-bad">{rcaError}</p>}
-                    {rca && !rcaBusy && <RcaView v={rca} />}
+                    {rca && !rcaBusy && <RcaView v={rca} incidentId={incidentId} />}
                   </div>
                 </>
               )}
@@ -373,7 +378,7 @@ function RemediationBox({
   );
 }
 
-function RcaView({ v }: { v: RCAVerdict }) {
+function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId?: string | null }) {
   // Follow the executable action the RCA agent annotated on a fix step. Fall
   // back to the legacy service→flag map only for verdicts that predate
   // step-level action annotation (keeps old cached verdicts working).
@@ -421,7 +426,14 @@ function RcaView({ v }: { v: RCAVerdict }) {
     setApplyStatus('pending');
     setApplyError(null);
     try {
-      const res = await api.applyRcaFix(flag, fixVariant, 'set_flag');
+      // Pass verifier context so a successful fix triggers resolution
+      // verification → HITL closure card (Gate 2). incident_id is the
+      // ServiceNow ticket number from triage; rca_verdict is stored by incident.
+      const res = await api.applyRcaFix(flag, fixVariant, 'set_flag', undefined, {
+        incident_id: incidentId ?? undefined,
+        service: v.affected_service,
+        rca_verdict: v,
+      });
       setApprovalId(res.approval_id);
     } catch (e) {
       setApplyStatus('error');

@@ -117,6 +117,9 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "knowledge.publish": AutonomyLevel.REQUIRED,
     "chaos.experiment.run": AutonomyLevel.REQUIRED,
     "rca.fix_step.execute": AutonomyLevel.REQUIRED,
+    # Resolution verifier → close ticket (PRS-007 step 2): a human approves the
+    # "verified resolved — close ticket?" card before ServiceNow is touched.
+    "itsm.ticket.close": AutonomyLevel.REQUIRED,
     # Predictive phase (where action implications are big)
     "capacity.recommend": AutonomyLevel.REQUIRED,
     "slo.freeze_changes": AutonomyLevel.REQUIRED,

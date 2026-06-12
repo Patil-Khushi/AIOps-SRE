@@ -1,0 +1,55 @@
+{
+  "agent": "knowledge_synthesizer",
+  "version": "0",
+  "description": "PRS-007 — synthesize a postmortem + runbook suggestion + KB article from a resolved incident. Anchored to the v0-locked slow-product-catalog scenario; runs deterministically under the stub LLM provider.",
+  "cases": [
+    {
+      "id": "slow-product-catalog-synthesis",
+      "description": "Resolved product-catalog latency incident: drafts a pending-review KB article, suggests updating the existing product-catalog runbook, leaks no PII.",
+      "scenario": "slow-product-catalog",
+      "input": {
+        "incident_id": "INC-PCAT-1",
+        "scenario_id": "slow-product-catalog",
+        "resolved_at": "2026-06-11T10:10:00Z",
+        "triage_verdict": {
+          "affected_service": "productcatalogservice",
+          "severity": "Sev-2",
+          "alert_summary": "Product catalog GetProduct p95 latency above 5s",
+          "audit_metadata": {"created_at": "2026-06-11T10:00:00Z"}
+        },
+        "rca_verdict": {
+          "affected_service": "productcatalogservice",
+          "root_cause": "The flagd feature flag `productCatalogFailure` is on, injecting a deterministic ~5s delay into productcatalogservice GetProduct calls. Latency is isolated to this service.",
+          "ranked_fix_steps": [
+            {
+              "description": "Set flagd flag productCatalogFailure defaultVariant back to off via the feature-flags seam.",
+              "blast_radius": "low",
+              "rollback": "Re-flip the flag back to on — instant.",
+              "action_type": "set_flag",
+              "flag": "productCatalogFailure",
+              "variant": "off"
+            }
+          ],
+          "confidence_score": 0.85,
+          "audit_metadata": {"created_at": "2026-06-11T10:05:00Z"}
+        },
+        "classification": {
+          "incident_type": "change",
+          "tags": ["latency", "feature-flag"],
+          "audit_metadata": {"created_at": "2026-06-11T10:02:00Z"}
+        }
+      },
+      "expected": {
+        "affected_service": "productcatalogservice",
+        "status": "pending_review",
+        "dedup_action": "create",
+        "runbook_mode": "update",
+        "related_runbook_id": "rb-product-catalog-latency",
+        "root_cause_contains": "productCatalogFailure",
+        "redaction_summary": "no PII/secrets detected",
+        "min_quality_score": 0.7
+      },
+      "tags": ["postmortem", "kb", "runbook", "locked-scenario"]
+    }
+  ]
+}

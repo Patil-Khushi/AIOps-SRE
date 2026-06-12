@@ -48,6 +48,9 @@ level := "required" if input.action == "chaos.experiment.run"
 # RCA Agent — every fix step is required-HITL (Solution Design slide 10, slide 13).
 level := "required" if input.action == "rca.fix_step.execute"
 
+# Resolution verifier → ticket closure is human-gated (PRS-007 step 2).
+level := "required" if input.action == "itsm.ticket.close"
+
 # Convenience: a boolean for the gate code path that just wants "must I block?".
 must_block_unattended if level == "required"
 

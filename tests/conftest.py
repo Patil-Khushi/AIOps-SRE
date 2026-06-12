@@ -49,6 +49,7 @@ import pytest
 # undoes the override per-test without disturbing this default.
 from agents.alert_triage import agent as _alert_triage_agent
 from agents.incident_classifier import agent as _incident_classifier_agent
+from agents.knowledge_synthesizer import agent as _knowledge_synthesizer_agent
 from aiops.policy import get_gate
 from aiops.tools.observability import jaeger as _jaeger
 
@@ -59,6 +60,7 @@ def _no_embed_model() -> None:
 
 _alert_triage_agent._get_embed_model = _no_embed_model
 _incident_classifier_agent._get_embed_model = _no_embed_model
+_knowledge_synthesizer_agent._get_embed_model = _no_embed_model
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +76,9 @@ def _disable_auto_triage(monkeypatch):
     directly rather than going through the startup hook.
     """
     monkeypatch.setenv("AIOPS_AUTO_TRIAGE_ENABLED", "false")
+    # Same hygiene for the SNOW resolved-ticket watcher (#PRS-007): don't let
+    # the lifespan spawn a background poller during TestClient-based tests.
+    monkeypatch.setenv("SNOW_WATCHER_ENABLED", "false")
 
 
 @pytest.fixture(autouse=True)

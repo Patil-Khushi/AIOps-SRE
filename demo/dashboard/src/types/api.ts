@@ -176,3 +176,94 @@ export interface SystemPodsResponse {
   not_ready_count: number;
 }
 
+// ─── Knowledge Synthesizer (PRS-007) ───────────────────────────────────────
+// Mirrors agents/knowledge_synthesizer/models.py and the
+// demo/ui/knowledge_routes.py route shapes.
+
+export type ReviewStatus = 'draft' | 'pending_review' | 'published' | 'rejected';
+
+export interface TimelineEntry {
+  ts: string | null;
+  event: string;
+  source_agent: string | null;
+}
+
+export interface Postmortem {
+  affected_service: string;
+  what_broke: string;
+  root_cause: string;
+  timeline: TimelineEntry[];
+  fix: string;
+  impact: string;
+  confidence_score: number;
+}
+
+export interface RunbookSuggestion {
+  mode: 'new' | 'update';
+  target_id: string;
+  title: string;
+  body_markdown: string;
+}
+
+export interface KBArticleOut {
+  incident_id: string | null;
+  title: string;
+  summary: string;
+  body: string;
+  service: string;
+  tags: string[];
+  quality_score: number;
+  status: ReviewStatus;
+  related_runbook_id: string | null;
+}
+
+export interface DedupDecision {
+  action: 'create' | 'duplicate' | 'skip_idempotent';
+  matched_article_id: number | null;
+  similarity: number;
+  method: 'embedding' | 'signature' | 'incident_id';
+}
+
+export interface SynthesisResult {
+  incident_id: string | null;
+  affected_service: string;
+  status: ReviewStatus;
+  root_cause: string;
+  dedup_action: string;
+  runbook_mode: string;
+  related_runbook_id: string | null;
+  kb_article_id: number | null;
+  quality_score: number;
+  redaction_summary: string;
+  created_at: string;
+  postmortem: Postmortem;
+  kb_article: KBArticleOut;
+  runbook_suggestion: RunbookSuggestion;
+  dedup: DedupDecision;
+}
+
+// Row shape from GET /api/kb (the persisted KBArticleRow as a dict).
+export interface KBArticleRow {
+  id: number;
+  incident_id: string | null;
+  title: string;
+  summary: string;
+  body: string;
+  service: string;
+  tags: string[];
+  status: ReviewStatus;
+  quality_score: number;
+  related_runbook_id: string | null;
+  approval_id: string | null;
+  approved_by: string | null;
+  source: string;
+  created_at: string | null;
+  updated_at: string | null;
+  audit_metadata: Record<string, unknown>;
+}
+
+export interface KbListResponse {
+  count: number;
+  articles: KBArticleRow[];
+}
+

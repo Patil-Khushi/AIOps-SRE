@@ -362,6 +362,65 @@ def update_incident(sys_id: str, fields: dict[str, Any]) -> ToolResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# itsm.incident.get / itsm.incident.query  (watcher + verifier + ticket close)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@_register_if_real(
+    name="snow.itsm.incident.get",
+    capability="itsm.incident.get",
+    provider="servicenow",
+    description="Fetch a single incident by number; returns the full record incl sys_id + state.",
+)
+def get_incident(number: str = "", fields: str = "") -> ToolResult:
+    """GET one incident by ``number``. Used to resolve number → sys_id for work
+    notes / state changes (the resolution verifier and ticket-close tool)."""
+    if not number:
+        return ToolResult(
+            ok=False, error="get_incident requires a number", metadata={"provider": "servicenow"}
+        )
+    params = {"sysparm_query": f"number={number}", "sysparm_limit": "1"}
+    if fields:
+        params["sysparm_fields"] = fields
+    res = _request("GET", "/api/now/table/incident", params=params)
+    if not res.ok:
+        return res
+    rows = (res.data or {}).get("result", []) or []
+    if not rows:
+        return ToolResult(
+            ok=False, error=f"incident {number} not found", metadata={"provider": "servicenow"}
+        )
+    return ToolResult(ok=True, data={"incident": rows[0]}, metadata=res.metadata)
+
+
+@_register_if_real(
+    name="snow.itsm.incident.query",
+    capability="itsm.incident.query",
+    provider="servicenow",
+    description="Query incidents by encoded query (sysparm_query); returns a list of records.",
+)
+def query_incidents(query: str = "", fields: str = "", limit: int = 100) -> ToolResult:
+    """GET ``/api/now/table/incident`` filtered by a ServiceNow encoded query.
+
+    ``query`` is a raw ``sysparm_query`` (e.g.
+    ``stateIN6,7^sys_updated_on>2026-06-12 10:00:00^ORDERBYsys_updated_on``).
+    Returns ``data={"incidents": [<record>, ...]}``. Raw values (no
+    ``sysparm_display_value``) so ``sys_updated_on`` stays a sortable
+    ``YYYY-MM-DD HH:MM:SS`` string the watcher can use as a checkpoint.
+    """
+    params: dict[str, str] = {"sysparm_limit": str(limit)}
+    if query:
+        params["sysparm_query"] = query
+    if fields:
+        params["sysparm_fields"] = fields
+    res = _request("GET", "/api/now/table/incident", params=params)
+    if not res.ok:
+        return res
+    rows = (res.data or {}).get("result", []) or []
+    return ToolResult(ok=True, data={"incidents": rows}, metadata=res.metadata)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # itsm.cmdb.lookup
 # ─────────────────────────────────────────────────────────────────────────────
 
