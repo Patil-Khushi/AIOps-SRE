@@ -10,6 +10,7 @@ import ParticleField from '@/portal/ParticleField';
 import PortalNav from '@/portal/PortalNav';
 import PortalProgressBar from '@/portal/PortalProgressBar';
 import { usePortalProgress } from '@/portal/usePortalProgress';
+import { hasEntered } from '@/lib/consoleScope';
 
 // The Adaptive AIOps Platform Portal — landing route, v2 "Cinematic".
 //
@@ -25,10 +26,20 @@ import { usePortalProgress } from '@/portal/usePortalProgress';
 const AUTO_TRIGGER = 0.30;
 
 export default function Landing() {
-  const { progress, setProgress, onWheel } = usePortalProgress();
+  // Returning visitors (already entered the app once) skip the cinematic boot:
+  // start fully booted with the hero already revealed — no animation replay.
+  const skipIntro = hasEntered();
+  const { progress, setProgress, onWheel } = usePortalProgress(skipIntro ? 1 : 0);
   const navigate = useNavigate();
   const booted = progress >= 0.999;
   const [guideOpen, setGuideOpen] = useState(false);
+
+  // Latch the hero reveal once the curtain has cleared, so the (memoised) Hero
+  // re-renders exactly once instead of on every boot-progress frame.
+  const [heroRevealed, setHeroRevealed] = useState(skipIntro);
+  useEffect(() => {
+    if (progress >= 0.95 && !heroRevealed) setHeroRevealed(true);
+  }, [progress, heroRevealed]);
 
   // Clicking "Explore Agents" opens the quick-guide window — unless the user
   // ticked "don't show again", in which case go straight to the agent browser.
@@ -64,7 +75,7 @@ export default function Landing() {
 
       {/* ── First screen: immersive boot + hero ── */}
       <section className="relative h-screen w-full overflow-hidden">
-        <Hero progress={progress} onExplore={onExplore} />
+        <Hero revealed={heroRevealed} onExplore={onExplore} />
         <ParticleField progress={progress} />
         <BootCurtain progress={progress} />
 

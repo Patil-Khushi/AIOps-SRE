@@ -62,24 +62,17 @@ export async function listApprovals(includeResolved = false): Promise<ApprovalLi
 }
 
 // HITL-2 (#102): the server reads AIOPS_HITL_APPROVAL_TOKEN and, when set,
-// requires Authorization: Bearer <token> on /approve and /deny. The console
-// stores the token in sessionStorage (cleared on tab close — never written
-// to disk), and this helper turns it into request headers.
-function authHeaders(token: string | null | undefined): Record<string, string> {
-  const t = (token || '').trim();
-  return t ? { Authorization: `Bearer ${t}` } : {};
-}
-
+// authorizes this approver console automatically because it is served
+// same-origin by the demo server — the secret stays in the backend env and is
+// never typed into the UI. So approve/deny send no Authorization header.
 export async function approve(
   id: string,
   approver: string,
   reason: string,
-  token?: string | null,
 ): Promise<ApprovalRecord> {
   const { data } = await axios.post<ApprovalRecord>(
     `/api/approvals/${id}/approve`,
     { approver, reason },
-    { headers: authHeaders(token) },
   );
   return data;
 }
@@ -88,12 +81,10 @@ export async function deny(
   id: string,
   approver: string,
   reason: string,
-  token?: string | null,
 ): Promise<ApprovalRecord> {
   const { data } = await axios.post<ApprovalRecord>(
     `/api/approvals/${id}/deny`,
     { approver, reason },
-    { headers: authHeaders(token) },
   );
   return data;
 }

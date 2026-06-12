@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 
 // Hero side-panel: the platform's outcome targets, as big animated counters.
@@ -70,7 +70,7 @@ function MetricTile({ m, run }: { m: Metric; run: boolean }) {
   );
 }
 
-export default function OutcomesCard({ revealed = true }: { revealed?: boolean }) {
+function OutcomesCard({ revealed = true }: { revealed?: boolean }) {
   return (
     <div className="relative">
       {/* Ambient halos for depth. */}
@@ -112,3 +112,5 @@ export default function OutcomesCard({ revealed = true }: { revealed?: boolean }
     </div>
   );
 }
+
+export default memo(OutcomesCard);

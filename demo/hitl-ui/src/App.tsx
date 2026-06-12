@@ -13,25 +13,6 @@ import { ApprovalRecord, ApprovalStatus, approve, deny, listApprovals } from './
 const POLL_INTERVAL_MS = 1500;
 const DEFAULT_APPROVER = 'demo-sre';
 
-// HITL-2 (#102): the approval token lives in sessionStorage so it disappears
-// when the operator closes the tab — never written to localStorage / disk.
-const TOKEN_STORAGE_KEY = 'aiops.hitl.approval_token';
-const readStoredToken = () => {
-  try {
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
-  } catch {
-    return '';
-  }
-};
-const writeStoredToken = (t: string) => {
-  try {
-    if (t) sessionStorage.setItem(TOKEN_STORAGE_KEY, t);
-    else sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch {
-    // sessionStorage disabled (privacy mode, etc.) — fall back to memory only.
-  }
-};
-
 // Friendly labels for the gated capabilities.
 const ACTION_LABEL: Record<string, string> = {
   'rca.fix_step.execute': 'RCA fix step',
@@ -44,7 +25,8 @@ const ACTION_LABEL: Record<string, string> = {
 };
 
 // Context keys worth surfacing as detail chips (everything else is plumbing).
-const NOTABLE_CTX = ['service', 'deployment', 'namespace', 'flag', 'variant', 'runbook', 'action_type'];
+// `title`/`reason` are shown elsewhere (headline / subtext), so they're excluded.
+const NOTABLE_CTX = ['service', 'alert', 'deployment', 'namespace', 'flag', 'variant', 'runbook', 'action_type'];
 
 type Toast = { id: number; text: string; tone: 'good' | 'bad' };
 
@@ -52,16 +34,11 @@ export default function App() {
   const [pending, setPending] = useState<ApprovalRecord[]>([]);
   const [recent, setRecent] = useState<ApprovalRecord[]>([]);
   const [approver, setApprover] = useState(DEFAULT_APPROVER);
-  const [approvalToken, setApprovalToken] = useState<string>(readStoredToken);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Optimistic status overrides so a row flips the instant a decision lands,
   // before the next poll catches up.
   const [optimistic, setOptimistic] = useState<Record<string, ApprovalStatus>>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
-
-  useEffect(() => {
-    writeStoredToken(approvalToken);
-  }, [approvalToken]);
 
   const pushToast = (text: string, tone: 'good' | 'bad') => {
     const id = Date.now() + Math.random();
@@ -108,11 +85,11 @@ export default function App() {
     setBusyId(req.id);
     try {
       if (kind === 'approve') {
-        await approve(req.id, approver.trim(), 'Approved via console', approvalToken);
+        await approve(req.id, approver.trim(), 'Approved via console');
         setOptimistic((o) => ({ ...o, [req.id]: 'approved' }));
         pushToast(`Approved ${req.action}`, 'good');
       } else {
-        await deny(req.id, approver.trim(), 'Denied via console', approvalToken);
+        await deny(req.id, approver.trim(), 'Denied via console');
         setOptimistic((o) => ({ ...o, [req.id]: 'denied' }));
         pushToast(`Denied ${req.action}`, 'good');
       }
@@ -145,7 +122,6 @@ export default function App() {
 
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3 mb-6">
         <ApproverIdRow approver={approver} setApprover={setApprover} />
-        <ApprovalTokenRow token={approvalToken} setToken={setApprovalToken} />
       </div>
 
       <RequestsTable
@@ -185,23 +161,6 @@ function ApproverIdRow({ approver, setApprover }: { approver: string; setApprove
         onChange={(e) => setApprover(e.target.value)}
         placeholder="alice@example.com"
         className="rounded-md bg-slate-900 border border-slate-700 focus:border-pink-400 focus:outline-none px-3 py-1.5 text-slate-100 w-56"
-      />
-    </div>
-  );
-}
-
-function ApprovalTokenRow({ token, setToken }: { token: string; setToken: (s: string) => void }) {
-  return (
-    <div className="flex items-center gap-3 text-sm">
-      <label className="text-slate-400">Token:</label>
-      <input
-        type="password"
-        value={token}
-        onChange={(e) => setToken(e.target.value)}
-        placeholder="AIOPS_HITL_APPROVAL_TOKEN (blank in demo mode)"
-        className="rounded-md bg-slate-900 border border-slate-700 focus:border-pink-400 focus:outline-none px-3 py-1.5 text-slate-100 w-80 font-mono"
-        autoComplete="off"
-        spellCheck={false}
       />
     </div>
   );
@@ -280,14 +239,20 @@ function RequestRow({
   const pending = status === 'pending';
   const expiresIn = useCountdown(r.expires_at);
   const label = ACTION_LABEL[r.action] ?? r.action;
-  const chips = NOTABLE_CTX.filter((k) => r.context[k] != null).map((k) => [k, String(r.context[k])] as const);
+  // Lead with the incident/issue when we know it; the capability is secondary.
+  const title = typeof r.context.title === 'string' && r.context.title ? r.context.title : label;
+  const chips = NOTABLE_CTX.filter((k) => r.context[k] != null && r.context[k] !== '').map(
+    (k) => [k, String(r.context[k])] as const,
+  );
 
   return (
     <tr className="hover:bg-slate-900/40 align-top">
       <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{relativeTime(r.requested_at)}</td>
       <td className="px-4 py-3">
-        <div className="font-medium text-slate-100">{label}</div>
-        <code className="text-[11px] text-slate-500">{r.action}</code>
+        <div className="font-medium text-slate-100">{title}</div>
+        <div className="text-[11px] text-slate-500">
+          {label} · <code>{r.action}</code>
+        </div>
       </td>
       <td className="px-4 py-3">
         <div className="flex flex-wrap gap-1.5">

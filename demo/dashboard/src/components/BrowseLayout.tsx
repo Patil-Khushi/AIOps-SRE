@@ -1,11 +1,16 @@
+import { useEffect } from 'react';
 import { Outlet, Link } from 'react-router-dom';
 import { useTheme } from '@/hooks/useTheme';
+import { markEntered } from '@/lib/consoleScope';
 
 // Sidebar-less shell for the agent browser (phase → agent drill-down).
 // Styled to match the landing portal: deep-space backdrop, ambient
 // phase-coloured halos, and a slim top bar with the platform mark.
 export default function BrowseLayout() {
   useTheme();
+  // Being here means the user is inside the app — don't replay the landing
+  // animation on future "/" visits.
+  useEffect(() => markEntered(), []);
   return (
     <div className="portal-deepspace relative min-h-screen overflow-x-hidden font-body text-white">
       {/* Ambient phase-coloured halos — depth behind the glass panels. */}

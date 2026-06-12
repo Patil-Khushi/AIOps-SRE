@@ -91,13 +91,11 @@ export const api = {
     unwrap<ApprovalsResponse>(
       http.get('/api/approvals', { params: { include_resolved: includeResolved } }),
     ),
-  approve: (id: string, approver: string, reason = '', token?: string) =>
-    unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/approve`, { approver, reason }, authCfg(token))),
-  deny: (id: string, approver: string, reason = '', token?: string) =>
-    unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/deny`, { approver, reason }, authCfg(token))),
+  // No bearer token is sent from the browser: the dashboard is served
+  // same-origin by the demo server, which authorizes its own console against
+  // AIOPS_HITL_APPROVAL_TOKEN internally. The secret stays in the backend env.
+  approve: (id: string, approver: string, reason = '') =>
+    unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/approve`, { approver, reason })),
+  deny: (id: string, approver: string, reason = '') =>
+    unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/deny`, { approver, reason })),
 };
-
-// Attach the HITL bearer token when the server has AIOPS_HITL_APPROVAL_TOKEN set.
-function authCfg(token?: string) {
-  return token ? { headers: { Authorization: `Bearer ${token}` } } : undefined;
-}

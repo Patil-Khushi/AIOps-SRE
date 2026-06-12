@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo } from 'react';
 import { Link } from 'react-router-dom';
 import OutcomesCard from './OutcomesCard';
 
@@ -14,18 +14,14 @@ import OutcomesCard from './OutcomesCard';
 // boot can't accidentally trigger the EXPLORE AGENTS navigation.
 
 interface HeroProps {
-  progress: number;
+  // Latched true once the boot curtain has cleared (progress ≥ 0.95). Passed
+  // as a boolean — not raw progress — so the hero (a large static subtree) is
+  // memoised and only re-renders on the single reveal flip, not every frame.
+  revealed: boolean;
   onExplore?: () => void;
 }
 
-const REVEAL_AT = 0.95;
-
-export default function Hero({ progress, onExplore }: HeroProps) {
-  const [revealStarted, setRevealStarted] = useState(false);
-  useEffect(() => {
-    if (progress >= REVEAL_AT && !revealStarted) setRevealStarted(true);
-  }, [progress, revealStarted]);
-
+function Hero({ revealed: revealStarted, onExplore }: HeroProps) {
   return (
     <div className="portal-deepspace absolute inset-0 z-0 overflow-hidden">
       {/* Vibrant phase gradient — flat until ignition. */}
@@ -99,3 +95,5 @@ export default function Hero({ progress, onExplore }: HeroProps) {
     </div>
   );
 }
+
+export default memo(Hero);

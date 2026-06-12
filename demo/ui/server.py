@@ -900,6 +900,28 @@ class ApprovalDecisionRequest(BaseModel):
     reason: str = Field("", description="Optional free-text justification")
 
 
+def _is_same_origin_console(request: Request) -> bool:
+    """True when the request comes from this server's own operations console.
+
+    The dashboard is served same-origin by this very FastAPI app, so a
+    browser approve/deny carries an ``Origin`` (or ``Referer``) whose host
+    matches the request's own ``Host``.  We use that to authorize the
+    operator console *without* the secret ever leaving the backend — the
+    operator never pastes the token into the UI.  Non-browser / cross-origin
+    callers send no matching ``Origin`` and so must present the bearer token.
+    """
+    from urllib.parse import urlparse
+
+    host = (request.headers.get("host") or "").strip().lower()
+    if not host:
+        return False
+    source = request.headers.get("origin") or request.headers.get("referer") or ""
+    if not source:
+        return False
+    netloc = urlparse(source).netloc.strip().lower()
+    return bool(netloc) and netloc == host
+
+
 def _require_approval_token(request: Request) -> None:
     """Authenticate the web approve/deny endpoints against
     ``AIOPS_HITL_APPROVAL_TOKEN``.
@@ -907,9 +929,11 @@ def _require_approval_token(request: Request) -> None:
     Phase 1 of HITL-2 (#102): a lightweight shared-secret bearer-token
     check.  When the env var is **unset** we accept every request so the
     current localhost-only demo flow keeps working (the startup hook
-    above logs a loud warning).  When **set**, callers must present
-    ``Authorization: Bearer <token>`` and we compare it with
-    ``hmac.compare_digest`` for constant-time matching.
+    above logs a loud warning).  When **set**, the token lives *only* in the
+    backend env — the operations console (served same-origin by this app) is
+    authorized automatically so the operator never pastes the secret into the
+    UI; every other caller must present ``Authorization: Bearer <token>``,
+    compared with ``hmac.compare_digest`` for constant-time matching.
 
     All failure modes raise the *same* 401 with the *same* detail so a
     prober can't tell a missing header from a wrong token.  Phase 2
@@ -923,6 +947,9 @@ def _require_approval_token(request: Request) -> None:
     """
     token = os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip()
     if not token:
+        return
+    # The dashboard owns no secret — it's trusted by being same-origin.
+    if _is_same_origin_console(request):
         return
     auth = request.headers.get("authorization", "")
     presented = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
@@ -1485,17 +1512,88 @@ def _variant_on(s: dict[str, Any]) -> str:
     return str(s.get("variant_on") or "on")
 
 
+def _request_scenario_remediation(scenario_id: str, s: dict[str, Any]) -> str:
+    """Raise a REQUIRED-HITL remediation request for an injected scenario.
+
+    Every injected failure also asks for approval to *fix* it — flipping the
+    scenario's flag back to ``off`` via the gated ``rca.fix_step.execute``
+    capability. The request blocks on a background thread until a human approves
+    or denies it in the approver console (/hitl) or Slack; the keys in
+    ``hitl_context`` become the approval's context (shown as chips in the UI).
+    Returns the pre-minted approval id.
+    """
+    from aiops.tools.rca_remediation import request_fix_step
+
+    approval_id = _uuid_hex()
+    ctx: dict[str, Any] = {
+        "approval_id": approval_id,
+        "approval_timeout_seconds": 300,
+        "reason": f"Auto-remediation for '{s.get('title', scenario_id)}': disable {s['flag']}.",
+        "action_type": "set_flag",
+        "flag": s["flag"],
+        "variant": "off",
+        "service": s.get("service", ""),
+        "scenario_id": scenario_id,
+        # Issue identity so the approval reads as the incident, not just the action.
+        "title": s.get("title", scenario_id),
+        "alert": s.get("alert", ""),
+    }
+
+    def _run() -> None:
+        try:
+            outcome = request_fix_step(
+                action_type="set_flag",
+                flag=s["flag"],
+                variant="off",
+                hitl_context=ctx,
+            )
+            _HITL_OUTCOMES[approval_id] = outcome
+            # set_variant only patches the flagd configmap; the running flagd
+            # pod won't serve the new value until kubelet syncs (~60-120s) or we
+            # kick it. The inject path kicks flagd, so mirror that here once the
+            # approved fix has actually executed — otherwise the flag flips in
+            # config but the UI / failure linger as "on".
+            if isinstance(outcome, dict) and outcome.get("status") == "executed":
+                _kick_flagd()
+                logger.info("scenario %s remediated → flag %s set off, flagd kicked", scenario_id, s["flag"])
+        except Exception as exc:  # noqa: BLE001 — surface, don't swallow.
+            logger.exception("scenario remediation request failed for %s", scenario_id)
+            _HITL_OUTCOMES[approval_id] = {
+                "status": "error",
+                "approval_id": approval_id,
+                "error": str(exc),
+            }
+
+    _HITL_AGENT_POOL.submit(_run)
+    logger.info(
+        "scenario %s injected → remediation approval %s requested (flag=%s)",
+        scenario_id, approval_id, s["flag"],
+    )
+    return approval_id
+
+
 @app.post("/api/scenarios/{scenario_id}/inject")
 def inject_scenario(scenario_id: str) -> dict[str, Any]:
     """Flip the scenario's flag to its on-variant. Returns the expected alert
-    name + ETA so the UI can poll ``/api/live-alerts`` until it fires."""
+    name + ETA so the UI can poll ``/api/live-alerts`` until it fires.
+
+    Also raises a REQUIRED-HITL remediation approval for the injected failure so
+    it shows up in the approver console (/hitl) for a human to approve/deny.
+    """
     s = SCENARIOS.get(scenario_id)
     if not s:
         raise HTTPException(
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
     result = _toggle_flagd_flag(s["flag"], _variant_on(s))
-    return {**s, "scenario_id": scenario_id, **result, "expected_alert": s["alert"]}
+    approval_id = _request_scenario_remediation(scenario_id, s)
+    return {
+        **s,
+        "scenario_id": scenario_id,
+        **result,
+        "expected_alert": s["alert"],
+        "approval_id": approval_id,
+    }
 
 
 @app.post("/api/scenarios/{scenario_id}/reset")

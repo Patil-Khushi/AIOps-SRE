@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import type { ComponentType } from 'react';
+import { memo, type ComponentType } from 'react';
 import {
   ArrowRight,
   Boxes,
@@ -55,7 +55,7 @@ const CONTRACTS = [
   { name: 'OpenAPI', note: 'REST integrations' },
 ];
 
-export default function LandingSections({ onExplore }: { onExplore?: () => void }) {
+function LandingSections({ onExplore }: { onExplore?: () => void }) {
   return (
     <div className="relative">
       {/* Background that EMBEDS the sections into the hero's world instead of
@@ -230,3 +230,7 @@ export default function LandingSections({ onExplore }: { onExplore?: () => void 
     </div>
   );
 }
+
+// Memoised: this large marketing subtree has stable props, so it must not
+// reconcile on every boot-progress frame the parent re-renders for.
+export default memo(LandingSections);

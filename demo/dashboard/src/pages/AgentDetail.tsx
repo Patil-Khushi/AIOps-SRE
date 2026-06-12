@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, ChevronRight, Rocket, Settings, ShieldCheck, X } from 'lucide-react';
+import { ArrowLeft, Check, ChevronRight, Gavel, Rocket, Settings, ShieldCheck, X } from 'lucide-react';
 import { getAgentById, type AgentCatalogItem, type AgentPhase } from '@/data/agentCatalog';
+import { setConsoleAgent } from '@/lib/consoleScope';
 
 const PHASE_SWATCH: Record<AgentPhase, string> = {
   'Reactive-Active':       '#4f46e5',
@@ -84,6 +85,9 @@ export default function AgentDetail() {
 
   const launch = () => {
     if (!agent.liveSurface) return;
+    // Scope the console to this agent so its sidebar shows the right chrome
+    // (e.g. Approvals only for HITL-Required agents).
+    setConsoleAgent(agent.id);
     if (agent.liveSurfaceExternal) window.location.assign(agent.liveSurface);
     else navigate(agent.liveSurface);
   };
@@ -230,6 +234,52 @@ export default function AgentDetail() {
           )}
         </div>
       </div>
+
+      {/* ── Human-in-the-loop approval gate — shown ONLY for agents whose
+             actions require approval (hitl === 'Required'). Optional/None
+             agents like Alert Triage never reach this gate, so they don't
+             render this section. ── */}
+      {agent.hitl === 'Required' && (
+        <div
+          className="glass-card relative overflow-hidden rounded-3xl p-6"
+          style={{ borderLeft: `3px solid ${swatch}` }}
+        >
+          <div
+            className="pointer-events-none absolute -right-12 -top-12 h-44 w-44 rounded-full opacity-20 blur-3xl"
+            style={{ background: swatch }}
+          />
+          <div className="relative flex flex-wrap items-start gap-5">
+            <div
+              className="flex h-11 w-11 flex-none items-center justify-center rounded-2xl border"
+              style={{ borderColor: swatch, background: `${swatch}22` }}
+            >
+              <Gavel className="h-5 w-5 text-white/90" />
+            </div>
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="font-mono text-[10px] uppercase text-white/50" style={{ letterSpacing: '0.25em' }}>
+                Human-in-the-loop · Required
+              </p>
+              <h2 className="font-display text-xl font-extrabold uppercase text-white" style={{ letterSpacing: '-0.02em' }}>
+                Approval gate before any action
+              </h2>
+              <p className="max-w-2xl font-body text-sm leading-relaxed text-white/60">
+                Every action this agent proposes is held at a platform-enforced approval gate — nothing
+                executes until a human approves it, and each step ships with a tested rollback. The gate
+                is enforced by the policy layer, not the agent, so a buggy or compromised agent cannot
+                bypass it. Approve or deny pending requests in the Approvals console or in Slack.
+              </p>
+              <Link
+                to="/console/approvals"
+                onClick={() => setConsoleAgent(agent.id)}
+                className="inline-flex items-center gap-1.5 pt-1 font-body text-[11px] font-bold uppercase transition-colors"
+                style={{ color: swatch, letterSpacing: '0.15em' }}
+              >
+                Open Approvals console <ChevronRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Configure popover: vendor-neutral provider choices ── */}
       {configOpen && (

@@ -7,9 +7,11 @@ import { memo, useEffect, useRef } from 'react';
 // Connections: a thin indigo mesh between stars within 90px, opacity
 // falling off with distance.
 //
-// Scroll-driven: as progress climbs, every star accelerates toward the
-// viewport centre (velocity = base × (1 + p × 12)) — being fed into the
-// ADAPTIVE wordmark. Above 0.95 the field scatters outward and fades.
+// Ambient: every star bobs on its own independent sine orbit and keeps
+// moving for the whole lifetime of the page. The field deliberately does NOT
+// pull toward the centre (it used to "collect" into the ADAPTIVE wordmark
+// during boot, which read as clumping) — it only dims a little as the hero
+// reveals so it never fights the foreground content.
 //
 // Performance notes:
 //   - Spatial grid bins particles by CONNECT_DISTANCE so connection
@@ -26,8 +28,6 @@ interface ParticleFieldProps {
 interface Particle {
   baseX: number;
   baseY: number;
-  offsetX: number;
-  offsetY: number;
   phaseX: number;
   phaseY: number;
   speedX: number;
@@ -44,8 +44,6 @@ const ANCHOR_COUNT         = 4;
 const CONNECT_DISTANCE     = 90;
 const CONNECT_DIST_SQ      = CONNECT_DISTANCE * CONNECT_DISTANCE;
 const CONNECT_MAX_OPACITY  = 0.08;
-const SETTLE_START         = 0.9;
-const BASE_INWARD_PX_PER_S = 4;
 const MAX_DPR              = 1.5;
 
 function makeParticles(width: number, height: number): Particle[] {
@@ -60,8 +58,6 @@ function makeParticles(width: number, height: number): Particle[] {
     out.push({
       baseX: cx + Math.cos(theta) * r,
       baseY: cy + Math.sin(theta) * r,
-      offsetX: 0,
-      offsetY: 0,
       phaseX: Math.random() * Math.PI * 2,
       phaseY: Math.random() * Math.PI * 2,
       speedX: 0.3 + Math.random() * 0.5,
@@ -119,8 +115,6 @@ function ParticleFieldImpl({ progress }: ParticleFieldProps) {
 
       const w = window.innerWidth;
       const h = window.innerHeight;
-      const cx = w / 2;
-      const cy = h / 2;
       const p = progressRef.current;
 
       ctx.clearRect(0, 0, w, h);
@@ -131,38 +125,21 @@ function ParticleFieldImpl({ progress }: ParticleFieldProps) {
         return;
       }
 
-      const inwardVel = BASE_INWARD_PX_PER_S * (1 + p * 12);
-      // Past SETTLE_START the boot is essentially done: ease the accumulated
-      // inward pull back to zero so the field relaxes into its original
-      // dispersed constellation instead of clumping at the centre.
-      const settleT = p > SETTLE_START ? (p - SETTLE_START) / (1 - SETTLE_START) : 0;
-
       // ── Update positions + cache display coords ──────────────────
+      // Pure ambient drift: each star bobs around its own base point on an
+      // independent sine orbit. No centre pull, so the field never clumps —
+      // it just keeps moving as a calm backdrop.
       for (let i = 0; i < particles.length; i++) {
         const part = particles[i];
         part.phaseX += part.speedX * dt;
         part.phaseY += part.speedY * dt;
-        const driftX = Math.sin(part.phaseX) * part.amplitudeX;
-        const driftY = Math.sin(part.phaseY) * part.amplitudeY;
-
-        if (settleT > 0) {
-          // Exponential ease of the offset back toward 0 → dispersed rest.
-          const k = Math.min(1, dt * (1.5 + settleT * 4));
-          part.offsetX += (0 - part.offsetX) * k;
-          part.offsetY += (0 - part.offsetY) * k;
-        } else {
-          const curX = part.baseX + driftX + part.offsetX;
-          const curY = part.baseY + driftY + part.offsetY;
-          const dx = cx - curX;
-          const dy = cy - curY;
-          const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-          part.offsetX += (dx / dist) * inwardVel * dt;
-          part.offsetY += (dy / dist) * inwardVel * dt;
-        }
-
-        px[i] = part.baseX + Math.sin(part.phaseX) * part.amplitudeX + part.offsetX;
-        py[i] = part.baseY + Math.sin(part.phaseY) * part.amplitudeY + part.offsetY;
+        px[i] = part.baseX + Math.sin(part.phaseX) * part.amplitudeX;
+        py[i] = part.baseY + Math.sin(part.phaseY) * part.amplitudeY;
       }
+
+      // Dim (don't freeze) as the hero reveals so the moving field recedes
+      // behind the foreground instead of competing with it.
+      const fadeOut = 1 - p * 0.4;
 
       // ── Spatial grid: bin particles into CONNECT_DISTANCE-sized cells.
       //    Drawing connections then only checks within-cell and 8-neighbour
@@ -180,8 +157,6 @@ function ParticleFieldImpl({ progress }: ParticleFieldProps) {
 
       // ── Draw connections ─────────────────────────────────────────
       ctx.lineWidth = 0.5;
-      // Settle to a calmer 55% at rest so it reads as ambient background.
-      const fadeOut = 1 - settleT * 0.45;
       for (let i = 0; i < particles.length; i++) {
         const cxi = Math.max(0, Math.min(cols - 1, Math.floor(px[i] / cellSize)));
         const cyi = Math.max(0, Math.min(rows - 1, Math.floor(py[i] / cellSize)));
