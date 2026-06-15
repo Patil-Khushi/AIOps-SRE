@@ -212,12 +212,12 @@ interface InjectionProps {
   onResetAll: () => void;
 }
 
-const CATEGORY_META: Record<string, { label: string; icon: JSX.Element; tint: string }> = {
-  errors:   { label: 'HTTP errors (5xx)',     icon: <AlertOctagon className="h-3.5 w-3.5" />, tint: 'text-bad' },
-  latency:  { label: 'Latency & slowdowns',   icon: <Timer       className="h-3.5 w-3.5" />, tint: 'text-warn' },
-  capacity: { label: 'Capacity & queue',      icon: <Gauge       className="h-3.5 w-3.5" />, tint: 'text-sev4' },
-  infra:    { label: 'Infra & saturation',    icon: <Server      className="h-3.5 w-3.5" />, tint: 'text-ink-400' },
-  other:    { label: 'Other',                 icon: <Zap         className="h-3.5 w-3.5" />, tint: 'text-ink-400' },
+const CATEGORY_META: Record<string, { label: string; icon: JSX.Element; color: string }> = {
+  errors:   { label: 'HTTP errors (5xx)',   icon: <AlertOctagon className="h-4 w-4" />, color: '#ef4444' },
+  latency:  { label: 'Latency & slowdowns', icon: <Timer       className="h-4 w-4" />, color: '#f59e0b' },
+  capacity: { label: 'Capacity & queue',    icon: <Gauge       className="h-4 w-4" />, color: '#3b82f6' },
+  infra:    { label: 'Infra & saturation',  icon: <Server      className="h-4 w-4" />, color: '#8b95a8' },
+  other:    { label: 'Other',               icon: <Zap         className="h-4 w-4" />, color: '#8b95a8' },
 };
 
 function FailureInjection({
@@ -274,20 +274,32 @@ function FailureInjection({
         ) : (
           grouped.map(({ key, items }) => {
             const meta = CATEGORY_META[key] ?? CATEGORY_META.other;
+            const activeInCat = items.filter((s) => s.current_variant !== 'off').length;
             return (
               <section key={key}>
-                <div className="mb-2 flex items-center gap-2">
-                  <span className={clsx('flex items-center gap-1.5', meta.tint)}>
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span
+                    className="flex h-8 w-8 flex-none items-center justify-center rounded-lg"
+                    style={{ background: `${meta.color}1f`, color: meta.color }}
+                  >
                     {meta.icon}
-                    <h3 className="text-[11px] font-semibold uppercase tracking-wider">
-                      {meta.label}
-                    </h3>
                   </span>
-                  <span className="text-[11px] text-ink-500 dark:text-ink-400">
-                    · {items.length} scenario{items.length === 1 ? '' : 's'}
+                  <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">{meta.label}</h3>
+                  <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-medium text-ink-500 dark:bg-ink-800 dark:text-ink-400">
+                    {items.length}
                   </span>
+                  {activeInCat > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-bad/15 px-2 py-0.5 text-[11px] font-semibold text-bad">
+                      <span className="h-1.5 w-1.5 rounded-full bg-bad animate-pulse-slow" />
+                      {activeInCat} active
+                    </span>
+                  )}
+                  <span className="ml-1 h-px flex-1 bg-ink-200 dark:bg-ink-800" />
                 </div>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div
+                  className="grid gap-4"
+                  style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))' }}
+                >
                   {items.map((s) => (
                     <ScenarioCard
                       key={s.scenario_id}
@@ -309,6 +321,30 @@ function FailureInjection({
   );
 }
 
+type ScenarioState = 'off' | 'arming' | 'firing';
+
+function StatusPill({ state }: { state: ScenarioState }) {
+  if (state === 'firing') {
+    return (
+      <span className="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-bad/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-bad">
+        <span className="h-1.5 w-1.5 rounded-full bg-bad animate-pulse-slow" /> firing
+      </span>
+    );
+  }
+  if (state === 'arming') {
+    return (
+      <span className="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-warn/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-warn">
+        <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" /> arming
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-ink-200/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-ink-500 dark:bg-ink-800 dark:text-ink-400">
+      off
+    </span>
+  );
+}
+
 function ScenarioCard({
   s, busy, onInject, onReset, isFiring, alertColor,
 }: {
@@ -321,60 +357,91 @@ function ScenarioCard({
 }) {
   const on = s.current_variant !== 'off';
   const isThisBusy = busy === s.scenario_id;
+  const accent = alertColor ?? '#64748b';
+  const state: ScenarioState = !on ? 'off' : isFiring ? 'firing' : 'arming';
+
   return (
-    <div>
-      {alertColor && <div style={{ height: 6, background: alertColor }} className="rounded-t-sm -mx-3 mt-0" />}
-      <div
-        className={clsx(
-          'rounded-lg border bg-ink-50/50 p-3 transition-all dark:bg-ink-900/40',
-          on
-            ? 'border-bad/40 ring-1 ring-bad/20'
-            : 'border-ink-200 dark:border-ink-700',
-        )}
-      >
+    <div
+      className={clsx(
+        'group relative flex flex-col overflow-hidden rounded-xl border p-4 transition-all duration-200',
+        'bg-ink-50/60 dark:bg-ink-900/40',
+        on
+          ? 'border-bad/50 ring-1 ring-bad/15'
+          : 'border-ink-200 hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-md dark:border-ink-700 dark:hover:border-ink-600',
+      )}
+    >
+      {/* Alert-rule accent, fused to the top edge of the card (no detached bar). */}
+      <span aria-hidden className="absolute inset-x-0 top-0 h-[3px]" style={{ background: accent }} />
+
+      {/* Ambient glow while active — amber arming, red firing. */}
+      {on && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full opacity-20 blur-2xl"
+          style={{ background: isFiring ? '#ef4444' : '#f59e0b' }}
+        />
+      )}
+
+      <div className="relative flex flex-1 flex-col">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-ink-900 dark:text-ink-50">
-              {s.title}
-            </h3>
-            <p className="mt-0.5 text-xs text-ink-600 dark:text-ink-400">{s.description}</p>
-            <p className="mt-1.5 font-mono text-[10px] text-ink-500 dark:text-ink-400">
-              flag <span className="text-ink-700 dark:text-ink-300">{s.flag}</span>
-              {' · alert '}<span className="text-ink-700 dark:text-ink-300">{s.alert}</span>
-            </p>
-          </div>
+          <h3 className="truncate text-sm font-semibold text-ink-900 dark:text-ink-50">{s.title}</h3>
+          <StatusPill state={state} />
+        </div>
+
+        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-600 dark:text-ink-400">
+          {s.description}
+        </p>
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 rounded-md bg-ink-100 px-1.5 py-0.5 font-mono text-[10px] text-ink-700 dark:bg-ink-800 dark:text-ink-300">
+            <span className="text-ink-400 dark:text-ink-500">flag</span> {s.flag}
+          </span>
           <span
-            className={clsx(
-              'chip flex-shrink-0 font-mono',
-              on && '!border-bad/40 !text-bad',
-            )}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10px]"
+            style={{ background: `${accent}1f`, color: accent }}
+            title="Prometheus alert rule this scenario triggers"
           >
-            {on ? s.current_variant : 'off'}
+            <span className="opacity-70">alert</span> {s.alert}
           </span>
         </div>
-        <div className="mt-3 flex items-center gap-2">
+
+        {/* Actions pinned to the bottom so cards in a row line up. */}
+        <div className="mt-auto flex items-center gap-2 pt-3">
           <button
             onClick={() => onInject(s.scenario_id)}
             disabled={!!busy || on}
             className="btn btn-primary !py-1 !text-xs"
           >
-            <PlayCircle className={clsx('h-3.5 w-3.5', isThisBusy && 'animate-spin')} />
+            <PlayCircle className={clsx('h-3.5 w-3.5', isThisBusy && !on && 'animate-spin')} />
             Inject
           </button>
           <button
             onClick={() => onReset(s.scenario_id)}
             disabled={!!busy || !on}
-            className="btn !py-1 !text-xs"
+            className={clsx('btn !py-1 !text-xs', on && '!border-bad/40 !text-bad hover:!bg-bad/10')}
           >
-            <RotateCcw className="h-3.5 w-3.5" /> Reset
+            <RotateCcw className={clsx('h-3.5 w-3.5', isThisBusy && on && 'animate-spin')} /> Reset
           </button>
-          <span className="ml-auto font-mono text-[10px] text-ink-500 dark:text-ink-400">
-            ETA ~{s.eta_seconds}s
+          <span className="ml-auto inline-flex items-center gap-1 font-mono text-[10px] text-ink-500 dark:text-ink-400">
+            <Timer className="h-3 w-3" /> ~{s.eta_seconds}s
           </span>
         </div>
-        {on && !isFiring && (
-          <p className="mt-2 text-[11px] text-ink-500 dark:text-ink-400">
-            waiting ~{s.eta_seconds}s for {s.alert} to fire
+
+        {/* Lifecycle feedback below the actions. */}
+        {state === 'arming' && (
+          <div className="mt-3">
+            <div className="h-1 w-full overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800">
+              <span className="block h-full w-1/3 animate-progress-indeterminate rounded-full bg-warn" />
+            </div>
+            <p className="mt-1.5 text-[11px] text-warn">
+              waiting ~{s.eta_seconds}s for <span className="font-mono">{s.alert}</span> to fire
+            </p>
+          </div>
+        )}
+        {state === 'firing' && (
+          <p className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-medium text-bad">
+            <span className="h-1.5 w-1.5 rounded-full bg-bad animate-pulse-slow" />
+            <span className="font-mono">{s.alert}</span> firing — triage running
           </p>
         )}
       </div>

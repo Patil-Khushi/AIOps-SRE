@@ -40,10 +40,10 @@ export interface PortalProgress {
   onWheel: (e: React.WheelEvent | WheelEvent) => void;
 }
 
-export function usePortalProgress(): PortalProgress {
-  const [progress, setProgressState] = useState(0);
+export function usePortalProgress(initial = 0): PortalProgress {
+  const [progress, setProgressState] = useState(initial);
   const [wheelEventCount, setWheelEventCount] = useState(0);
-  const progressRef = useRef(0);
+  const progressRef = useRef(initial);
   const autoAdvancingRef = useRef(false);
   const [autoAdvancing, setAutoAdvancing] = useState(false);
 
@@ -128,7 +128,9 @@ export function usePortalProgress(): PortalProgress {
   const [autoAdvanceStarted, setAutoAdvanceStarted] = useState(false);
 
   useEffect(() => {
-    if (progress >= AUTO_ADVANCE_AT && !autoAdvanceStarted) {
+    // Don't kick off the auto-advance when we start already-booted (initial=1,
+    // i.e. a returning visitor skipping the intro) — only on a real ascent.
+    if (progress >= AUTO_ADVANCE_AT && progress < 1 && !autoAdvanceStarted) {
       setAutoAdvanceStarted(true);
     }
   }, [progress, autoAdvanceStarted]);

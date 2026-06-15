@@ -1,8 +1,13 @@
+import { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import { markEntered } from '@/lib/consoleScope';
 
 export default function Layout() {
+  // Inside the operations console → mark the app as entered so the landing
+  // animation never replays on a later "/" visit.
+  useEffect(() => markEntered(), []);
   return (
     <div className="flex min-h-screen w-full">
       <Sidebar />

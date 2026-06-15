@@ -66,11 +66,18 @@ export default {
         'slide-up':   'slideUp 0.25s ease-out',
         'vibrant':    'vibrantFlow 15s ease-in-out infinite',
         'scroll-bounce': 'scrollBounce 2s cubic-bezier(0.65, 0, 0.35, 1) infinite',
+        // Indeterminate progress sweep — used by the "arming" scenario bar
+        // while a flag is flipped but its alert hasn't fired yet.
+        'progress-indeterminate': 'progressIndeterminate 1.4s cubic-bezier(0.65, 0, 0.35, 1) infinite',
       },
       keyframes: {
         fadeIn: {
           '0%': { opacity: '0' },
           '100%': { opacity: '1' },
+        },
+        progressIndeterminate: {
+          '0%':   { transform: 'translateX(-110%)' },
+          '100%': { transform: 'translateX(320%)' },
         },
         slideUp: {
           '0%': { opacity: '0', transform: 'translateY(8px)' },

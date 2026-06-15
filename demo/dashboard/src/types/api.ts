@@ -176,6 +176,26 @@ export interface SystemPodsResponse {
   not_ready_count: number;
 }
 
+// ── HITL approvals (the human-in-the-loop) ──────────────────────────────────
+export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
+
+export interface ApprovalRecord {
+  id: string;
+  action: string;                       // capability, e.g. "rca.fix_step.execute"
+  context: Record<string, unknown>;     // flag/variant/deployment/reason/...
+  status: ApprovalStatus;
+  requested_at: string;
+  expires_at: string;
+  decided_at: string | null;
+  approver: string | null;
+  reason: string;
+}
+
+export interface ApprovalsResponse {
+  count: number;
+  approvals: ApprovalRecord[];
+}
+
 // ─── Knowledge Synthesizer (PRS-007) ───────────────────────────────────────
 // Mirrors agents/knowledge_synthesizer/models.py and the
 // demo/ui/knowledge_routes.py route shapes.

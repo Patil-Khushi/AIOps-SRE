@@ -1,5 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import type {
+  ApprovalRecord,
+  ApprovalsResponse,
   HealthResponse,
   KbListResponse,
   KBArticleRow,
@@ -101,6 +103,19 @@ export const api = {
       variant?: string;
       error?: string | null;
     }>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
+
+  // ── HITL approval loop ──────────────────────────────────────────────────
+  approvals: (includeResolved = false) =>
+    unwrap<ApprovalsResponse>(
+      http.get('/api/approvals', { params: { include_resolved: includeResolved } }),
+    ),
+  // No bearer token is sent from the browser: the dashboard is served
+  // same-origin by the demo server, which authorizes its own console against
+  // AIOPS_HITL_APPROVAL_TOKEN internally. The secret stays in the backend env.
+  approve: (id: string, approver: string, reason = '') =>
+    unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/approve`, { approver, reason })),
+  deny: (id: string, approver: string, reason = '') =>
+    unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/deny`, { approver, reason })),
 
   // ─── Knowledge Synthesizer (PRS-007) ──────────────────────────────────────
   // Synthesize a resolved-incident bundle → postmortem + runbook + KB draft.

@@ -134,4 +134,31 @@
 
 /* ── Typewriter caret. ───────────────────────────────────────────── */
 @keyframes caretBlink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+/* ── Operations console components (ink theme, light + dark). These were
+      referenced across the /console pages but never defined. ────────── */
+@layer components {
+  .card {
+    @apply rounded-xl border border-ink-200 bg-white shadow-card dark:border-ink-700 dark:bg-ink-900;
+  }
+  .card-body { @apply p-5; }
+  .input {
+    @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900
+           placeholder:text-ink-400 outline-none transition-colors
+           focus:border-accent dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold
+           transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary { @apply bg-accent text-white hover:bg-accent-hover; }
+  .btn-ghost {
+    @apply border border-ink-200 bg-white text-ink-700 hover:bg-ink-100
+           dark:border-ink-700 dark:bg-ink-900 dark:text-ink-200 dark:hover:bg-ink-800;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md bg-ink-100 px-2 py-0.5 text-[11px]
+           font-medium text-ink-600 dark:bg-ink-800 dark:text-ink-300;
+  }
+}
 .typewriter-caret { animation: caretBlink 1s steps(2, end) infinite; }

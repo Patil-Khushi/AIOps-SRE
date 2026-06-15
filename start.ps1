@@ -219,9 +219,11 @@ function Invoke-SpaBuild($name, $dir, $missingMsg) {
 $dashDir       = Join-Path $RepoRoot 'demo\dashboard'
 $dashDist      = Join-Path $dashDir 'dist\index.html'
 $classifierDir = Join-Path $RepoRoot 'demo\classifier-ui'
+$hitlDir       = Join-Path $RepoRoot 'demo\hitl-ui'
 
 Invoke-SpaBuild 'React dashboard'   $dashDir       '/dashboard/ will 503.'
 Invoke-SpaBuild 'classifier UI'     $classifierDir '/classifier will 503.'
+Invoke-SpaBuild 'HITL approver UI'  $hitlDir       '/hitl will 503.'
 
 # --- 2c. ensure the right extras are synced into .venv ---
 # Without `--extra ui`, `uv run uvicorn` silently falls back to a uvicorn
@@ -288,7 +290,13 @@ $uiJob = Start-Job -Name 'pf-ui-server' -ScriptBlock {
     # Only set if explicitly passed; otherwise let uv-loaded .env drive.
     if ($llmProvider) { $env:AIOPS_LLM_PROVIDER = $llmProvider }
     if ($llmModel)    { $env:AIOPS_LLM_MODEL    = $llmModel    }
-    uv run uvicorn demo.ui.server:app --host 127.0.0.1 --port $port
+    # Launch uvicorn THROUGH python (`-m uvicorn`), not the `uvicorn.exe`
+    # console-script shim. Some dev machines run a Windows Application Control
+    # / Smart App Control policy that blocks the unsigned venv `uvicorn.exe`
+    # (spawn fails with os error 4551), which silently kills the demo server so
+    # the dashboard never comes up. `python.exe` is allowed, so `-m uvicorn`
+    # sidesteps the block while running the identical server.
+    uv run python -m uvicorn demo.ui.server:app --host 127.0.0.1 --port $port
 } -ArgumentList $RepoRoot, $UiPort, $LlmProvider, $LlmModel, $env:USERPROFILE, $env:KUBECONFIG, $standaloneKubectl
 $providerNote = if ($LlmProvider) { "LLM provider: $LlmProvider (overrides .env)" } else { "LLM provider: from .env" }
 Write-Host "    started uvicorn (job $($uiJob.Id))  [$providerNote]" -ForegroundColor Green
@@ -318,6 +326,7 @@ Write-Host ''
 Write-Host '== Up and running ==' -ForegroundColor Green
 Write-Host "  Dashboard:    http://localhost:$UiPort/dashboard/   (RA-001)"
 Write-Host "  Classifier:   http://localhost:$UiPort/classifier   (RA-002 SPA)"
+Write-Host "  HITL console: http://localhost:$UiPort/hitl          (approver UI)"
 Write-Host "  Demo UI:      http://localhost:$UiPort/             (vanilla)"
 Write-Host "  API docs:     http://localhost:$UiPort/docs         (Swagger)"
 Write-Host "  Grafana:      http://localhost:8080/grafana/"

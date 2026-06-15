@@ -299,6 +299,57 @@ def test_approve_rejects_wrong_bearer_token_when_token_set(client: TestClient, m
     assert reg.get(req.id).status is ApprovalStatus.PENDING
 
 
+def test_approve_accepts_same_origin_console_without_bearer_when_token_set(
+    client: TestClient, monkeypatch
+):
+    """Token set + a matching same-origin Origin → authorized without a bearer
+    header. This is the browser-console path the dashboard/hitl-ui rely on after
+    dropping the manual token field."""
+    monkeypatch.setenv("AIOPS_HITL_APPROVAL_TOKEN", "s3cret")
+    reg = get_approval_registry()
+    req = reg.create("rca.fix_step.execute", {})
+    res = client.post(
+        f"/api/approvals/{req.id}/approve",
+        json={"approver": "console-operator"},
+        headers={"Origin": "http://testserver"},
+    )
+    assert res.status_code == 200
+    assert reg.get(req.id).status is ApprovalStatus.APPROVED
+
+
+def test_deny_accepts_same_origin_console_via_referer_when_token_set(
+    client: TestClient, monkeypatch
+):
+    monkeypatch.setenv("AIOPS_HITL_APPROVAL_TOKEN", "s3cret")
+    reg = get_approval_registry()
+    req = reg.create("rca.fix_step.execute", {})
+    res = client.post(
+        f"/api/approvals/{req.id}/deny",
+        json={"approver": "console-operator"},
+        headers={"Referer": "http://testserver/console/approvals"},
+    )
+    assert res.status_code == 200
+    assert reg.get(req.id).status is ApprovalStatus.DENIED
+
+
+def test_approve_rejects_cross_origin_without_bearer_when_token_set(
+    client: TestClient, monkeypatch
+):
+    """A cross-origin/non-matching Origin is NOT trusted — those callers still
+    must present the bearer token (HITL-2 #102 stays intact)."""
+    monkeypatch.setenv("AIOPS_HITL_APPROVAL_TOKEN", "s3cret")
+    reg = get_approval_registry()
+    req = reg.create("rca.fix_step.execute", {})
+    res = client.post(
+        f"/api/approvals/{req.id}/approve",
+        json={"approver": "x"},
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert res.status_code == 401
+    assert res.json()["detail"] == "invalid approval token"
+    assert reg.get(req.id).status is ApprovalStatus.PENDING
+
+
 def test_approve_rejects_wrong_scheme_when_token_set(client: TestClient, monkeypatch):
     """Same 401 / same detail whether the header is missing, the scheme is
     wrong (Basic, Token, etc.), or the token value is wrong — no side
