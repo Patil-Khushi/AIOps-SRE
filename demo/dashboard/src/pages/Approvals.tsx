@@ -71,6 +71,13 @@ export default function Approvals() {
       else await api.deny(req.id, approver.trim(), 'Denied from console');
       setOptimistic((o) => ({ ...o, [req.id]: kind === 'approve' ? 'approved' : 'denied' }));
       await refetch();
+      // Server is now the source of truth for this id — drop the optimistic
+      // override so the two consoles don't diverge.
+      setOptimistic((o) => {
+        const next = { ...o };
+        delete next[req.id];
+        return next;
+      });
     } catch (e) {
       setActionError(e instanceof ApiError ? `${e.status} · ${e.message}` : String(e));
     } finally {

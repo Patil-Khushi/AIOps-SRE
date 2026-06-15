@@ -29,6 +29,7 @@ export default function RcaConsole() {
   const location = useLocation();
   const wantedService = (location.state as { service?: string } | null)?.service;
   const handedOff = useRef(false);
+  const handoffAttempts = useRef(0);
 
   const results = verdicts.data?.results ?? [];
   const list: TriageVerdict[] = results.map((r) => r.verdict);
@@ -59,12 +60,23 @@ export default function RcaConsole() {
   // When arriving from Alert Triage, preselect the matching incident and run
   // RCA automatically — one click on "Generate RCA" lands you on the result.
   useEffect(() => {
-    if (handedOff.current || !wantedService || list.length === 0) return;
+    if (handedOff.current || !wantedService) return;
     const idx = list.findIndex((v) => v.affected_service === wantedService);
     if (idx >= 0) {
       handedOff.current = true;
       setSelectedIdx(idx);
       runRca(list[idx]);
+      return;
+    }
+    // The just-triaged verdict may not be in this snapshot yet (intervalMs: 0,
+    // one-shot). Retry a few times so the hand-off from "Generate RCA" is
+    // deterministic instead of a silent miss when findIndex returns -1.
+    if (handoffAttempts.current < 5) {
+      const t = setTimeout(() => {
+        handoffAttempts.current += 1;
+        verdicts.refetch();
+      }, 1200);
+      return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verdicts.data, wantedService]);

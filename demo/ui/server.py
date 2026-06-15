@@ -953,6 +953,33 @@ class ApprovalDecisionRequest(BaseModel):
     reason: str = Field("", description="Optional free-text justification")
 
 
+def _is_same_origin_console(request: Request) -> bool:
+    """True when the request looks like it came from this app's own console.
+
+    The dashboard and the /hitl approver are served same-origin by this very
+    FastAPI app, so a browser approve/deny carries an ``Origin`` (or
+    ``Referer``) whose host equals the request's own ``Host``. We use that as
+    the signal to authorize the served console without a bearer token.
+
+    This is a *convenience for the browser console*, not a hardened boundary:
+    ``Origin``/``Referer`` are trivially forgeable by a non-browser client, so
+    a determined caller could set a matching header. Cross-origin/programmatic
+    callers that send no matching header still must present the bearer token.
+    A hardened deployment should replace this with a server-set HttpOnly
+    session cookie or OPA identity.
+    """
+    from urllib.parse import urlparse
+
+    host = (request.headers.get("host") or "").strip().lower()
+    if not host:
+        return False
+    source = request.headers.get("origin") or request.headers.get("referer") or ""
+    if not source:
+        return False
+    netloc = urlparse(source).netloc.strip().lower()
+    return bool(netloc) and netloc == host
+
+
 def _require_approval_token(request: Request) -> None:
     """Authenticate the web approve/deny endpoints against
     ``AIOPS_HITL_APPROVAL_TOKEN``.
@@ -960,8 +987,10 @@ def _require_approval_token(request: Request) -> None:
     Phase 1 of HITL-2 (#102): a lightweight shared-secret bearer-token
     check.  When the env var is **unset** we accept every request so the
     current localhost-only demo flow keeps working (the startup hook
-    above logs a loud warning).  When **set**, callers must present
-    ``Authorization: Bearer <token>`` and we compare it with
+    above logs a loud warning).  When **set**, the same-origin browser
+    console (dashboard / hitl-ui) is authorized automatically — see
+    :func:`_is_same_origin_console` and its limitations — while every other
+    caller must present ``Authorization: Bearer <token>``, compared with
     ``hmac.compare_digest`` for constant-time matching.
 
     All failure modes raise the *same* 401 with the *same* detail so a
@@ -976,6 +1005,11 @@ def _require_approval_token(request: Request) -> None:
     """
     token = os.environ.get("AIOPS_HITL_APPROVAL_TOKEN", "").strip()
     if not token:
+        return
+    # Same-origin browser console (dashboard / hitl-ui) is authorized without a
+    # bearer token so the operator never pastes the secret into the UI. See
+    # _is_same_origin_console for the (deliberate) limitation.
+    if _is_same_origin_console(request):
         return
     auth = request.headers.get("authorization", "")
     presented = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""

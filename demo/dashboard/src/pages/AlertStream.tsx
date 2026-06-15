@@ -84,7 +84,7 @@ export default function AlertStream() {
             Real-time alert stream
           </h1>
           <p className="mt-1 text-sm text-ink-500 dark:text-ink-400">
-            Pushed from Prometheus over WebSocket Â· {alerts.length} firing Â· stream {status}
+            Pushed from Prometheus over WebSocket · {alerts.length} firing · stream {status}
           </p>
         </div>
         {lastUpdate && <span className="chip">updated {timeAgo(lastUpdate)}</span>}
@@ -98,7 +98,7 @@ export default function AlertStream() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search by service, metric, alert IDâ€¦"
+              placeholder="Search by service, metric, alert ID…"
               className="input pl-9"
             />
           </div>
