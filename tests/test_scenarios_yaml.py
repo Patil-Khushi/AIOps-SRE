@@ -29,11 +29,20 @@ UI_REQUIRED = {
     "title",
     "description",
     "eta_seconds",
+    # ``severity`` drives the injected alert's severity_hint so dashboard
+    # injects classify across the full Sev-1..Sev-3 range instead of all
+    # landing on Sev-2 (see demo/ui/server.py::_synthetic_alert_for_scenario
+    # and agents/alert_triage/agent.py::_classify_severity_rule_based).
+    # Required so the data and this contract can't silently drift apart.
+    "severity",
 }
 UI_OPTIONAL = {"variant_on"}
 UI_ALLOWED = UI_REQUIRED | UI_OPTIONAL
 
 VALID_CATEGORIES = {"errors", "latency", "capacity", "infra"}
+# Maps to RA-001's severity_hint buckets: critical→Sev-1 (page),
+# high→Sev-2 (notify), warning→Sev-3 (daytime).
+VALID_SEVERITIES = {"critical", "high", "warning"}
 
 # CLI-runnable schema (flavour 2) — driven by the presence of ``mechanism``.
 CLI_REQUIRED = {"id", "title", "description", "mechanism"}
@@ -85,6 +94,9 @@ def test_scenario_file_passes_schema(path: Path):
         assert not extra, f"{path.name}: UI scenario has unknown fields {extra}"
         assert data["category"] in VALID_CATEGORIES, (
             f"{path.name}: category {data['category']!r} not in {sorted(VALID_CATEGORIES)}"
+        )
+        assert data["severity"] in VALID_SEVERITIES, (
+            f"{path.name}: severity {data['severity']!r} not in {sorted(VALID_SEVERITIES)}"
         )
         assert isinstance(data["eta_seconds"], int) and data["eta_seconds"] > 0, (
             f"{path.name}: eta_seconds must be a positive int"

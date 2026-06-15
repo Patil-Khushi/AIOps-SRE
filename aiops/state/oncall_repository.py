@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 # lookup would pick. Incident-scale, not shift-scale — long enough to span
 # a demo's inject → reset → re-inject loop, short enough that tomorrow's
 # alert on the same service rotates normally.
+#
+# Keyed on (service, time) only — NOT on cluster_key or incident_id — so two
+# *genuinely separate* incidents on the same service inside the window both
+# re-page the first owner. That is the intended trade-off here: continuity for
+# the common "same incident re-fires" case beats correctly splitting the rare
+# "second unrelated incident, same service, within 2h" case. Tighten to a
+# cluster_key/incident_id match if that rare case ever matters.
 _STICKY_WINDOW = timedelta(hours=2)
 
 # Load window: assignments inside this horizon count against an engineer in

@@ -117,6 +117,11 @@ export interface ChatNotification {
   timestamp: string;
   channel: string;
   severity: ChatSeverity;
+  // Authoritative human-response mode RA-005 decided (page | notify | log) —
+  // carried on the live WS frame (to_record) and persisted on the row.
+  // Optional for frames/rows written before it existed. Prefer this over a
+  // severity-only guess: it also reflects business hours.
+  response_mode?: string;
   title: string;
   body: string;
   incident_id: string | null;
@@ -135,6 +140,7 @@ export interface PersistedNotification {
   channel: string;
   target: string;
   chat_severity: string;
+  response_mode: string | null;
   title: string;
   body: string;
   service: string | null;

@@ -403,6 +403,7 @@ def save_notification(decision: Any, verdict_id: int) -> int:
         # ``chat_severity`` is the chatops enum — accept either the enum or
         # its string value so this is robust to whatever the agent emits.
         chat_severity=getattr(decision.chat_severity, "value", str(decision.chat_severity)),
+        response_mode=getattr(decision, "response_mode", None),
         title=decision.title,
         body=decision.body,
         service=service,
@@ -453,6 +454,7 @@ def _notification_row_to_dict(row: NotificationRow) -> dict[str, Any]:
         "channel": row.channel,
         "target": row.target,
         "chat_severity": row.chat_severity,
+        "response_mode": row.response_mode,
         "title": row.title,
         "body": row.body,
         "service": row.service,

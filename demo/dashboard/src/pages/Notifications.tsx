@@ -36,13 +36,25 @@ const KNOWN_SEVERITIES: ReadonlySet<string> = new Set(['p0', 'p1', 'p2', 'p3', '
 
 // Response mode shown as a badge so an operator sees at a glance whether a
 // human is being woken (PAGE) or it's an async heads-up (NOTIFY) or just
-// recorded (LOG). Derived from chat severity so it works identically for
-// live WS frames and persisted backfill rows (which don't store the mode).
+// recorded (LOG).
 type ResponseMode = 'PAGE' | 'NOTIFY' | 'LOG';
 
-function responseFor(sev: ChatSeverity): ResponseMode {
-  if (sev === 'p0' || sev === 'p1') return 'PAGE';
-  if (sev === 'p2' || sev === 'p3') return 'NOTIFY';
+// Prefer the authoritative response_mode RA-005 decided (carried on the live
+// WS frame and persisted on the row): it also factors in business hours, so a
+// Sev-2 paged after-hours is "page" — a severity-only guess would render the
+// opposite of what the bot did. Fall back to a severity heuristic only for
+// rows written before response_mode existed.
+function responseFor(n: ChatNotification): ResponseMode {
+  switch ((n.response_mode ?? '').toLowerCase()) {
+    case 'page':
+      return 'PAGE';
+    case 'notify':
+      return 'NOTIFY';
+    case 'log':
+      return 'LOG';
+  }
+  if (n.severity === 'p0' || n.severity === 'p1') return 'PAGE';
+  if (n.severity === 'p2' || n.severity === 'p3') return 'NOTIFY';
   return 'LOG';
 }
 
@@ -68,6 +80,7 @@ function fromPersisted(row: PersistedNotification): ChatNotification {
     timestamp: row.routed_at ?? '',
     channel: row.channel,
     severity: (KNOWN_SEVERITIES.has(sev) ? sev : 'info') as ChatSeverity,
+    response_mode: row.response_mode ?? undefined,
     title: row.title,
     body: row.body,
     incident_id: null,
@@ -182,7 +195,7 @@ export default function Notifications() {
 
 function NotificationRow({ n }: { n: ChatNotification }) {
   const displaySev = CHAT_TO_DISPLAY[n.severity];
-  const response = responseFor(n.severity);
+  const response = responseFor(n);
   return (
     <li className="card">
       <div className="card-body !py-3">
