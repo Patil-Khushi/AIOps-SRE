@@ -1,21 +1,32 @@
-"""Seed the on-call DB with 5 placeholder engineers across 3 teams.
+"""Seed the on-call DB: 5 placeholder engineers covering every CMDB team.
 
 Run:
     uv run python -m scripts.seed_oncall
 
-Idempotent: re-running is a no-op if the engineers' emails already exist.
-Use ``--force`` to wipe and re-seed.
+Idempotent: re-running is a no-op if the engineers' emails already exist
+(shifts, categories, and expertise are refreshed on every run). Use
+``--force`` to wipe and re-seed engineers too.
 
-What this seeds (placeholder data; real values come from
+Coverage model: every team in ``aiops/tools/itsm/_demo_cmdb.py`` gets a
+**day owner** (00..12 UTC) and an **evening owner** (12..24 UTC), all
+seven days — see ``_TEAM_OWNERS`` below. Before this, only Payments Team
+and Order Experience had team-specific shifts, so every other demo
+service (product-catalog, ad, recommendation, email, …) fell through to
+the global wildcard escalation and paged the same engineer every time.
+Spreading day/evening ownership across all five engineers is what makes
+dashboard failure injection assign uniformly instead of always paging
+the wildcard manager.
+
+Engineers (placeholder data; real values come from
 ``AIOPS_ONCALL_ROSTER_JSON`` in ``.env.shared``):
 
-| Key (stable) | Name    | Team             | Skills                    | Shift (UTC)              | Role                 |
-|--------------|---------|------------------|---------------------------|--------------------------|----------------------|
-| chinmay      | Chinmay | Payments Team    | payments, kafka           | Mon-Fri 03..12 UTC       | primary              |
-| riya         | Riya    | Payments Team    | payments, kubernetes      | Mon-Fri 11..20 UTC       | primary (evening)    |
-| arjun        | Arjun   | Order Experience | cart, checkout, payments  | Mon-Fri 03..12 UTC       | primary              |
-| meera        | Meera   | Order Experience | cart, kubernetes          | Mon-Fri 11..20 UTC       | primary (evening)    |
-| vikram       | Vikram  | Platform         | kubernetes, observability | All days, always-on      | manager_escalation   |
+| Key (stable) | Name    | Primary team     | Day owner of (00..12 UTC)               | Evening owner of (12..24 UTC)            |
+|--------------|---------|------------------|------------------------------------------|------------------------------------------|
+| chinmay      | Chinmay | Payments Team    | Payments, Pricing, Finance Systems       | Catalog, Assets                          |
+| riya         | Riya    | Payments Team    | Catalog, Communications, Web Experience  | Payments, Personalization                |
+| arjun        | Arjun   | Order Experience | Order Exp., Personalization, Trust & Saf.| Ads, Fulfillment                         |
+| meera        | Meera   | Order Experience | Ads, Assets                              | Order Exp., Communications, Web Exp.     |
+| vikram       | Vikram  | Platform         | Platform On-Call (24x7) + global wildcard| Pricing, Finance Systems, Trust & Safety |
 
 Shifts + expertise reference engineers by ``key`` (not email), so an
 env override can rewrite name/email/slack_* fields without breaking the
@@ -172,25 +183,49 @@ def _resolve_engineers() -> list[dict]:
     return merged
 
 
+# Team ownership: (team, day_owner_key, evening_owner_key). Every CMDB team
+# (aiops/tools/itsm/_demo_cmdb.py) appears here so no demo service falls
+# through to the wildcard escalation. Ownership is spread so each engineer
+# fronts a similar slice of the dashboard's injectable scenarios (day shift):
+#   chinmay → payment_* (2)             riya  → product-catalog, email, frontend (4)
+#   arjun   → cart, checkout, reco (3)  meera → ad_* (3)
+#   vikram  → unmapped services (Platform On-Call default) + wildcard
+_TEAM_OWNERS: list[tuple[str, str, str]] = [
+    ("Payments Team", "chinmay", "riya"),
+    ("Order Experience", "arjun", "meera"),
+    ("Catalog Team", "riya", "chinmay"),
+    ("Personalization Team", "arjun", "riya"),
+    ("Web Experience", "riya", "meera"),
+    ("Ads Team", "meera", "arjun"),
+    ("Pricing Team", "chinmay", "vikram"),
+    ("Fulfillment Team", "arjun", "vikram"),
+    ("Communications", "riya", "meera"),
+    ("Assets Team", "meera", "chinmay"),
+    ("Trust and Safety", "arjun", "vikram"),
+    ("Finance Systems", "chinmay", "vikram"),
+    ("Platform On-Call", "vikram", "vikram"),
+]
+
 # Shifts keyed by engineer ``key`` (not email) so env overrides can swap
 # emails without breaking the join.
 # Format: (engineer_key, team, day_of_week, start_hour_utc, end_hour_utc, role)
 # Days are 0=Mon..6=Sun (matches datetime.weekday).
-# Daily coverage:
-#   Day shift   = 03..12 UTC  (~ 08:30..17:30 IST)
-#   Evening     = 11..20 UTC  (~ 16:30..01:30 IST)
+# Daily coverage, all seven days:
+#   Day shift   = 00..12 UTC  (~ 05:30..17:30 IST)
+#   Evening     = 12..24 UTC  (~ 17:30..05:30 IST)
 #   Manager     = 24/7 (any day, any hour) — managed by the repository's
 #                 special-case for role='manager_escalation' so the hours
 #                 stored here are advisory only.
+# Full-day, full-week coverage per team is deliberate: a weekend or
+# late-night demo must page the team's owner, not silently degrade every
+# assignment to the wildcard escalation engineer.
 SHIFTS: list[tuple[str, str, int, int, int, str]] = [
-    # Chinmay — Payments Team, weekdays day shift.
-    *[("chinmay", "Payments Team", dow, 3, 12, "primary") for dow in range(0, 5)],
-    # Riya — Payments Team, weekdays evening shift.
-    *[("riya", "Payments Team", dow, 11, 20, "primary") for dow in range(0, 5)],
-    # Arjun — Order Experience, weekdays day shift.
-    *[("arjun", "Order Experience", dow, 3, 12, "primary") for dow in range(0, 5)],
-    # Meera — Order Experience, weekdays evening shift.
-    *[("meera", "Order Experience", dow, 11, 20, "primary") for dow in range(0, 5)],
+    *[
+        (owner, team, dow, start, end, "primary")
+        for team, day_owner, eve_owner in _TEAM_OWNERS
+        for owner, start, end in ((day_owner, 0, 12), (eve_owner, 12, 24))
+        for dow in range(0, 7)
+    ],
     # Vikram — GLOBAL manager_escalation, always-on. Tagged with the
     # special team key "*" so the repository falls back here for ANY
     # team that has no other coverage (a Sev-1 on an OTel-demo service
@@ -241,27 +276,112 @@ CATEGORIES: list[dict] = [
         "team": "Order Experience",
         "keywords_csv": "checkout,order,placement,confirmation,delivery,shipping",
     },
-    # ── Platform sub-domains ─────────────────────────────────────────
+    # ── Platform On-Call sub-domains ─────────────────────────────────
+    # Team string matches the CMDB default (aiops/tools/itsm/_demo_cmdb.py:
+    # CMDB_DEFAULT) — alerts on unmapped services (kafka, loadgen, …) are
+    # assigned to "Platform On-Call", and category teams must equal the
+    # verdict's assigned_team exactly for expertise routing to engage.
     {
         "name": "kubernetes-platform",
         "display_name": "Kubernetes Platform",
         "description": "K8s control-plane / cluster-wide issues: pod evictions, scheduler problems, etcd lag, kubelet failures.",
-        "team": "Platform",
+        "team": "Platform On-Call",
         "keywords_csv": "kubernetes,k8s,pod,deployment,kubelet,etcd,scheduler,eviction,node",
     },
     {
         "name": "observability",
         "display_name": "Observability Stack",
         "description": "Monitoring stack issues: Prometheus, Grafana, Jaeger, Loki, OTel collector.",
-        "team": "Platform",
+        "team": "Platform On-Call",
         "keywords_csv": "prometheus,grafana,jaeger,tempo,loki,trace,metric,otel,collector",
     },
     {
         "name": "networking",
         "display_name": "Networking & CDN",
         "description": "Network, CDN, DNS, ingress, proxy, TLS — anything between client and service.",
-        "team": "Platform",
+        "team": "Platform On-Call",
         "keywords_csv": "network,cdn,dns,ingress,proxy,tls,latency,timeout,connection",
+    },
+    {
+        "name": "platform-infra",
+        "display_name": "Platform Infrastructure",
+        "description": "Shared infra services: Kafka pipelines, load generators, queues — anything owned by nobody else.",
+        "team": "Platform On-Call",
+        "keywords_csv": "kafka,queue,backpressure,lag,consumer,loadgen,flood,infra,saturation",
+    },
+    # ── One sub-domain per newly-covered team ────────────────────────
+    # Keywords are matched against tokens (≥3 chars, lowercase) pulled from
+    # affected_service + alert_summary + runbook by RA-005 — favour the
+    # words the OTel-demo alert rules actually put in their summaries.
+    {
+        "name": "catalog-service",
+        "display_name": "Product Catalog",
+        "description": "Product catalog lookups: error spikes, slow product queries, stale inventory data.",
+        "team": "Catalog Team",
+        "keywords_csv": "product,catalog,sku,inventory,slow,latency,errors",
+    },
+    {
+        "name": "personalization",
+        "display_name": "Personalization & Recommendations",
+        "description": "Recommendation service issues: cache failures, model staleness, empty recommendation lists.",
+        "team": "Personalization Team",
+        "keywords_csv": "recommendation,recommendations,cache,personalization,model",
+    },
+    {
+        "name": "web-frontend",
+        "display_name": "Web Frontend",
+        "description": "Storefront web tier: page latency, asset loading, frontend proxy errors.",
+        "team": "Web Experience",
+        "keywords_csv": "frontend,web,browser,page,proxy,latency,render",
+    },
+    {
+        "name": "ads-serving",
+        "display_name": "Ads Serving",
+        "description": "Ad service issues: creative serving errors, CPU saturation, GC pauses.",
+        "team": "Ads Team",
+        "keywords_csv": "ads,adservice,creative,cpu,garbage,collection,pauses",
+    },
+    {
+        "name": "pricing-fx",
+        "display_name": "Pricing & FX",
+        "description": "Currency conversion and quote issues: stale FX rates, conversion errors, pricing drift.",
+        "team": "Pricing Team",
+        "keywords_csv": "currency,pricing,quote,exchange,conversion,rates",
+    },
+    {
+        "name": "fulfillment-shipping",
+        "display_name": "Fulfillment & Shipping",
+        "description": "Shipping quote and tracking issues: carrier API failures, slow quote responses.",
+        "team": "Fulfillment Team",
+        "keywords_csv": "shipping,fulfillment,delivery,tracking,carrier,warehouse",
+    },
+    {
+        "name": "email-delivery",
+        "display_name": "Email Delivery",
+        "description": "Transactional email issues: SMTP failures, memory leaks in the mailer, bounce storms.",
+        "team": "Communications",
+        "keywords_csv": "email,smtp,memory,rss,leak,bounce,mailer",
+    },
+    {
+        "name": "asset-delivery",
+        "display_name": "Asset Delivery",
+        "description": "Image/static asset serving: slow image loads, missing assets, provider timeouts.",
+        "team": "Assets Team",
+        "keywords_csv": "image,images,asset,assets,slow,load,provider",
+    },
+    {
+        "name": "trust-safety",
+        "display_name": "Trust & Safety",
+        "description": "Fraud detection pipeline issues: scoring failures, rule-engine errors, queue buildup.",
+        "team": "Trust and Safety",
+        "keywords_csv": "fraud,detection,abuse,risk,scoring",
+    },
+    {
+        "name": "finance-systems",
+        "display_name": "Finance Systems",
+        "description": "Accounting/ledger issues: posting failures, reconciliation lag, billing errors.",
+        "team": "Finance Systems",
+        "keywords_csv": "accounting,ledger,finance,billing,reconciliation",
     },
 ]
 
@@ -288,6 +408,28 @@ EXPERTISE: list[tuple[str, str, str, int, float, int]] = [
     ("vikram", "kubernetes-platform", "expert", 25, 4.8, 0),
     ("vikram", "observability", "expert", 18, 4.5, 0),
     ("vikram", "networking", "intermediate", 5, 4.0, 0),
+    ("vikram", "platform-infra", "expert", 16, 4.6, 0),
+    # ── newly-covered teams: day owner expert, evening owner backup ──
+    ("riya", "catalog-service", "expert", 11, 4.4, 0),
+    ("chinmay", "catalog-service", "intermediate", 4, 3.9, 0),
+    ("arjun", "personalization", "expert", 9, 4.3, 0),
+    ("riya", "personalization", "intermediate", 3, 3.8, 0),
+    ("riya", "web-frontend", "expert", 12, 4.5, 0),
+    ("meera", "web-frontend", "intermediate", 4, 3.9, 0),
+    ("meera", "ads-serving", "expert", 8, 4.2, 0),
+    ("arjun", "ads-serving", "intermediate", 3, 3.7, 0),
+    ("chinmay", "pricing-fx", "expert", 7, 4.3, 0),
+    ("vikram", "pricing-fx", "intermediate", 2, 3.8, 0),
+    ("arjun", "fulfillment-shipping", "expert", 6, 4.1, 0),
+    ("vikram", "fulfillment-shipping", "intermediate", 2, 3.7, 0),
+    ("riya", "email-delivery", "expert", 10, 4.4, 0),
+    ("meera", "email-delivery", "intermediate", 3, 3.8, 0),
+    ("meera", "asset-delivery", "expert", 9, 4.3, 0),
+    ("chinmay", "asset-delivery", "intermediate", 3, 3.8, 0),
+    ("arjun", "trust-safety", "expert", 5, 4.0, 0),
+    ("vikram", "trust-safety", "intermediate", 2, 3.7, 0),
+    ("chinmay", "finance-systems", "expert", 6, 4.2, 0),
+    ("vikram", "finance-systems", "intermediate", 2, 3.8, 0),
 ]
 
 

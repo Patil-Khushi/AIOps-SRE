@@ -114,6 +114,10 @@ def _resolve_oncall(verdict: TriageVerdict) -> dict | None:
             "oncall.schedule.lookup",
             team=verdict.assigned_team,
             category_keywords=keywords,
+            # Sticky assignment: RA-001 saved its verdict before we run, so
+            # this resolves to the SAME engineer the verdict names instead
+            # of letting expertise scoring pick someone else mid-chain.
+            service=verdict.affected_service,
         )
     except KeyError:
         return None
@@ -140,10 +144,63 @@ def _mentions_from(verdict: TriageVerdict, oncall: dict | None) -> list[str]:
     return [f"@{verdict.assigned_engineer}"]
 
 
+def _response_mode(sev: TriageSev, in_hours: bool) -> str:
+    """Map severity (+ business hours) to a human-response mode.
+
+    * ``page``   — wake the on-call now: Sev-1 always; Sev-2 after hours.
+    * ``notify`` — assign + personal heads-up, review when free: Sev-2 in
+      hours, Sev-3.
+    * ``log``    — record only, page nobody: Sev-4 noise.
+    """
+    if sev == "Sev-1":
+        return "page"
+    if sev == "Sev-2":
+        return "notify" if in_hours else "page"
+    if sev == "Sev-3":
+        return "notify"
+    return "log"
+
+
+# One-line label rendered into the chat body so the reader sees the
+# intended human response without decoding the severity themselves. Plain
+# ASCII on purpose — this string lands in the JSONL audit log and SQLite on
+# a Windows (cp1252) host, where a stray emoji can break a non-UTF-8 writer.
+# The dashboard adds its own colored PAGE/NOTIFY/LOG badge.
+_RESPONSE_LABEL: dict[str, str] = {
+    "page": "PAGE - on-call paged now",
+    "notify": "NOTIFY - assigned, review when free",
+    "log": "LOG - recorded, no page",
+}
+
+
+def _assignee_from(
+    verdict: TriageVerdict, oncall: dict | None
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve (slack_handle, name, email) of the owning engineer.
+
+    Kept separate from :func:`_mentions_from` because ``mentions`` drives
+    the *channel* @-ping (suppressed on low severity for anti-fatigue),
+    whereas the assignee always carries the owner so the bot can DM them a
+    personal copy regardless of channel policy. Prefers the on-call DB's
+    Slack handle; falls back to the engineer email RA-001 stored.
+    """
+    name = (oncall or {}).get("engineer_name")
+    email = (oncall or {}).get("engineer_email") or verdict.assigned_engineer
+    handle: str | None = None
+    if oncall:
+        raw = (oncall.get("slack_handle") or "").strip()
+        if raw:
+            handle = raw if raw.startswith("@") else f"@{raw}"
+    if not handle and email:
+        handle = f"@{email}"
+    return handle, name, email
+
+
 def _render_body(
     verdict: TriageVerdict,
     reason: str,
     oncall: dict | None = None,
+    response_mode: str = "notify",
 ) -> str:
     """Compose the human-readable body block for the chat message.
 
@@ -154,8 +211,8 @@ def _render_body(
     before the routing reason, which is metadata they care about second.
     """
     matched_display = (oncall or {}).get("matched_category_display") if oncall else None
-    specialist_name = (oncall or {}).get("engineer_name") if oncall else None
     via_wildcard = bool((oncall or {}).get("via_wildcard")) if oncall else False
+    _handle, specialist_name, email = _assignee_from(verdict, oncall)
 
     lines: list[str] = [
         f"What failed: {verdict.alert_summary}",
@@ -164,24 +221,28 @@ def _render_body(
     if matched_display:
         lines.append(f"Sub-domain: {matched_display}")
     lines.append(f"Severity: {verdict.severity}")
+    lines.append(f"Response: {_RESPONSE_LABEL.get(response_mode, response_mode)}")
     lines.append(f"Owning team: {verdict.assigned_team}")
-    if specialist_name:
-        # The "for X" framing is accurate even when the engineer isn't a
-        # specialist in X — it describes *what* they're being paged for,
-        # not what they're best at. The wildcard suffix tells the paged
-        # engineer they're being woken as the *platform* safety net (no
-        # team owner is seeded for this team), not as the team's
-        # dedicated on-call — important context when the engineer is
-        # deciding how to respond.
+    # Assignee line: show name + email together so the reader knows exactly
+    # who owns it (the prior format showed only one or the other). Falls
+    # back gracefully when the on-call DB has no name (mock provider, or a
+    # roster row missing a display name).
+    if specialist_name or email:
+        if specialist_name and email:
+            who = f"{specialist_name} <{email}>"
+        else:
+            who = specialist_name or email or "unassigned"
+        # The "for X" framing describes *what* they're being paged for,
+        # not what they're best at. The wildcard suffix tells the engineer
+        # they're the *platform* safety net (no team owner seeded), not the
+        # team's dedicated on-call — context for how to respond.
         for_clause = f" — paged for {matched_display}" if matched_display else ""
         wildcard_clause = (
             f" (platform escalation — no on-call seeded for {verdict.assigned_team})"
             if via_wildcard
             else ""
         )
-        lines.append(f"On-call: {specialist_name}{for_clause}{wildcard_clause}")
-    elif verdict.assigned_engineer:
-        lines.append(f"On-call: {verdict.assigned_engineer}")
+        lines.append(f"On-call: {who}{for_clause}{wildcard_clause}")
     if verdict.recommended_runbook:
         lines.append(f"Runbook: {verdict.recommended_runbook}")
     if verdict.duplicate_alert_count > 1:
@@ -225,13 +286,14 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
             chat_severity=Severity.INFO,
             channel="suppressed",
             title=title,
-            body=_render_body(verdict, reason, oncall=oncall),
+            body=_render_body(verdict, reason, oncall=oncall, response_mode="log"),
             mentions=[],
             actions=[],
             reason=reason,
             audit_trace=audit,
             decided_at=now,
             category_display=(oncall or {}).get("matched_category_display"),
+            response_mode="log",
         )
 
     chat_sev: Severity
@@ -277,7 +339,14 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
         reason = "Sev-4 noise — quiet log, no human attention required"
         audit.append("rule: Sev-4 → INFO chat only (alerts-noise)")
 
-    body = _render_body(verdict, reason, oncall=oncall)
+    mode = _response_mode(sev, in_hours)
+    # The owning engineer always travels on the decision (so the bot can DM
+    # them) except in log mode, where nobody is meant to act.
+    if mode == "log":
+        a_handle, a_name, a_email = None, None, None
+    else:
+        a_handle, a_name, a_email = _assignee_from(verdict, oncall)
+    body = _render_body(verdict, reason, oncall=oncall, response_mode=mode)
 
     return RoutingDecision(
         chat_severity=chat_sev,
@@ -290,6 +359,10 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDec
         audit_trace=audit,
         decided_at=now,
         category_display=(oncall or {}).get("matched_category_display"),
+        response_mode=mode,
+        assignee=a_handle,
+        assignee_name=a_name,
+        assignee_email=a_email,
     )
 
 
@@ -310,6 +383,10 @@ def _decision_to_chat_message(
         # acts when "page_oncall" is present). Other adapters can also
         # inspect it to react differently for paging vs. chat-only sends.
         actions=list(decision.actions),
+        response_mode=decision.response_mode,
+        assignee=decision.assignee,
+        assignee_name=decision.assignee_name,
+        assignee_email=decision.assignee_email,
         timestamp=decision.decided_at,
     )
 

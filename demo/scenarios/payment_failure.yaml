@@ -7,3 +7,4 @@ service: payment
 title: Payment failure (HTTP 500s)
 description: Payment service rejects every charge with a 5xx error.
 eta_seconds: 90
+severity: critical

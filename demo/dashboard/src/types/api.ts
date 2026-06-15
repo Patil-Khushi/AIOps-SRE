@@ -124,6 +124,30 @@ export interface ChatNotification {
   mentions: string[];
 }
 
+// Row shape of GET /api/notifications (the SQL-persisted RA-005 history,
+// aiops/state/repository.py::_notification_row_to_dict). Used to backfill
+// the Notifications page across server restarts — the WS feed's in-memory
+// replay ring starts empty after every uvicorn restart.
+export interface PersistedNotification {
+  id: number;
+  verdict_id: number | null;
+  routed_at: string | null;
+  channel: string;
+  target: string;
+  chat_severity: string;
+  title: string;
+  body: string;
+  service: string | null;
+  actions: string[];
+  reason: string;
+  audit_trace: string[];
+}
+
+export interface NotificationsResponse {
+  count: number;
+  notifications: PersistedNotification[];
+}
+
 export type ScenarioCategory = 'errors' | 'latency' | 'capacity' | 'infra';
 
 export interface Scenario {

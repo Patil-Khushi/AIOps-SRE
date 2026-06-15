@@ -260,6 +260,75 @@ def delete_all_verdicts() -> int:
         return len(rows)
 
 
+# ─── assignment history (sticky + load-aware on-call selection) ────────────
+
+
+def find_last_assigned_engineer(service: str, *, window: timedelta) -> str | None:
+    """Most recent non-null ``assigned_engineer`` for ``service`` in ``window``.
+
+    The sticky-assignment source: an alert that re-fires for a service with
+    an in-flight incident should page the engineer who already owns it, not
+    whoever the fresh lookup would pick. Suppressed verdicts count — they
+    name the incident owner just as well as Active ones do.
+    """
+    if not service:
+        return None
+    cutoff = datetime.now(UTC) - window
+    stmt = (
+        select(VerdictRow.assigned_engineer)
+        .where(VerdictRow.affected_service == service)
+        .where(VerdictRow.assigned_engineer.is_not(None))  # type: ignore[union-attr]
+        .where(VerdictRow.created_at >= cutoff)  # type: ignore[arg-type]
+        .order_by(VerdictRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(1)
+    )
+    with _session() as s:
+        engineer = s.exec(stmt).first()
+    return engineer or None
+
+
+def count_recent_assignments(window: timedelta) -> dict[str, int]:
+    """Per-engineer verdict counts (keyed by engineer email) within ``window``.
+
+    Backs the load-aware tie-break in ``aiops.state.oncall_repository`` —
+    the "oncall_load table (v2)" its in-code TODO promised, served straight
+    from the verdicts we already write. POC scale: the group-by runs
+    unindexed over a bounded window; fine well past demo volume.
+    """
+    cutoff = datetime.now(UTC) - window
+    stmt = (
+        select(VerdictRow.assigned_engineer)
+        .where(VerdictRow.assigned_engineer.is_not(None))  # type: ignore[union-attr]
+        .where(VerdictRow.created_at >= cutoff)  # type: ignore[arg-type]
+    )
+    with _session() as s:
+        engineers = s.exec(stmt).all()
+    counts: dict[str, int] = {}
+    for email in engineers:
+        if email:
+            counts[email] = counts.get(email, 0) + 1
+    return counts
+
+
+def clear_clusters_for_service(service: str) -> int:
+    """Delete dedup clusters for one service. Returns rows removed.
+
+    Scenario-reset hook: when an operator resets an injected failure, the
+    incident is over by definition — the next inject of the same scenario
+    must triage as a NEW incident (Active verdict → chatops emit), not get
+    Suppressed against the previous run's still-warm cluster. Scoped to one
+    service so resets don't break dedup for unrelated still-firing alerts.
+    """
+    if not service:
+        return 0
+    with _session() as s:
+        rows = s.exec(select(ClusterRow).where(ClusterRow.service == service)).all()
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
 def _aware(dt: datetime) -> datetime:
     """SQLite round-trips TIMESTAMP as naive UTC. Re-attach the tzinfo so
     comparisons against ``datetime.now(timezone.utc)`` don't blow up."""

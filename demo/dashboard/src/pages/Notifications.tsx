@@ -2,8 +2,15 @@ import { useMemo, useState } from 'react';
 import { Bell, Filter, Search } from 'lucide-react';
 import { useChatopsSocket } from '@/lib/ws';
 import { EmptyState } from '@/components/states';
+import { useFetch } from '@/hooks/useFetch';
+import { api } from '@/lib/api';
 import { timeAgo, clsx } from '@/lib/format';
-import type { ChatNotification, ChatSeverity, Severity } from '@/types/api';
+import type {
+  ChatNotification,
+  ChatSeverity,
+  PersistedNotification,
+  Severity,
+} from '@/types/api';
 import { SeverityBadge } from '@/components/SeverityBadge';
 
 // Map the chatops Severity (p0..p3, info) to the dashboard's Sev-1..Sev-4
@@ -25,14 +32,80 @@ const SEV_OPTIONS: { value: ChatSeverity | 'all'; label: string }[] = [
   { value: 'info', label: 'Info' },
 ];
 
+const KNOWN_SEVERITIES: ReadonlySet<string> = new Set(['p0', 'p1', 'p2', 'p3', 'info']);
+
+// Response mode shown as a badge so an operator sees at a glance whether a
+// human is being woken (PAGE) or it's an async heads-up (NOTIFY) or just
+// recorded (LOG). Derived from chat severity so it works identically for
+// live WS frames and persisted backfill rows (which don't store the mode).
+type ResponseMode = 'PAGE' | 'NOTIFY' | 'LOG';
+
+function responseFor(sev: ChatSeverity): ResponseMode {
+  if (sev === 'p0' || sev === 'p1') return 'PAGE';
+  if (sev === 'p2' || sev === 'p3') return 'NOTIFY';
+  return 'LOG';
+}
+
+const RESPONSE_STYLE: Record<ResponseMode, string> = {
+  PAGE: '!border-bad/50 !text-bad',
+  NOTIFY: '!border-warn/50 !text-warn',
+  LOG: '!border-ink-300/60 !text-ink-500 dark:!border-ink-600 dark:!text-ink-400',
+};
+
+const RESPONSE_HINT: Record<ResponseMode, string> = {
+  PAGE: 'On-call paged now',
+  NOTIFY: 'Assigned — review when free',
+  LOG: 'Recorded — no page',
+};
+
+// Render one persisted DB row in the live feed's ChatNotification shape.
+// Mentions/incident_id aren't stored as structured columns (they live inside
+// the body text), so backfilled rows show without mention chips — acceptable
+// for a history view.
+function fromPersisted(row: PersistedNotification): ChatNotification {
+  const sev = row.chat_severity.toLowerCase();
+  return {
+    timestamp: row.routed_at ?? '',
+    channel: row.channel,
+    severity: (KNOWN_SEVERITIES.has(sev) ? sev : 'info') as ChatSeverity,
+    title: row.title,
+    body: row.body,
+    incident_id: null,
+    service: row.service,
+    mentions: [],
+  };
+}
+
 export default function Notifications() {
   const { notes, status } = useChatopsSocket();
+  // Poll the persisted history every 5s so injected alerts surface even when
+  // the live WebSocket frame is missed (e.g. page opened after the alert
+  // fired, or the WS reconnecting).
+  const history = useFetch(() => api.notifications(200), { intervalMs: 5_000 });
   const [q, setQ] = useState('');
   const [sevFilter, setSevFilter] = useState<ChatSeverity | 'all'>('all');
 
+  // Live WS frames + persisted history, deduped. The WS replay ring is
+  // in-memory and empties on every server restart; the DB backfill keeps
+  // earlier notifications visible. Rows with channel='suppressed' are
+  // routing no-ops (RA-001 deduped the alert) — they were never sent
+  // anywhere, so they don't belong in this feed.
+  const merged = useMemo(() => {
+    const out = [...notes];
+    const seen = new Set(notes.map((n) => `${Date.parse(n.timestamp)}|${n.channel}|${n.title}`));
+    for (const row of history.data?.notifications ?? []) {
+      if (row.channel === 'suppressed') continue;
+      const key = `${Date.parse(row.routed_at ?? '')}|${row.channel}|${row.title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(fromPersisted(row));
+    }
+    return out.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  }, [notes, history.data]);
+
   const filtered = useMemo(() => {
     const lc = q.toLowerCase();
-    return notes.filter((n) => {
+    return merged.filter((n) => {
       if (sevFilter !== 'all' && n.severity !== sevFilter) return false;
       if (!lc) return true;
       return (
@@ -43,7 +116,7 @@ export default function Notifications() {
         (n.incident_id ?? '').toLowerCase().includes(lc)
       );
     });
-  }, [notes, q, sevFilter]);
+  }, [merged, q, sevFilter]);
 
   return (
     <div className="space-y-6">
@@ -53,7 +126,7 @@ export default function Notifications() {
             Notifications
           </h1>
           <p className="mt-1 text-sm text-ink-500 dark:text-ink-400">
-            Live chatops feed · {notes.length} buffered · stream {status}
+            Live chatops feed · {merged.length} shown ({notes.length} live) · stream {status}
           </p>
         </div>
       </div>
@@ -89,7 +162,7 @@ export default function Notifications() {
           <EmptyState
             label="No notifications yet"
             hint={
-              notes.length === 0
+              merged.length === 0
                 ? 'Trigger a scenario to make an agent fire a notification — it lands here within a second.'
                 : 'No notifications match the current filter.'
             }
@@ -109,6 +182,7 @@ export default function Notifications() {
 
 function NotificationRow({ n }: { n: ChatNotification }) {
   const displaySev = CHAT_TO_DISPLAY[n.severity];
+  const response = responseFor(n.severity);
   return (
     <li className="card">
       <div className="card-body !py-3">
@@ -116,6 +190,12 @@ function NotificationRow({ n }: { n: ChatNotification }) {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               {displaySev && <SeverityBadge severity={displaySev} />}
+              <span
+                className={clsx('chip font-mono !text-[10px]', RESPONSE_STYLE[response])}
+                title={RESPONSE_HINT[response]}
+              >
+                {response}
+              </span>
               <span className="font-mono text-[10px] uppercase tracking-wider text-ink-500 dark:text-ink-400">
                 #{n.channel}
               </span>

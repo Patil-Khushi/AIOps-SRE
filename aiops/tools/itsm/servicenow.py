@@ -25,6 +25,7 @@ the two providers and keeps the test suite deterministic.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -32,6 +33,8 @@ import httpx
 
 from aiops.tools.itsm import _demo_cmdb
 from aiops.tools.registry import ToolResult, tool
+
+logger = logging.getLogger(__name__)
 
 
 def _use_mock_itsm() -> bool:
@@ -467,16 +470,46 @@ def cmdb_lookup(service: str) -> ToolResult:
         },
     )
     if not res.ok:
-        return res
+        # ServiceNow unreachable / not configured / auth error / PDI asleep.
+        # Fall back to the demo CMDB so ownership routing keeps working
+        # end-to-end instead of collapsing every service to the agent's
+        # "Platform On-Call" default (which routes everything to the global
+        # wildcard escalation engineer). The fallback metadata records that
+        # this happened, and we log once so a misconfigured PDI is visible.
+        logger.warning(
+            "servicenow: cmdb_lookup for %r failed (%s); falling back to demo CMDB",
+            service,
+            res.error,
+        )
+        return _demo_cmdb_fallback(service)
     results = (res.data or {}).get("result", []) or []
     if not results:
         return _demo_cmdb_fallback(service)
     row = results[0]
+    matched_name = (_resolve(row.get("name")) or "").strip()
+    team = _resolve(row.get("support_group"))
+    # The query is ``name={key}^ORnameLIKE{key}`` so a short service name
+    # (e.g. "ad") can LIKE-match an unrelated CI ("admin", "broadcast") that
+    # carries no support_group. A row with an empty team is useless — it
+    # would collapse the agent to its Platform On-Call default — so defer to
+    # the curated demo table, which knows the OTel-demo service→team map.
+    # (A row WITH a real team is trusted even on a fuzzy match: a real PDI CI
+    # wins over the demo table — see test_real_cmdb_hit_returns_servicenow_data.)
+    if not team:
+        fallback = _demo_cmdb_fallback(service)
+        if fallback.data is not None:
+            logger.info(
+                "servicenow: cmdb row for %r had no support_group (name=%r); "
+                "using demo CMDB instead",
+                service,
+                matched_name,
+            )
+            return fallback
     return ToolResult(
         ok=True,
         data={
-            "service": _resolve(row.get("name")) or service,
-            "team": _resolve(row.get("support_group")),
+            "service": matched_name or service,
+            "team": team,
             "runbook": _resolve(row.get(_RUNBOOK_FIELD)),
         },
         metadata={

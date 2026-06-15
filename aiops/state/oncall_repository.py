@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlmodel import Session, select
 
@@ -34,8 +34,21 @@ from aiops.state.models import (
     FailureCategoryRow,
     ShiftRow,
 )
+from aiops.state.repository import count_recent_assignments, find_last_assigned_engineer
 
 logger = logging.getLogger(__name__)
+
+# Sticky window: an alert re-firing for a service within this window pages
+# the engineer who already owns the incident, regardless of what a fresh
+# lookup would pick. Incident-scale, not shift-scale — long enough to span
+# a demo's inject → reset → re-inject loop, short enough that tomorrow's
+# alert on the same service rotates normally.
+_STICKY_WINDOW = timedelta(hours=2)
+
+# Load window: assignments inside this horizon count against an engineer in
+# tie-breaks, so back-to-back NEW incidents spread across the on-shift bench
+# instead of always waking the same (lowest-id) person.
+_LOAD_WINDOW = timedelta(hours=24)
 
 # Order matters: primary takes precedence; manager_escalation is the
 # always-on safety net.
@@ -123,6 +136,102 @@ def _engineer_has_skills(engineer: EngineerRow, required: list[str]) -> bool:
     return all(s in have for s in required)
 
 
+def _safe_load_counts() -> dict[str, int]:
+    """Recent assignment counts by engineer email; {} on any DB blip.
+
+    Load is a tie-break refinement, never a reason to fail a lookup —
+    an empty map degrades to the old deterministic behaviour.
+    """
+    try:
+        return count_recent_assignments(_LOAD_WINDOW)
+    except Exception:
+        logger.exception("oncall: load-count query failed; tie-breaks fall back to engineer id")
+        return {}
+
+
+def _pick_balanced(
+    candidates: list[tuple[ShiftRow, EngineerRow]],
+    loads: dict[str, int],
+) -> tuple[ShiftRow, EngineerRow]:
+    """Least-loaded candidate wins; ties go to lowest engineer id.
+
+    Replaces the bare lowest-id pick (the in-code "oncall_load table (v2)"
+    TODO) so engineers sharing a shift bucket take turns instead of the
+    lowest id absorbing every page.
+    """
+    return min(candidates, key=lambda pair: (loads.get(pair[1].email, 0), pair[1].id or 0))
+
+
+def _find_sticky_engineer(
+    team: str,
+    service: str | None,
+    *,
+    now: datetime,
+) -> OnCallEngineer | None:
+    """Return the engineer who already owns this service's open incident.
+
+    Sticky rule: if a verdict for ``service`` was assigned within
+    ``_STICKY_WINDOW`` and that engineer is still active and on shift for
+    ``team`` (or covers it via the global wildcard rung), re-page them —
+    a re-firing alert is the same incident, and bouncing it between
+    engineers splits the context. Returns ``None`` when there is no recent
+    assignment, the engineer left the roster, or their shift ended (the
+    fresh-lookup ladder then takes over).
+
+    The email→roster validation also quietly rejects assignments written
+    while the mock provider was active (``oncall@…example.com``) — those
+    never match a real ``EngineerRow``.
+    """
+    if not service:
+        return None
+    try:
+        email = find_last_assigned_engineer(service, window=_STICKY_WINDOW)
+    except Exception:
+        logger.exception("oncall: sticky lookup failed for service=%r", service)
+        return None
+    if not email:
+        return None
+
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(ShiftRow, EngineerRow)
+            .join(EngineerRow, ShiftRow.engineer_id == EngineerRow.id)
+            .where(EngineerRow.email == email)
+            .where(EngineerRow.active.is_(True))  # type: ignore[attr-defined]
+        ).all()
+
+    # Prefer a team-specific shift covering now; fall back to the wildcard
+    # rung (always-on manager_escalation) the original assignment may have
+    # come from.
+    team_match = [(s, e) for s, e in rows if s.team == team and _shift_covers_now(s, now)]
+    wildcard_match = [
+        (s, e) for s, e in rows if s.team == _GLOBAL_TEAM_KEY and _shift_covers_now(s, now)
+    ]
+    matched = team_match or wildcard_match
+    if not matched:
+        return None
+    shift, eng = matched[0]
+    logger.info(
+        "oncall(sticky): service=%r re-paged incident owner %r (team=%r role=%r)",
+        service,
+        eng.name,
+        team,
+        shift.role,
+    )
+    return OnCallEngineer(
+        id=eng.id or -1,
+        name=eng.name,
+        email=eng.email,
+        slack_handle=eng.slack_handle,
+        slack_user_id=eng.slack_user_id,
+        team=team,
+        role=shift.role,
+        skills=eng.skills,
+        timezone=eng.timezone,
+        via_wildcard=not team_match,
+    )
+
+
 def _find_global_escalation(
     requested_team: str,
     *,
@@ -159,9 +268,8 @@ def _find_global_escalation(
     if not candidates:
         return None
 
-    # Deterministic pick: lowest engineer id wins (same proxy as the
-    # team-specific path uses).
-    _shift, chosen = min(candidates, key=lambda pair: pair[1].id or 0)
+    # Least-loaded wildcard engineer wins; lowest id breaks ties.
+    _shift, chosen = _pick_balanced(candidates, _safe_load_counts())
     logger.info(
         "oncall(global): team=%r had no coverage -> wildcard engineer=%r",
         requested_team,
@@ -186,15 +294,21 @@ def find_oncall_for_team(
     *,
     now: datetime,
     required_skills: list[str] | None = None,
+    service: str | None = None,
 ) -> OnCallEngineer | None:
     """Look up the on-call engineer for ``team`` at ``now``.
 
     Lookup ladder, top-down:
 
+    0. **Sticky** (only when ``service`` is provided): the engineer
+       assigned to this service within the last ``_STICKY_WINDOW`` keeps
+       the incident if they're still active and on shift — same incident,
+       same person.
     1. **Team-specific roles** (primary → secondary → manager_escalation):
        each bucket is filtered by ``required_skills`` first, then re-tried
        without skill filtering — "wake someone unskilled" beats "wake
-       nobody on a Sev-1."
+       nobody on a Sev-1." Within a bucket the least-loaded engineer
+       (fewest assignments in ``_LOAD_WINDOW``) wins.
     2. **Global wildcard escalation** (``ShiftRow.team == "*"``,
        role ``manager_escalation``): the never-drop rung. Engaged when
        the team isn't onboarded in the DB or its full ladder is off-shift.
@@ -207,6 +321,10 @@ def find_oncall_for_team(
     re-seeded.
     """
     required = list(required_skills or [])
+
+    sticky = _find_sticky_engineer(team, service, now=now)
+    if sticky is not None:
+        return sticky
 
     with Session(get_engine()) as session:
         # One round-trip: pull all candidates for this team + their shifts.
@@ -225,6 +343,7 @@ def find_oncall_for_team(
         if bucket is not None:
             bucket.append((shift, eng))
 
+    loads = _safe_load_counts()
     for role in _ROLE_FALLBACK:
         # First pass: shift covers now AND skill match.
         candidates = [
@@ -238,10 +357,9 @@ def find_oncall_for_team(
         if not candidates:
             continue
 
-        # Deterministic pick: lowest engineer id wins. Cheap proxy for
-        # "longest-tenured." Replace with load-aware selection when we
-        # add the oncall_load table (v2).
-        _shift, chosen = min(candidates, key=lambda pair: pair[1].id or 0)
+        # Least-loaded engineer in the bucket wins; lowest id breaks ties
+        # (cheap proxy for "longest-tenured").
+        _shift, chosen = _pick_balanced(candidates, loads)
         logger.info(
             "oncall: %s -> engineer=%r role=%r (matched_skills=%s)",
             team,
@@ -333,18 +451,25 @@ def find_best_for_team_and_category(
     *,
     now: datetime,
     required_skills: list[str] | None = None,
+    service: str | None = None,
 ) -> OnCallEngineer | None:
     """Expertise-aware on-call lookup.
 
     Layered on top of :func:`find_oncall_for_team`:
 
+    0. **Sticky** (only when ``service`` is provided): the engineer who
+       already owns this service's open incident keeps it — expertise
+       scoring picks the best owner for a NEW incident; it doesn't bounce
+       an in-flight one. The alert's matched sub-domain is still attached
+       so the Slack "Sub-domain:" line survives.
     1. Match ``category_keywords`` against this team's failure categories.
        Categories are sub-domains (e.g. ``payment-gateway`` vs
        ``payment-database``) — same team, different specialty.
     2. Among engineers on shift right now for this team, find those with
        expertise in any matched category and pick the highest scorer
        (see :func:`_score_expertise`). Role fallback (primary → secondary
-       → manager_escalation) is preserved.
+       → manager_escalation) is preserved. Equal scores go to the
+       less-loaded engineer.
     3. If no engineer with matching expertise is on shift in any bucket,
        degrade to a plain :func:`find_oncall_for_team` lookup so an alert
        is **never dropped** because the specialist happens to be off-shift.
@@ -356,13 +481,17 @@ def find_best_for_team_and_category(
     """
     keywords = [k for k in (category_keywords or []) if k and k.strip()]
     if not keywords:
-        return find_oncall_for_team(team, now=now, required_skills=required_skills)
+        return find_oncall_for_team(team, now=now, required_skills=required_skills, service=service)
 
     required = list(required_skills or [])
+
+    sticky = _find_sticky_engineer(team, service, now=now)
 
     with Session(get_engine()) as session:
         matched_pairs = _match_categories_for_team(session, team, keywords)
         if not matched_pairs:
+            if sticky is not None:
+                return sticky
             logger.info(
                 "oncall(expertise): team=%r no category matched keywords=%s; "
                 "falling back to plain on-call lookup",
@@ -372,6 +501,15 @@ def find_best_for_team_and_category(
             return find_oncall_for_team(team, now=now, required_skills=required)
 
         matched_cats = [c for c, _ in matched_pairs]
+        if sticky is not None:
+            # Same incident, same person — but still surface the alert's
+            # top-overlap sub-domain so Slack's "Sub-domain:" line survives.
+            top = matched_cats[0]
+            return replace(
+                sticky,
+                matched_category=top.name,
+                matched_category_display=top.display_name,
+            )
         matched_cat_ids = [c.id or 0 for c in matched_cats]
         overlap_by_cat_id: dict[int, int] = {(c.id or 0): n for c, n in matched_pairs}
 
@@ -417,14 +555,17 @@ def find_best_for_team_and_category(
     # happens to be best at. ``matched_cats`` is sorted by overlap desc
     # in _match_categories_for_team.
     alert_top_cat = matched_cats[0]
+    loads = _safe_load_counts()
     for role in _ROLE_FALLBACK:
         bucket = by_role[role]
         if not bucket:
             continue
-        # Highest weighted score wins; tie-break on lowest engineer id
-        # (proxy for longest-tenured, matches find_oncall_for_team rule).
+        # Highest weighted score wins; equal scores go to the less-loaded
+        # engineer, then lowest id (proxy for longest-tenured, matches
+        # find_oncall_for_team's rule).
         _chosen_id, (chosen, score, best_cat_id) = max(
-            bucket.items(), key=lambda kv: (kv[1][1], -kv[0])
+            bucket.items(),
+            key=lambda kv: (kv[1][1], -loads.get(kv[1][0].email, 0), -kv[0]),
         )
         best_cat = by_id.get(best_cat_id)
         logger.info(

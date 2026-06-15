@@ -6,3 +6,4 @@ service: payment
 title: Payment unreachable
 description: Payment endpoint is unreachable — connection refused upstream.
 eta_seconds: 90
+severity: critical

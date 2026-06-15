@@ -6,6 +6,7 @@ import type {
   KbListResponse,
   KBArticleRow,
   LiveAlertsResponse,
+  NotificationsResponse,
   PrometheusAlert,
   RCAVerdict,
   ScenariosResponse,
@@ -63,6 +64,11 @@ export const api = {
     ),
   topology:    () => unwrap<TopologyResponse>(http.get('/api/topology')),
   pods:        () => unwrap<SystemPodsResponse>(http.get('/api/system/pods')),
+  // Persisted RA-005 notification history (SQL) — backfills the
+  // Notifications page so it survives server restarts; live updates still
+  // arrive over /ws/chatops.
+  notifications: (limit = 200) =>
+    unwrap<NotificationsResponse>(http.get('/api/notifications', { params: { limit } })),
 
   // RCA → approve → apply. Fires the REQUIRED-HITL-gated flag flip; returns an
   // approval id immediately while the platform blocks on human approval.
