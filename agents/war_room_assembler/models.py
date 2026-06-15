@@ -45,6 +45,12 @@ class InvitedSME(BaseModel):
     reason: str
     source: str
     """How we found them: ``"oncall"``, ``"cmdb_owner"``, ``"dependency_owner"``."""
+    slack_user_id: str | None = None
+    """Resolved Slack member id (``U…``) when the handle maps to one — set by
+    ``assemble`` after the war-room bridge runs; ``None`` if unmapped."""
+    invite_status: str | None = None
+    """Per-SME Slack invite outcome: ``invited`` / ``already_in`` / ``no_id`` /
+    ``simulated`` / ``failed:<err>`` — ``None`` before the bridge runs."""
 
 
 class ContextPackItem(BaseModel):
@@ -97,6 +103,21 @@ class WarRoomAssembly(BaseModel):
     reason: str
     audit_trace: list[str] = Field(default_factory=list)
     assembled_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    # ── Slack bridge (populated by ``assemble``; ``decide`` leaves defaults) ──
+    bridge_status: str = "pending"
+    """``pending`` (dry-run / not yet created) · ``created`` (real Slack room) ·
+    ``simulated`` (no bot token) · ``failed`` (Slack error) · ``skipped``
+    (no bridge capability registered)."""
+    bridge_provider: str | None = None
+    """``slack`` for a real room, ``simulated`` for the offline fallback."""
+    bridge_channel_id: str | None = None
+    bridge_url: str | None = None
+    """Deep link that opens the war-room channel — the "bridge link" SMEs click
+    to join. ``None`` until the room is created."""
+    meeting_url: str | None = None
+    """Click-to-join video-call link (Jitsi room) for the live bridge — the
+    Teams/Zoom-style "join meeting" URL. ``None`` until the room is created."""
 
 
 class WarRoomOutcome(BaseModel):

@@ -1638,15 +1638,34 @@ async def classifier_evaluate() -> dict[str, Any]:
 #     buffer (RA-006 has no DB table — the demo doesn't need durable history).
 
 _RECENT_WAR_ROOMS: deque[dict[str, Any]] = deque(maxlen=100)
+_WAR_ROOM_SEQ = 0
+
+# War-room lifecycle the dashboard board advances through:
+# open → in_call → call_ended → resolved. ``no_room`` is the terminal state
+# for minor/suppressed verdicts (no room was opened).
+WAR_ROOM_STATUSES = ("open", "in_call", "call_ended", "resolved", "no_room")
 
 
-def _record_war_room(assembly: dict[str, Any], verdict: TriageVerdict) -> None:
-    """Append a compact feed row for a pipeline-produced assembly (newest
-    surfaces first via ``reversed`` in the endpoint). Best-effort — never
-    raises into the triage pipeline."""
+def _record_war_room(assembly: dict[str, Any], verdict: TriageVerdict) -> str:
+    """Append a compact feed row for an assembly and return its feed id.
+
+    Each row carries a lifecycle ``status`` the board can advance:
+    ``open`` (room created, responders gathering) → ``in_call`` (live huddle)
+    → ``resolved``. Non-assembled verdicts land terminal as ``no_room``.
+    Best-effort — never raises into the triage pipeline."""
+    global _WAR_ROOM_SEQ
+    _WAR_ROOM_SEQ += 1
+    wid = str(_WAR_ROOM_SEQ)
+    assembled = assembly.get("assembled", False)
+    # Seed each invited SME's attendance so the board can track who actually
+    # joined the bridge. Starts at "invited"; an operator marks joined/declined.
+    for person in assembly.get("invited", []):
+        person.setdefault("attendance", "invited")
     _RECENT_WAR_ROOMS.append(
         {
-            "assembled": assembly.get("assembled", False),
+            "id": wid,
+            "status": "open" if assembled else "no_room",
+            "assembled": assembled,
             "channel": assembly.get("channel"),
             "severity": verdict.severity,
             "chat_severity": assembly.get("chat_severity"),
@@ -1654,10 +1673,13 @@ def _record_war_room(assembly: dict[str, Any], verdict: TriageVerdict) -> None:
             "team": verdict.assigned_team,
             "sme_count": len(assembly.get("invited", [])),
             "reason": assembly.get("reason"),
+            "bridge_url": assembly.get("bridge_url"),
+            "bridge_status": assembly.get("bridge_status"),
             "assembled_at": assembly.get("assembled_at"),
             "assembly": assembly,
         }
     )
+    return wid
 
 
 def _assemble_war_room_bg(verdict: TriageVerdict) -> None:
@@ -1692,13 +1714,17 @@ class WarRoomTryRequest(BaseModel):
     recommended_runbook: str | None = None
     status: str = Field(default="Active")
     incident_id: str | None = None
+    create_bridge: bool = Field(default=True)
+    """When True, actually stand up the Slack war room (``assemble`` — creates
+    the channel, invites SMEs, returns a join link). When False, a pure
+    ``decide`` preview with no side effects."""
 
 
 @app.post("/api/war-room/assemble")
 def war_room_assemble_endpoint(req: WarRoomTryRequest) -> dict[str, Any]:
-    """Try-it inspector: synthesize a verdict, run RA-006 ``decide`` (pure),
-    return the assembly. No chatops emit, no persistence, no feed record —
-    this is a what-if probe, not a real incident."""
+    """Try-it: synthesize a verdict and run RA-006. With ``create_bridge``
+    (default) it actually creates the Slack war room and returns the join
+    link; otherwise it's a pure ``decide`` preview (no side effects)."""
     if req.severity not in ("Sev-1", "Sev-2", "Sev-3", "Sev-4"):
         raise HTTPException(status_code=400, detail="severity must be Sev-1..Sev-4")
     if req.status not in ("Active", "Suppressed"):
@@ -1715,7 +1741,12 @@ def war_room_assemble_endpoint(req: WarRoomTryRequest) -> dict[str, Any]:
         status=req.status,  # type: ignore[arg-type]
         audit_metadata=AuditMetadata(created_at=datetime.now(UTC), created_by="war-room-ui"),
     )
-    return decide_war_room(verdict).model_dump(mode="json")
+    if not req.create_bridge:
+        return decide_war_room(verdict).model_dump(mode="json")
+    assembly = assemble_war_room(verdict).assembly
+    # Surface it in the live feed too, so the try-it and pipeline share one view.
+    _record_war_room(assembly.model_dump(mode="json"), verdict)
+    return assembly.model_dump(mode="json")
 
 
 @app.get("/api/war-room/recent")
@@ -1737,9 +1768,61 @@ def war_room_metrics_endpoint() -> dict[str, Any]:
         "total_seen": len(rows),
         "assembled": len(assembled),
         "suppressed_or_minor": len(rows) - len(assembled),
+        "open": sum(1 for r in rows if r.get("status") in ("open", "in_call", "call_ended")),
+        "resolved": sum(1 for r in rows if r.get("status") == "resolved"),
         "avg_smes": round(total_smes / len(assembled), 2) if assembled else None,
         "checked_at": datetime.now(UTC).isoformat(),
     }
+
+
+class WarRoomStatusRequest(BaseModel):
+    status: str
+
+
+@app.post("/api/war-room/{wid}/status")
+def war_room_set_status_endpoint(wid: str, req: WarRoomStatusRequest) -> dict[str, Any]:
+    """Advance a war room's lifecycle (open → in_call → resolved). The board
+    uses this so an operator can mark the bridge call in progress or the
+    incident resolved. ``no_room`` rows are terminal and can't be advanced."""
+    if req.status not in WAR_ROOM_STATUSES:
+        raise HTTPException(
+            status_code=400, detail=f"status must be one of {WAR_ROOM_STATUSES}"
+        )
+    for row in _RECENT_WAR_ROOMS:
+        if row.get("id") == wid:
+            if row.get("status") == "no_room":
+                raise HTTPException(status_code=409, detail="no_room war rooms are terminal")
+            row["status"] = req.status
+            return {"id": wid, "status": req.status}
+    raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
+
+
+ATTENDANCE_STATUSES = ("invited", "joined", "declined")
+
+
+class AttendeeStatusRequest(BaseModel):
+    handle: str
+    attendance: str
+
+
+@app.post("/api/war-room/{wid}/attendee")
+def war_room_set_attendee_endpoint(wid: str, req: AttendeeStatusRequest) -> dict[str, Any]:
+    """Set one invited SME's attendance (invited → joined / declined) on a war
+    room. Manual for now; an RSVP/presence feed can drive it automatically
+    later. Matches the person by their ``handle`` within the war room."""
+    if req.attendance not in ATTENDANCE_STATUSES:
+        raise HTTPException(
+            status_code=400, detail=f"attendance must be one of {ATTENDANCE_STATUSES}"
+        )
+    for row in _RECENT_WAR_ROOMS:
+        if row.get("id") != wid:
+            continue
+        for person in row.get("assembly", {}).get("invited", []):
+            if person.get("handle") == req.handle:
+                person["attendance"] = req.attendance
+                return {"id": wid, "handle": req.handle, "attendance": req.attendance}
+        raise HTTPException(status_code=404, detail=f"attendee {req.handle!r} not in war room {wid!r}")
+    raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
 
 
 # ─── RA-002 Classifier UI mount (standalone Vite app under demo/classifier-ui) ─

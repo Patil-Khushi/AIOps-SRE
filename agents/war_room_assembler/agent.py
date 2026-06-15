@@ -4,7 +4,7 @@ Reads a ``TriageVerdict`` (RA-001, ticketed by RA-003) and, for severe
 incidents (Sev-1 / Sev-2), stands up the incident war room: a dedicated
 chatops channel, the on-call SME pulled in, a live context pack (current
 metrics + recent traces), and a seed timeline for RCA.
-
+                                                        
 v1 scope (deliberately small, expand once evals are green):
 
 - **SME selection: on-call only.** One ``oncall.schedule.lookup`` for the
@@ -241,6 +241,10 @@ def _render_opening_body(assembly: WarRoomAssembly) -> str:
     """The opening post for the war room: who's in, the context pack, and the
     seed timeline — one ``key: value`` per line so every renderer agrees."""
     lines: list[str] = [assembly.reason, ""]
+    if assembly.meeting_url:
+        lines.append(f"Join the call: {assembly.meeting_url}")
+    if assembly.bridge_url:
+        lines.append(f"War-room channel: {assembly.bridge_url}")
     if assembly.invited:
         lines.append("SMEs: " + ", ".join(s.handle for s in assembly.invited))
     lines.append("")
@@ -266,12 +270,83 @@ def _assembly_to_chat_message(verdict: TriageVerdict, assembly: WarRoomAssembly)
     )
 
 
-def assemble(verdict: TriageVerdict, *, now: datetime | None = None) -> WarRoomOutcome:
-    """Decide and emit. Returns the assembly plus per-adapter deliveries.
+def _create_bridge(assembly: WarRoomAssembly) -> WarRoomAssembly:
+    """Stand up the real Slack war room via the ``chatops.war_room.create``
+    seam and fold the result back into the assembly (bridge link + per-SME
+    invite status + a timeline event).
 
-    Side effect: posts the war-room opening (context pack + timeline) through
-    the chatops seam. A no-op assembly (``assembled=False``) short-circuits
-    the emit so minor / suppressed incidents never open a room.
+    Never raises: a missing capability → ``skipped``; a non-ok ToolResult →
+    ``failed``; both leave the rest of the assembly intact so the incident
+    pipeline keeps moving even if Slack is down (CLAUDE.md safe-autonomy)."""
+    try:
+        result = get_registry().call(
+            "chatops.war_room.create",
+            channel=assembly.channel,
+            title=assembly.title,
+            body=_render_opening_body(assembly),
+            invite_handles=[s.handle for s in assembly.invited],
+        )
+    except KeyError:
+        return assembly.model_copy(
+            update={"bridge_status": "skipped", "audit_trace": [*assembly.audit_trace, "bridge: no chatops.war_room.create provider registered"]}
+        )
+
+    if not result.ok or not isinstance(result.data, dict):
+        return assembly.model_copy(
+            update={
+                "bridge_status": "failed",
+                "audit_trace": [*assembly.audit_trace, f"bridge: failed — {result.error}"],
+            }
+        )
+
+    data = result.data
+    simulated = bool(data.get("simulated"))
+    # Merge Slack ids + invite status back onto each invited SME (match by handle).
+    by_handle = {row["handle"]: row for row in data.get("invited", [])}
+    merged_invited = [
+        sme.model_copy(
+            update={
+                "slack_user_id": by_handle.get(sme.handle, {}).get("slack_user_id"),
+                "invite_status": by_handle.get(sme.handle, {}).get("invite_status"),
+            }
+        )
+        for sme in assembly.invited
+    ]
+    url = data.get("url")
+    meeting_url = data.get("meeting_url")
+    status = "simulated" if simulated else "created"
+    event = (
+        f"Slack war room {'simulated' if simulated else 'created'}: {url}"
+        if url
+        else "Slack war room created"
+    )
+    return assembly.model_copy(
+        update={
+            "invited": merged_invited,
+            "bridge_status": status,
+            "bridge_provider": data.get("provider"),
+            "bridge_channel_id": data.get("channel_id"),
+            "bridge_url": url,
+            "meeting_url": meeting_url,
+            "timeline": [*assembly.timeline, TimelineEvent(at=assembly.assembled_at, event=event)],
+            "audit_trace": [
+                *assembly.audit_trace,
+                f"bridge: {status} via {data.get('provider')} → {url}"
+                + (f" (note: {data['note']})" if data.get("note") else ""),
+            ],
+        }
+    )
+
+
+def assemble(verdict: TriageVerdict, *, now: datetime | None = None) -> WarRoomOutcome:
+    """Decide, create the Slack war room, and emit. Returns the assembly plus
+    per-adapter chatops deliveries.
+
+    Side effects: (1) creates a real Slack channel + invites the SMEs +
+    posts the context pack via the ``chatops.war_room.create`` seam (simulated
+    when no bot token); (2) posts the war-room opening through the chatops
+    seam. A no-op assembly (``assembled=False``) short-circuits both so minor
+    / suppressed incidents never open a room.
     """
     assembly = decide(verdict, now=now)
     if not assembly.assembled:
@@ -282,14 +357,20 @@ def assemble(verdict: TriageVerdict, *, now: datetime | None = None) -> WarRoomO
             assembly.reason,
         )
         return WarRoomOutcome(assembly=assembly, deliveries={})
+
+    # Stand up the actual Slack room first so the chatops opening can carry the
+    # join link.
+    assembly = _create_bridge(assembly)
+
     msg = _assembly_to_chat_message(verdict, assembly)
     deliveries = get_client().send(msg)
     logger.info(
-        "RA-006: assembled war room %s for %s on %s (%d SMEs)",
+        "RA-006: assembled war room %s for %s on %s (%d SMEs, bridge=%s)",
         assembly.channel,
         verdict.severity,
         verdict.affected_service,
         len(assembly.invited),
+        assembly.bridge_status,
     )
     return WarRoomOutcome(assembly=assembly, deliveries=deliveries)
 

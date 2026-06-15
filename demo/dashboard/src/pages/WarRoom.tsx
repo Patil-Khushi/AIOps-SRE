@@ -1,24 +1,22 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, Radio, Users, ListChecks, ClipboardList, RefreshCw, Beaker,
-  CheckCircle2, XCircle, Inbox,
+  AlertTriangle, Radio, Users, ListChecks, ClipboardList,
+  CheckCircle2, XCircle, Inbox, Video,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, ErrorState } from '@/components/states';
 import { clsx, timeAgo } from '@/lib/format';
-import type { WarRoomAssembly, WarRoomTryRequest, WarRoomFeedRow } from '@/lib/api';
+import type { WarRoomAssembly, WarRoomFeedRow } from '@/lib/api';
 
 // ─── RA-006 War-Room Assembler console ──────────────────────────────────────
 //
-// RA-006's own surface. Left: a "try it" inspector that runs the agent's pure
-// `decide` (no chatops emit) so you can see how it reacts to any severity /
-// status. Right: the live feed of war rooms the real /api/triage pipeline has
-// assembled (polled every 5s). Data comes from /api/war-room/* on the demo
-// server; the agent itself lives in agents/war_room_assembler.
-
-const SEVERITIES = ['Sev-1', 'Sev-2', 'Sev-3', 'Sev-4'];
-const STATUSES = ['Active', 'Suppressed'];
+// RA-006's own surface: a live board of every war room the /api/triage pipeline
+// has assembled (polled every 5s). Each incident shows its lifecycle status
+// (open → in_call → resolved); expand one to see the invited SMEs, the Slack
+// join link, the context pack, and the timeline. Data comes from
+// /api/war-room/* on the demo server; the agent lives in
+// agents/war_room_assembler.
 
 function chatSevStyle(sev: string): string {
   switch (sev) {
@@ -40,6 +38,12 @@ function Chip({ children, className }: { children: React.ReactNode; className?: 
   );
 }
 
+const ATT_STYLE: Record<string, string> = {
+  joined: 'border-ok/40 text-ok',
+  declined: 'border-bad/40 text-bad',
+  invited: 'border-ink-300/40 text-ink-400',
+};
+
 function AssemblyView({ a }: { a: WarRoomAssembly }) {
   return (
     <div className="space-y-3">
@@ -59,16 +63,57 @@ function AssemblyView({ a }: { a: WarRoomAssembly }) {
 
       <p className="text-sm text-ink-500 dark:text-ink-400">{a.reason}</p>
 
+      {(a.meeting_url || a.bridge_url) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {a.meeting_url && (
+            <a
+              href={a.meeting_url}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-primary !py-1.5"
+            >
+              <Video className="h-4 w-4" /> Join meeting
+            </a>
+          )}
+          {a.bridge_url && (
+            <a
+              href={a.bridge_url}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-ghost !py-1.5"
+            >
+              <Radio className="h-4 w-4" /> Slack channel
+            </a>
+          )}
+          <Chip
+            className={
+              a.bridge_status === 'created'
+                ? 'border-ok/40 text-ok'
+                : 'border-warn/40 text-warn'
+            }
+          >
+            {a.bridge_status === 'created'
+              ? 'Slack channel created'
+              : `bridge: ${a.bridge_status}`}
+          </Chip>
+        </div>
+      )}
+
       {a.invited.length > 0 && (
         <div className="rounded-lg border border-ink-200 p-3 dark:border-ink-700">
           <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
             <Users className="h-4 w-4 text-bad" /> Invited SMEs
           </div>
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {a.invited.map((s, i) => (
-              <li key={i} className="flex items-center justify-between text-sm">
-                <span className="font-mono">{s.handle}</span>
-                <span className="text-xs text-ink-400">{s.reason} · {s.source}</span>
+              <li key={i} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <span className="flex items-center gap-2">
+                  <span className="font-mono">{s.name || s.handle}</span>
+                  <Chip className={ATT_STYLE[s.attendance ?? 'invited'] ?? ''}>
+                    {s.attendance ?? 'invited'}
+                  </Chip>
+                </span>
+                <span className="text-xs text-ink-400">{s.team ?? s.reason}</span>
               </li>
             ))}
           </ul>
@@ -127,119 +172,66 @@ function AssemblyView({ a }: { a: WarRoomAssembly }) {
   );
 }
 
-function TryIt() {
-  const [form, setForm] = useState<WarRoomTryRequest>({
-    affected_service: 'payment',
-    severity: 'Sev-1',
-    assigned_team: 'Payments Team',
-    assigned_engineer: 'oncall@payments.example.com',
-    alert_summary: '',
-    recommended_runbook: '',
-    status: 'Active',
-    incident_id: '',
-  });
-  const [result, setResult] = useState<WarRoomAssembly | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const set = (k: keyof WarRoomTryRequest, v: string) => setForm((f) => ({ ...f, [k]: v }));
-
-  const submit = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      setResult(await api.warRoomAssemble(form));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="card">
-        <div className="card-body space-y-4">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <Beaker className="h-4 w-4 text-bad" /> Try it — inspect RA-006 behaviour
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block text-xs font-medium text-ink-500 dark:text-ink-400">
-              Severity
-              <select className="input mt-1" value={form.severity} onChange={(e) => set('severity', e.target.value)}>
-                {SEVERITIES.map((s) => <option key={s}>{s}</option>)}
-              </select>
-            </label>
-            <label className="block text-xs font-medium text-ink-500 dark:text-ink-400">
-              Status
-              <select className="input mt-1" value={form.status} onChange={(e) => set('status', e.target.value)}>
-                {STATUSES.map((s) => <option key={s}>{s}</option>)}
-              </select>
-            </label>
-            <label className="block text-xs font-medium text-ink-500 dark:text-ink-400">
-              Affected service
-              <input className="input mt-1" value={form.affected_service} onChange={(e) => set('affected_service', e.target.value)} />
-            </label>
-            <label className="block text-xs font-medium text-ink-500 dark:text-ink-400">
-              Owning team
-              <input className="input mt-1" value={form.assigned_team} onChange={(e) => set('assigned_team', e.target.value)} />
-            </label>
-            <label className="col-span-2 block text-xs font-medium text-ink-500 dark:text-ink-400">
-              On-call engineer (optional)
-              <input className="input mt-1" value={form.assigned_engineer ?? ''} onChange={(e) => set('assigned_engineer', e.target.value)} />
-            </label>
-            <label className="col-span-2 block text-xs font-medium text-ink-500 dark:text-ink-400">
-              Alert summary (optional)
-              <input className="input mt-1" value={form.alert_summary ?? ''} placeholder="auto-generated if blank" onChange={(e) => set('alert_summary', e.target.value)} />
-            </label>
-          </div>
-          <button onClick={submit} disabled={busy} className="btn btn-primary">
-            {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Radio className="h-4 w-4" />}
-            Assemble (dry-run)
-          </button>
-          {error && <ErrorState error={error} />}
-        </div>
-      </div>
-
-      {result && (
-        <div className="card">
-          <div className="card-body">
-            <AssemblyView a={result} />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+const STATUS_STYLE: Record<string, string> = {
+  open: 'border-warn/40 text-warn',
+  in_call: 'border-accent/40 text-accent',
+  call_ended: 'border-ink-300/40 text-ink-300',
+  resolved: 'border-ok/40 text-ok',
+  no_room: 'border-ink-300/40 text-ink-400',
+};
+const STATUS_LABEL: Record<string, string> = {
+  open: 'Open',
+  in_call: 'In call',
+  call_ended: 'Call ended',
+  resolved: 'Resolved',
+  no_room: 'No room',
+};
 
 function LiveFeed() {
   const feed = useFetch(() => api.warRoomRecent(50), { intervalMs: 5000 });
-  const [open, setOpen] = useState<number | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const rows: WarRoomFeedRow[] = feed.data?.war_rooms ?? [];
+
+  const setStatus = async (id: string, status: string) => {
+    setBusyId(id);
+    try {
+      await api.warRoomSetStatus(id, status);
+      await feed.refetch();
+    } catch {
+      /* surfaced on the next 5s poll */
+    } finally {
+      setBusyId(null);
+    }
+  };
+
 
   return (
     <div className="card">
       <div className="card-body">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-          <Radio className="h-4 w-4 text-ok" /> Live feed — from the pipeline ({rows.length})
+          <Radio className="h-4 w-4 text-ok" /> Live feed — incidents ({rows.length})
         </div>
         {feed.error && <ErrorState error={feed.error} />}
         {!feed.error && rows.length === 0 && (
           <EmptyState
             icon={<Inbox className="h-5 w-5" />}
             label="No war rooms yet"
-            hint="Trigger one via POST /api/triage or a failure scenario."
+            hint="Assemble one on the left, or trigger a Sev-1/Sev-2 through the pipeline."
           />
         )}
         <ul className="space-y-2">
-          {rows.map((r, i) => (
-            <li key={i} className="rounded-lg border border-ink-200 dark:border-ink-700">
+          {rows.map((r) => (
+            <li key={r.id} className="rounded-lg border border-ink-200 dark:border-ink-700">
               <button
-                onClick={() => setOpen(open === i ? null : i)}
+                onClick={() => setOpen(open === r.id ? null : r.id)}
                 className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm"
               >
-                <span className="flex items-center gap-2">
+                <span className="flex flex-wrap items-center gap-2">
                   <Chip className={chatSevStyle(r.chat_severity)}>{r.severity}</Chip>
+                  <Chip className={STATUS_STYLE[r.status] ?? ''}>
+                    {STATUS_LABEL[r.status] ?? r.status}
+                  </Chip>
                   <span className="font-mono text-accent">{r.channel}</span>
                 </span>
                 <span className="flex items-center gap-2 text-xs text-ink-400">
@@ -247,9 +239,40 @@ function LiveFeed() {
                   <span>{timeAgo(r.assembled_at)}</span>
                 </span>
               </button>
-              {open === i && (
-                <div className="border-t border-ink-200 p-3 dark:border-ink-700">
+              {open === r.id && (
+                <div className="space-y-3 border-t border-ink-200 p-3 dark:border-ink-700">
                   <AssemblyView a={r.assembly} />
+                  {r.status !== 'no_room' && (
+                    <div className="flex flex-wrap gap-2">
+                      {r.status === 'open' && (
+                        <button
+                          disabled={busyId === r.id}
+                          onClick={() => setStatus(r.id, 'in_call')}
+                          className="btn btn-ghost !py-1 text-xs"
+                        >
+                          Mark in-call
+                        </button>
+                      )}
+                      {r.status === 'in_call' && (
+                        <button
+                          disabled={busyId === r.id}
+                          onClick={() => setStatus(r.id, 'call_ended')}
+                          className="btn btn-ghost !py-1 text-xs"
+                        >
+                          End call
+                        </button>
+                      )}
+                      {r.status !== 'resolved' && (
+                        <button
+                          disabled={busyId === r.id}
+                          onClick={() => setStatus(r.id, 'resolved')}
+                          className="btn btn-ghost !py-1 text-xs"
+                        >
+                          Mark resolved
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </li>
@@ -289,18 +312,15 @@ export default function WarRoom() {
         </p>
         {m && (
           <div className="mt-4 flex flex-wrap gap-3">
-            <MetricChip label="Seen" value={m.total_seen} />
-            <MetricChip label="Assembled" value={m.assembled} />
-            <MetricChip label="Suppressed / minor" value={m.suppressed_or_minor} />
+            <MetricChip label="Incidents" value={m.total_seen} />
+            <MetricChip label="Open" value={m.open} />
+            <MetricChip label="Resolved" value={m.resolved} />
             <MetricChip label="Avg SMEs" value={m.avg_smes ?? '—'} />
           </div>
         )}
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <TryIt />
-        <LiveFeed />
-      </div>
+      <LiveFeed />
     </div>
   );
 }

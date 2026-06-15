@@ -49,6 +49,9 @@ export interface InvitedSME {
   team?: string | null;
   reason: string;
   source: string;
+  slack_user_id?: string | null;
+  invite_status?: string | null;
+  attendance?: string | null; // invited | joined | declined
 }
 export interface ContextPackItem {
   label: string;
@@ -70,6 +73,11 @@ export interface WarRoomAssembly {
   reason: string;
   audit_trace: string[];
   assembled_at: string;
+  bridge_status: string;
+  bridge_provider?: string | null;
+  bridge_channel_id?: string | null;
+  bridge_url?: string | null;
+  meeting_url?: string | null;
 }
 export interface WarRoomTryRequest {
   affected_service: string;
@@ -80,8 +88,11 @@ export interface WarRoomTryRequest {
   recommended_runbook?: string | null;
   status: string;
   incident_id?: string | null;
+  create_bridge?: boolean;
 }
 export interface WarRoomFeedRow {
+  id: string;
+  status: string; // open | in_call | resolved | no_room
   assembled: boolean;
   channel: string;
   severity: string;
@@ -90,6 +101,8 @@ export interface WarRoomFeedRow {
   team: string;
   sme_count: number;
   reason: string;
+  bridge_url?: string | null;
+  bridge_status?: string | null;
   assembled_at: string;
   assembly: WarRoomAssembly;
 }
@@ -101,6 +114,8 @@ export interface WarRoomMetrics {
   total_seen: number;
   assembled: number;
   suppressed_or_minor: number;
+  open: number;
+  resolved: number;
   avg_smes: number | null;
   checked_at: string;
 }
@@ -211,4 +226,10 @@ export const api = {
   warRoomRecent: (limit = 50) =>
     unwrap<WarRoomRecentResponse>(http.get('/api/war-room/recent', { params: { limit } })),
   warRoomMetrics: () => unwrap<WarRoomMetrics>(http.get('/api/war-room/metrics')),
-
+  warRoomSetStatus: (id: string, status: string) =>
+    unwrap<{ id: string; status: string }>(http.post(`/api/war-room/${id}/status`, { status })),
+  warRoomSetAttendee: (id: string, handle: string, attendance: string) =>
+    unwrap<{ id: string; handle: string; attendance: string }>(
+      http.post(`/api/war-room/${id}/attendee`, { handle, attendance }),
+    ),
+};
