@@ -1,0 +1,71 @@
+{
+  "agent": "RA-004",
+  "version": "v1",
+  "description": "Golden fixtures for the Runbook Executor. The eval path runs with skip_approval=True (no approver), so destructive steps deterministically resolve to 'denied' at the HITL gate while non-destructive steps execute autonomously. Cases assert selection + the resolution status + step accounting, not exact LLM strings (RA-004 uses no LLM).",
+  "cases": [
+    {
+      "id": "payment_crashloop_selects_and_gates",
+      "description": "Payment OOM crashloop selects the payment runbook; the destructive restart is gated -> denied; the safe drain step ran.",
+      "input": {
+        "incident_id": "INC-2001",
+        "service": "payment",
+        "severity": "sev1",
+        "tags": ["crash", "oom"]
+      },
+      "expected": {
+        "selected_runbook": "payment-restart",
+        "runbook_title_contains": "payment",
+        "status": "denied",
+        "steps_total": 2,
+        "destructive_steps": 1,
+        "min_steps_executed": 1
+      }
+    },
+    {
+      "id": "payment_service_spelling_still_matches",
+      "description": "Service 'payment-service' normalizes to 'payment' and still selects the payment runbook.",
+      "input": {
+        "incident_id": "INC-2002",
+        "service": "payment-service",
+        "severity": "Sev-1",
+        "tags": ["crashloop"]
+      },
+      "expected": {
+        "selected_runbook": "payment-restart",
+        "status": "denied"
+      }
+    },
+    {
+      "id": "cart_latency_selects_scale_runbook",
+      "description": "Cart latency under load selects the scale-up runbook; snapshot runs, scale-up is gated.",
+      "input": {
+        "incident_id": "INC-2003",
+        "service": "cart",
+        "severity": "sev2",
+        "tags": ["latency", "load"]
+      },
+      "expected": {
+        "selected_runbook": "cartservice-scale-up",
+        "status": "denied",
+        "steps_total": 3,
+        "destructive_steps": 1,
+        "min_steps_executed": 1
+      }
+    },
+    {
+      "id": "unknown_service_has_no_runbook",
+      "description": "A service with no matching runbook returns a clean 'no_runbook' outcome rather than guessing.",
+      "input": {
+        "incident_id": "INC-2004",
+        "service": "telemetry-aggregator",
+        "severity": "sev2",
+        "tags": ["lag"]
+      },
+      "expected": {
+        "selected_runbook": null,
+        "status": "no_runbook",
+        "steps_total": 0
+      }
+    }
+  ]
+}
