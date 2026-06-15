@@ -984,8 +984,6 @@ def test_slack_bot_dm_includes_subdomain_field(tmp_path):
     field_texts = " ".join(f["text"] for f in fields_section["fields"])
     assert "Application:" in field_texts and "payment" in field_texts
     assert "Sub-domain:" in field_texts and "Payment Gateway" in field_texts
-<<<<<<< HEAD
-=======
 
 
 # ─── Global wildcard fallback (never drop a Sev-1) ───────────────────────
@@ -1311,4 +1309,3 @@ def test_ra005_body_marks_platform_escalation_when_via_wildcard(monkeypatch):
     )
     assert "Ads Team" in d.body, "body must name the team that's missing coverage"
     assert d.mentions == ["@commander"]
->>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1

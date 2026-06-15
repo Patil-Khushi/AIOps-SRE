@@ -191,23 +191,12 @@ SHIFTS: list[tuple[str, str, int, int, int, str]] = [
     *[("arjun", "Order Experience", dow, 3, 12, "primary") for dow in range(0, 5)],
     # Meera — Order Experience, weekdays evening shift.
     *[("meera", "Order Experience", dow, 11, 20, "primary") for dow in range(0, 5)],
-<<<<<<< HEAD
-    # Vikram — manager escalation for ALL three teams, always-on. Last
-    # line of defence when nobody else is on shift (weekends, holidays,
-    # off-hours).
-    *[
-        ("vikram", team, dow, 0, 24, "manager_escalation")
-        for team in ("Payments Team", "Order Experience", "Platform")
-        for dow in range(0, 7)
-    ],
-=======
     # Vikram — GLOBAL manager_escalation, always-on. Tagged with the
     # special team key "*" so the repository falls back here for ANY
     # team that has no other coverage (a Sev-1 on an OTel-demo service
     # whose team isn't onboarded yet still pages someone). See
     # ``aiops/state/oncall_repository._GLOBAL_TEAM_KEY``.
     *[("vikram", "*", dow, 0, 24, "manager_escalation") for dow in range(0, 7)],
->>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 ]
 
 

@@ -196,8 +196,6 @@ class HistoricalIncidentRow(SQLModel, table=True):
     )
 
 
-<<<<<<< HEAD
-=======
 class KBArticleRow(SQLModel, table=True):
     """Knowledge-base article produced by the Knowledge Synthesizer (PRS-007).
 
@@ -267,7 +265,6 @@ class RCAResultRow(SQLModel, table=True):
     )
 
 
->>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 class EngineerRow(SQLModel, table=True):
     """An on-call engineer / SRE who can be paged.
 
@@ -426,10 +423,7 @@ __all__ = [
     "HistoricalIncidentRow",
     "KBArticleRow",
     "NotificationRow",
-<<<<<<< HEAD
-=======
     "RCAResultRow",
->>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
     "ShiftRow",
     "TicketRow",
     "VerdictRow",

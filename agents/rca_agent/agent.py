@@ -35,15 +35,11 @@ from agents.rca_agent.models import (
     RCAInput,
     RCAVerdict,
 )
-<<<<<<< HEAD
-from agents.rca_agent.prompts import RCA_PROMPT_USER_V1, SYSTEM_PROMPT_V3
-=======
 from agents.rca_agent.prompts import (
     CORRELATION_EVIDENCE_BLOCK,
     RCA_PROMPT_USER_V1,
     SYSTEM_PROMPT_V3,
 )
->>>>>>> 56dfe74bd7c2063d785ffb8273348008f03415b1
 from agents.rca_agent.remediation_map import flag_for_service
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
