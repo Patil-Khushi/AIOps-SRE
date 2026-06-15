@@ -272,14 +272,23 @@ def mock_runbook_execute(
     target: str = "",
     namespace: str = "",
     dry_run: bool = True,
+    step: str = "",
+    action: str = "",
+    mode: str = "execute",
 ) -> ToolResult:
-    """Used by the auto_healer_lite demo agent (HITL-1).
+    """Execute (or roll back) a DESTRUCTIVE runbook step. REQUIRED-HITL.
+
+    Used by the auto_healer_lite demo agent (HITL-1) and the Runbook Executor
+    (RA-004). ``step``/``action``/``mode`` are optional so RA-004 can carry
+    step identity and distinguish a forward ``execute`` from a ``rollback``
+    call for the audit log; auto_healer_lite omits them and keeps working.
 
     Real Phase-2 swap target: an Ansible AWX / kubectl shell-out / Argo
     workflow.  For the POC the action only needs to *prove* that the gate
     physically blocked it without an approver — the side-effect itself is
     irrelevant.  Returns a deterministic dict so the demo can assert on it.
     """
+    verb = "roll back" if mode == "rollback" else "restart"
     return ToolResult(
         ok=True,
         data={
@@ -287,10 +296,79 @@ def mock_runbook_execute(
             "target": target,
             "namespace": namespace or "default",
             "dry_run": dry_run,
+            "step": step,
+            "action": action,
+            "mode": mode,
             "exit_code": 0,
             "stdout": (
-                f"[dry-run] would restart {target or '<unspecified>'} in {namespace or 'default'}"
+                f"[dry-run] would {verb} {target or '<unspecified>'} in {namespace or 'default'}"
             ),
+        },
+        metadata={"provider": "mock"},
+    )
+
+
+@tool(
+    name="mock.automation.runbook.simulate",
+    capability="automation.runbook.simulate",
+    provider="mock",
+    description="Dry-run preview of a runbook step. Read-only — never changes anything.",
+)
+def mock_runbook_simulate(
+    step: str = "",
+    action: str = "",
+    target: str = "",
+    namespace: str = "",
+) -> ToolResult:
+    """Preview what a step *would* do, without performing it.
+
+    NONE-level (autonomous) by design: a dry-run makes no changes, so it never
+    needs a human. The Runbook Executor (RA-004) calls this for every step
+    before touching anything. Real Phase-2 swap target: ``ansible --check`` /
+    ``kubectl --dry-run=server`` / an Argo workflow lint.
+    """
+    return ToolResult(
+        ok=True,
+        data={
+            "step": step,
+            "action": action or "<unspecified>",
+            "target": target,
+            "namespace": namespace or "default",
+            "dry_run": True,
+            "changes": [],
+            "preview": f"[dry-run] would run {action or '<step>'} on {target or '<target>'}",
+        },
+        metadata={"provider": "mock"},
+    )
+
+
+@tool(
+    name="mock.automation.runbook.apply",
+    capability="automation.runbook.apply",
+    provider="mock",
+    description="Execute a NON-destructive runbook step autonomously (NONE-level).",
+)
+def mock_runbook_apply(
+    step: str = "",
+    action: str = "",
+    target: str = "",
+    namespace: str = "",
+) -> ToolResult:
+    """Run a non-destructive step (drain, snapshot, health-check, …).
+
+    NONE-level: non-destructive steps run without a human so the gate fires
+    only on the destructive ones. Destructive steps go through the REQUIRED
+    ``automation.runbook.execute`` capability instead.
+    """
+    return ToolResult(
+        ok=True,
+        data={
+            "step": step,
+            "action": action or "<unspecified>",
+            "target": target,
+            "namespace": namespace or "default",
+            "applied": True,
+            "exit_code": 0,
         },
         metadata={"provider": "mock"},
     )
