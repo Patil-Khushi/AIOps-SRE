@@ -1065,13 +1065,27 @@ class HitlDemoRunbookRequest(BaseModel):
 # first (mandatory) then scores tag overlap, so these only refine the match /
 # drive the "matched on" display — service alone already picks the runbook.
 _RUNBOOK_TAG_KEYWORDS: dict[str, list[str]] = {
-    "latency": ["latency", "load"], "slow": ["latency", "load"], "p95": ["latency"],
-    "saturat": ["load", "saturation"], "load": ["load"],
-    "oom": ["oom", "crash"], "memory": ["oom", "memory"], "leak": ["memory"],
-    "crash": ["crash", "restart"], "restart": ["restart"], "loop": ["crashloop"],
-    "deploy": ["deploy", "regression"], "regression": ["regression"], "rollback": ["deploy"],
-    "error": ["error"], "5xx": ["error"], "500": ["error"], "fail": ["error"],
-    "cpu": ["cpu"], "queue": ["queue", "load"], "backpressure": ["queue"],
+    "latency": ["latency", "load"],
+    "slow": ["latency", "load"],
+    "p95": ["latency"],
+    "saturat": ["load", "saturation"],
+    "load": ["load"],
+    "oom": ["oom", "crash"],
+    "memory": ["oom", "memory"],
+    "leak": ["memory"],
+    "crash": ["crash", "restart"],
+    "restart": ["restart"],
+    "loop": ["crashloop"],
+    "deploy": ["deploy", "regression"],
+    "regression": ["regression"],
+    "rollback": ["deploy"],
+    "error": ["error"],
+    "5xx": ["error"],
+    "500": ["error"],
+    "fail": ["error"],
+    "cpu": ["cpu"],
+    "queue": ["queue", "load"],
+    "backpressure": ["queue"],
 }
 
 
