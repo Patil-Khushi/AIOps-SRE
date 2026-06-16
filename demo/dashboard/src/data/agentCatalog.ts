@@ -1,3 +1,10 @@
+// Display mirror of the authoritative agent catalog
+// (docs/Adaptive_AIOps_Agent_Catalog.xlsx, per CLAUDE.md). This is a
+// hand-maintained copy that drives the dashboard's agent-browser pages
+// (Agents / AgentDetail / SreOps) and the per-agent console scoping in the
+// Sidebar. It can drift from the xlsx — when the catalog changes there,
+// update this file to match. Not a source of truth; a render layer.
+
 export type AgentPhase =
   | 'Reactive-Active'
   | 'Proactive'

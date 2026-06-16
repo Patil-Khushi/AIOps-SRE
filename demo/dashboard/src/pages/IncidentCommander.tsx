@@ -259,7 +259,7 @@ function CommandResult({ result }: { result: IncidentCommandResult }) {
       {/* RCA (shared renderer — includes the HITL apply box) */}
       {result.rca && (
         <Section icon={<Brain className="h-3.5 w-3.5" />} title="Root-cause analysis">
-          <RcaView v={result.rca} />
+          <RcaView v={result.rca} incidentId={result.reactive.ticket.ticket_id ?? null} />
         </Section>
       )}
 
