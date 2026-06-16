@@ -174,10 +174,15 @@ def _hermetic_slack_user_map_env(monkeypatch):
     real member IDs instead of their fixtures — green in isolation, red in the
     full suite (the order-dependent bleed in #174).
 
-    Clearing both vars here fixes it at the source for every test (not just the
-    one file that had its own guard), and protects the bot-adapter suite, which
-    had none. Tests that specifically need an override set it themselves via
+    Clearing it here fixes #174 at the source for every test (not just the one
+    file that had its own guard), and protects the bot-adapter suite, which had
+    none. Tests that specifically need an override set it themselves via
     ``monkeypatch.setenv`` after this autouse fixture runs.
+
+    ``AIOPS_ONCALL_ROSTER_JSON`` is cleared proactively for the same
+    ``.env``-injection class — NOT because the Slack loader reads it (it
+    doesn't; that var feeds ``scripts/seed_oncall``). It keeps a developer's
+    real roster from leaking real identities into any seed-driven test.
     """
     monkeypatch.delenv("AIOPS_SLACK_USER_MAP_JSON", raising=False)
     monkeypatch.delenv("AIOPS_ONCALL_ROSTER_JSON", raising=False)
