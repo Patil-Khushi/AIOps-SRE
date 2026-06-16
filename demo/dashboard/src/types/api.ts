@@ -287,3 +287,120 @@ export interface KbListResponse {
   articles: KBArticleRow[];
 }
 
+// ─── Runbook Executor (RA-004) ──────────────────────────────────────────────
+// Mirrors agents/runbook_executor/models.py and the
+// /api/demo/runbook-executor/* route shapes.
+
+export type RunbookStepStatus =
+  | 'executed'
+  | 'denied'
+  | 'failed'
+  | 'rolled_back'
+  | 'skipped';
+
+// Final resolution of a run. 'pending' is the synthetic status the outcome
+// poll returns while the agent thread is still blocked at the HITL gate.
+export type RunbookResolutionStatus =
+  | 'pending'
+  | 'resolved'
+  | 'rolled_back'
+  | 'denied'
+  | 'failed'
+  | 'no_runbook';
+
+export interface RunbookStepRecord {
+  name: string;
+  action: string;
+  destructive: boolean;
+  status: RunbookStepStatus;
+  simulate?: Record<string, unknown> | null;
+  executed?: Record<string, unknown> | null;
+  rolled_back: boolean;
+  rollback?: Record<string, unknown> | null;
+  error?: string | null;
+}
+
+export interface RunbookIncident {
+  incident_id: string;
+  service: string;
+  severity?: string | null;
+  tags: string[];
+}
+
+export interface PlannedStep {
+  name: string;
+  action: string;
+  destructive: boolean;
+  // Read-only dry-run preview computed up-front (mock simulate provider).
+  simulate?: { preview?: string; changes?: unknown[]; error?: string } & Record<string, unknown>;
+}
+
+// POST /api/demo/runbook-executor/run — returned immediately (runbook selected
+// + dry-run previewed synchronously; the gated execution runs on a pool thread).
+export interface RunbookRunResponse {
+  approval_id: string;
+  status: 'pending' | 'no_runbook';
+  service: string;
+  incident_id: string;
+  selected_runbook: string | null;
+  runbook_title: string | null;
+  // Optional: older backend builds omit it — the UI falls back to `service`.
+  matched_on?: { service: string; severity: string | null; tags: string[] };
+  planned_steps: PlannedStep[];
+  timeout_seconds: number;
+}
+
+// GET /api/verdicts — persisted triage verdicts (newest-first). Each injected
+// failure, once triaged, lands here with its assigned severity.
+export interface VerdictRecord {
+  id: number;
+  cluster_key: string | null;
+  incident_id: string | null;
+  affected_service: string;
+  severity: Severity;
+  confidence_score: number;
+  alert_summary: string;
+  assigned_team: string;
+  assigned_engineer: string | null;
+  recommended_runbook: string | null;
+  duplicate_alert_count: number;
+  status: Status;
+  audit_metadata: AuditMetadata;
+}
+
+export interface VerdictsResponse {
+  count: number;
+  verdicts: VerdictRecord[];
+}
+
+// GET /api/demo/auto-heal/outcome/{id} — the parked RunbookExecution, or
+// { status: 'pending' } until the agent thread finishes.
+export interface RunbookOutcome {
+  status: RunbookResolutionStatus;
+  approval_id?: string;
+  incident?: RunbookIncident;
+  selected_runbook?: string | null;
+  runbook_title?: string | null;
+  steps?: RunbookStepRecord[];
+  rollback_artifacts?: Record<string, unknown>[];
+  reason?: string;
+  steps_total?: number;
+  steps_executed?: number;
+  destructive_steps?: number;
+}
+
+// GET /api/approvals/{id} — ApprovalRequest.to_record().
+export type ApprovalState = 'pending' | 'approved' | 'denied' | 'expired';
+
+export interface ApprovalRecord {
+  id: string;
+  action: string;
+  context: Record<string, unknown>;
+  status: ApprovalState;
+  requested_at: string;
+  expires_at: string;
+  decided_at: string | null;
+  approver: string | null;
+  reason: string;
+}
+

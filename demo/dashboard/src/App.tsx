@@ -15,6 +15,8 @@ import RcaConsole from '@/pages/RcaConsole';
 import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
 import Knowledge from '@/pages/Knowledge';
+import RunbookExecutor from '@/pages/RunbookExecutor';
+import ErrorBoundary from '@/components/ErrorBoundary';
 
 export default function App() {
   return (
@@ -43,6 +45,15 @@ export default function App() {
         <Route path="knowledge" element={<Knowledge />} />
         <Route path="topology" element={<Topology />} />
         <Route path="health" element={<SystemHealth />} />
+      </Route>
+
+      {/* Per-agent live surfaces — share the console chrome. Linked from the
+          agent catalog as /agents/<id> (e.g. /agents/runbook-executor). */}
+      <Route path="/agents" element={<Layout />}>
+        <Route
+          path="runbook-executor"
+          element={<ErrorBoundary><RunbookExecutor /></ErrorBoundary>}
+        />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -1036,6 +1036,133 @@ def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
     return {"status": "pending", "approval_id": approval_id}
 
 
+# ─── Runbook Executor demo (RA-004): select → simulate → gated execute ─────
+#
+# The /agents/runbook-executor dashboard page POSTs here to run the *real*
+# Runbook Executor against the mock automation providers. Same HITL shape as
+# the auto-heal restart above: fire the agent on a pool thread, return the
+# pre-minted approval id immediately, and park the RunbookExecution outcome in
+# the shared _HITL_OUTCOMES store (polled via /api/demo/auto-heal/outcome/{id}).
+#
+# The destructive step routes through the REQUIRED-gated
+# automation.runbook.execute capability, so the platform HITL gate creates the
+# approval and blocks until a human resolves it in the /hitl approver console.
+
+
+class HitlDemoRunbookRequest(BaseModel):
+    service: str = Field("cart", min_length=1)
+    severity: str | None = Field("sev2")
+    tags: list[str] = Field(default_factory=list)
+    incident_id: str = Field("INC-DEMO-RB")
+    # Free-text alert/triage summary — keyword-scanned into symptom tags so a
+    # live triaged incident (which carries no explicit tags) still scores
+    # against the runbook library.
+    summary: str = Field("")
+    timeout_seconds: int = Field(120, ge=5, le=900)
+
+
+# Symptom keyword → runbook tags. The runbook selector matches on service
+# first (mandatory) then scores tag overlap, so these only refine the match /
+# drive the "matched on" display — service alone already picks the runbook.
+_RUNBOOK_TAG_KEYWORDS: dict[str, list[str]] = {
+    "latency": ["latency", "load"], "slow": ["latency", "load"], "p95": ["latency"],
+    "saturat": ["load", "saturation"], "load": ["load"],
+    "oom": ["oom", "crash"], "memory": ["oom", "memory"], "leak": ["memory"],
+    "crash": ["crash", "restart"], "restart": ["restart"], "loop": ["crashloop"],
+    "deploy": ["deploy", "regression"], "regression": ["regression"], "rollback": ["deploy"],
+    "error": ["error"], "5xx": ["error"], "500": ["error"], "fail": ["error"],
+    "cpu": ["cpu"], "queue": ["queue", "load"], "backpressure": ["queue"],
+}
+
+
+def _derive_runbook_tags(summary: str, provided: list[str]) -> list[str]:
+    """Merge caller-supplied tags with symptom tags scanned from the summary,
+    de-duplicated and order-stable."""
+    tags = list(provided)
+    blob = (summary or "").lower()
+    for needle, mapped in _RUNBOOK_TAG_KEYWORDS.items():
+        if needle in blob:
+            tags.extend(mapped)
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in tags:
+        key = t.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+@app.post("/api/demo/runbook-executor/run")
+async def trigger_runbook_executor(req: HitlDemoRunbookRequest) -> dict[str, Any]:
+    """Kick off the Runbook Executor and return the approval id immediately.
+
+    Runbook selection and the read-only dry-run preview are cheap and
+    synchronous, so we do them here and return them up-front: the dashboard
+    renders the selected runbook, the match criteria, the planned steps, and the
+    per-step dry-run results before the gated execution finishes. The agent then
+    runs on a pool thread; the destructive step blocks at the HITL gate until a
+    human resolves the approval in /hitl. Poll
+    ``/api/demo/auto-heal/outcome/{approval_id}`` for the final RunbookExecution.
+    """
+    from agents.runbook_executor import Incident, execute_runbook, select
+
+    tags = _derive_runbook_tags(req.summary, req.tags)
+    incident = Incident(
+        incident_id=req.incident_id,
+        service=req.service,
+        severity=req.severity,
+        tags=tags,
+    )
+    runbook = select(incident)
+
+    # Read-only dry-run preview per step (NONE-level simulate capability — never
+    # gated, makes no changes). Surfaces stage-2 results before the gated run.
+    registry = get_registry()
+    planned_steps: list[dict[str, Any]] = []
+    for s in runbook.steps if runbook else []:
+        try:
+            sim = registry.call(
+                "automation.runbook.simulate",
+                step=s.name,
+                target=s.target or req.service,
+                namespace=s.namespace,
+                action=s.action,
+            )
+            simulate = sim.data if sim.ok else {"error": sim.error}
+        except Exception as exc:  # pragma: no cover - defensive
+            simulate = {"error": f"{type(exc).__name__}: {exc}"}
+        planned_steps.append(
+            {"name": s.name, "action": s.action, "destructive": s.destructive, "simulate": simulate}
+        )
+
+    approval_id = _uuid_hex()
+    ctx = {"approval_id": approval_id, "approval_timeout_seconds": req.timeout_seconds}
+
+    def _run_agent() -> None:
+        execution = execute_runbook(incident, hitl_context=ctx)
+        out = execution.model_dump(mode="json")
+        # Computed properties don't serialize — flatten them for the UI.
+        out["steps_total"] = execution.steps_total
+        out["steps_executed"] = execution.steps_executed
+        out["destructive_steps"] = execution.destructive_steps
+        _HITL_OUTCOMES[approval_id] = out
+
+    _HITL_AGENT_POOL.submit(_run_agent)
+
+    return {
+        "approval_id": approval_id,
+        "status": "pending" if runbook is not None else "no_runbook",
+        "service": req.service,
+        "incident_id": req.incident_id,
+        "selected_runbook": runbook.id if runbook else None,
+        "runbook_title": runbook.title if runbook else None,
+        "matched_on": {"service": req.service, "severity": req.severity, "tags": tags},
+        "planned_steps": planned_steps,
+        "timeout_seconds": req.timeout_seconds,
+    }
+
+
 # ─── RCA fix-step remediation (RCA → approve → apply) ──────────────────────
 #
 # The RCA panel's "Approve & apply" button POSTs here. Same shape as the
