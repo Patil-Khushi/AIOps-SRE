@@ -179,6 +179,7 @@ function Invoke-SpaBuild($name, $dir, $missingMsg) {
     #   stale   — newest source mtime > dist mtime → incremental rebuild
     #   fresh   — dist is up-to-date → skip
     $reason = $null
+    $stamp  = Join-Path $dir 'dist\.built-commit'
     if (-not (Test-Path $distIndex)) {
         $reason = 'first run, ~30 s'
     } else {
@@ -186,6 +187,16 @@ function Invoke-SpaBuild($name, $dir, $missingMsg) {
         $srcMtime  = Get-SpaSourceNewestMtime $dir
         if ($srcMtime -and $srcMtime -gt $distMtime) {
             $reason = 'source changed since last build'
+        } elseif ($script:GitHead) {
+            # Reliable post-pull check: a `git pull`/`checkout` rewrites source
+            # files but git does NOT preserve mtimes in a way the check above can
+            # trust — so a freshly-pulled dashboard can look "up-to-date" and the
+            # updates (e.g. agentCatalog edits) never render. Rebuild whenever the
+            # committed code differs from the commit this dist was built from.
+            $builtFrom = if (Test-Path $stamp) { (Get-Content $stamp -Raw).Trim() } else { '' }
+            if ($builtFrom -ne $script:GitHead) {
+                $reason = 'code changed since last build (git pull/checkout)'
+            }
         }
     }
     if (-not $reason) {
@@ -209,6 +220,12 @@ function Invoke-SpaBuild($name, $dir, $missingMsg) {
         Write-Host "    npm run build ($name) ..." -ForegroundColor DarkGray
         cmd /c "npm run build --silent >NUL 2>&1"
         if (Test-Path $distIndex) {
+            # Stamp the commit this dist was built from so the next start can tell
+            # whether a pull/checkout has since changed the code (see staleness
+            # check above). dist/ is gitignored, so this stays machine-local.
+            if ($script:GitHead) {
+                Set-Content -Path $stamp -Value $script:GitHead -NoNewline -Encoding ascii
+            }
             Write-Host "    $name built -> $(Resolve-Path -Relative $distIndex)" -ForegroundColor Green
         } else {
             Write-Warning "$name build did not produce dist/index.html"
@@ -220,6 +237,13 @@ $dashDir       = Join-Path $RepoRoot 'demo\dashboard'
 $dashDist      = Join-Path $dashDir 'dist\index.html'
 $classifierDir = Join-Path $RepoRoot 'demo\classifier-ui'
 $hitlDir       = Join-Path $RepoRoot 'demo\hitl-ui'
+
+# Current commit — lets each SPA build detect "the code changed since I was last
+# built" after a git pull/checkout, which the mtime check alone can miss. Empty
+# string if git isn't available, in which case we fall back to the mtime check.
+$script:GitHead = ''
+try { $script:GitHead = (& git -C $RepoRoot rev-parse HEAD 2>$null) } catch { $script:GitHead = '' }
+if ($script:GitHead) { $script:GitHead = $script:GitHead.Trim() }
 
 Invoke-SpaBuild 'React dashboard'   $dashDir       '/dashboard/ will 503.'
 Invoke-SpaBuild 'classifier UI'     $classifierDir '/classifier will 503.'
