@@ -46,8 +46,16 @@ from .adapters._slack_user_map import load_slack_user_map
 logger = logging.getLogger(__name__)
 
 _SLACK_API = "https://slack.com/api"
-_TIMEOUT = float(os.environ.get("AIOPS_SLACK_BOT_TIMEOUT", "5"))
 _BOT_TOKEN_PREFIX = "xoxb-"
+
+
+def _timeout() -> float:
+    """Per-call HTTP timeout. Read from the env on each call (not captured at
+    import) so an operator can retune ``AIOPS_SLACK_BOT_TIMEOUT`` without a
+    restart — same nit as the PagerDuty adapter."""
+    return float(os.environ.get("AIOPS_SLACK_BOT_TIMEOUT", "5"))
+
+
 _USER_MAP_PATH = Path(__file__).parent / "adapters" / "slack_users.json"
 
 # Slack channel-name rules: lowercase, no spaces/periods, ≤80 chars, only
@@ -94,7 +102,13 @@ def _resolve_invites(invite_handles: list[str]) -> tuple[list[dict[str, Any]], l
     for handle in invite_handles:
         key = handle.lstrip("@")
         uid = user_map.get(key)
-        rows.append({"handle": handle, "slack_user_id": uid, "invite_status": "no_id" if not uid else "pending"})
+        rows.append(
+            {
+                "handle": handle,
+                "slack_user_id": uid,
+                "invite_status": "no_id" if not uid else "pending",
+            }
+        )
         if uid and uid not in user_ids:
             user_ids.append(uid)
     return rows, user_ids
@@ -129,7 +143,7 @@ def _slack_post(method: str, payload: dict[str, Any], token: str) -> dict[str, A
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
         },
-        timeout=_TIMEOUT,
+        timeout=_timeout(),
     )
     r.raise_for_status()
     return r.json()
@@ -142,7 +156,7 @@ def _find_existing_channel(name: str, token: str) -> str | None:
         f"{_SLACK_API}/conversations.list",
         params={"types": "public_channel", "limit": 1000, "exclude_archived": "true"},
         headers={"Authorization": f"Bearer {token}"},
-        timeout=_TIMEOUT,
+        timeout=_timeout(),
     )
     r.raise_for_status()
     data = r.json()
@@ -188,7 +202,9 @@ def create_war_room(
             channel_id = _find_existing_channel(name, token)
             channel_name = name
             if not channel_id:
-                return _simulated(channel, invite_handles, note="name_taken but channel lookup failed")
+                return _simulated(
+                    channel, invite_handles, note="name_taken but channel lookup failed"
+                )
         else:
             # Most common real cause is a missing bot scope (channels:manage).
             # Degrade to a simulated room so the war room still gets a link,
@@ -214,7 +230,9 @@ def create_war_room(
             for r in rows:
                 if not r["slack_user_id"]:
                     continue
-                r["invite_status"] = "invited" if (invited_ok or inv_err in ok_errors) else f"failed:{inv_err}"
+                r["invite_status"] = (
+                    "invited" if (invited_ok or inv_err in ok_errors) else f"failed:{inv_err}"
+                )
 
         # 3) Post the opening context pack + the click-to-join meeting link.
         meeting_url = _meeting_url(channel_name)

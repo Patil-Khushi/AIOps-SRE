@@ -1714,17 +1714,20 @@ class WarRoomTryRequest(BaseModel):
     recommended_runbook: str | None = None
     status: str = Field(default="Active")
     incident_id: str | None = None
-    create_bridge: bool = Field(default=True)
-    """When True, actually stand up the Slack war room (``assemble`` — creates
-    the channel, invites SMEs, returns a join link). When False, a pure
-    ``decide`` preview with no side effects."""
+    create_bridge: bool = Field(default=False)
+    """Safe by default: a pure ``decide`` preview with NO side effects, so
+    clicking *try-it* on the dashboard never touches the live workspace. Set
+    ``create_bridge=true`` to explicitly opt in to actually standing up the
+    Slack war room (``assemble`` — creates the channel, invites SMEs, returns a
+    join link)."""
 
 
 @app.post("/api/war-room/assemble")
 def war_room_assemble_endpoint(req: WarRoomTryRequest) -> dict[str, Any]:
-    """Try-it: synthesize a verdict and run RA-006. With ``create_bridge``
-    (default) it actually creates the Slack war room and returns the join
-    link; otherwise it's a pure ``decide`` preview (no side effects)."""
+    """Try-it inspector: synthesize a verdict and run RA-006. Safe by default —
+    a pure ``decide`` preview with no side effects. Pass ``create_bridge=true``
+    to explicitly opt in to creating the real Slack war room and returning the
+    join link."""
     if req.severity not in ("Sev-1", "Sev-2", "Sev-3", "Sev-4"):
         raise HTTPException(status_code=400, detail="severity must be Sev-1..Sev-4")
     if req.status not in ("Active", "Suppressed"):
@@ -1785,9 +1788,7 @@ def war_room_set_status_endpoint(wid: str, req: WarRoomStatusRequest) -> dict[st
     uses this so an operator can mark the bridge call in progress or the
     incident resolved. ``no_room`` rows are terminal and can't be advanced."""
     if req.status not in WAR_ROOM_STATUSES:
-        raise HTTPException(
-            status_code=400, detail=f"status must be one of {WAR_ROOM_STATUSES}"
-        )
+        raise HTTPException(status_code=400, detail=f"status must be one of {WAR_ROOM_STATUSES}")
     for row in _RECENT_WAR_ROOMS:
         if row.get("id") == wid:
             if row.get("status") == "no_room":
@@ -1821,7 +1822,9 @@ def war_room_set_attendee_endpoint(wid: str, req: AttendeeStatusRequest) -> dict
             if person.get("handle") == req.handle:
                 person["attendance"] = req.attendance
                 return {"id": wid, "handle": req.handle, "attendance": req.attendance}
-        raise HTTPException(status_code=404, detail=f"attendee {req.handle!r} not in war room {wid!r}")
+        raise HTTPException(
+            status_code=404, detail=f"attendee {req.handle!r} not in war room {wid!r}"
+        )
     raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
 
 

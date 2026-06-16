@@ -23,6 +23,7 @@ level := "none"     if input.action == "notify.send"
 level := "optional" if input.action == "itsm.incident.create"
 level := "optional" if input.action == "itsm.incident.update"
 level := "required" if input.action == "automation.runbook.execute"
+level := "optional" if input.action == "chatops.war_room.create"
 
 # Phase: Proactive
 level := "none"     if input.action == "topology.discover"
