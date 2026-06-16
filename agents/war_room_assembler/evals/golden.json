@@ -1,0 +1,124 @@
+{
+  "agent": "war_room_assembler",
+  "version": "0.1.0",
+  "description": "War-room assembly decisions for representative TriageVerdicts. Asserts the deterministic scalar fields (assembled / channel / chat_severity) so cases pass with or without a live observability cluster — the context pack degrades to 'unavailable' off-cluster but does not change these outcomes.",
+  "cases": [
+    {
+      "id": "sev1-payment-assembles-room",
+      "description": "Sev-1 with an incident id assembles a P1 war room named after the incident.",
+      "input": {
+        "verdict": {
+          "incident_id": "INC0012345",
+          "affected_service": "payment",
+          "severity": "Sev-1",
+          "confidence_score": 0.95,
+          "alert_summary": "Payment service down — 100% 5xx rate",
+          "assigned_team": "Payments Team",
+          "assigned_engineer": "oncall@payments.example.com",
+          "recommended_runbook": "https://runbooks.example.com/payment-cpu",
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T02:00:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["payment-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T02:00:00Z"
+      },
+      "expected": {
+        "assembled": true,
+        "channel": "war-room-inc0012345",
+        "chat_severity": "p1",
+        "reason_contains": "1 SME"
+      }
+    },
+    {
+      "id": "sev2-cart-assembles-room-no-incident-id",
+      "description": "Sev-2 without an incident id falls back to a service-named P2 war room.",
+      "input": {
+        "verdict": {
+          "affected_service": "cart",
+          "severity": "Sev-2",
+          "confidence_score": 0.8,
+          "alert_summary": "Cart service error rate spike",
+          "assigned_team": "Order Experience",
+          "assigned_engineer": "oncall@order-experience.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T14:00:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["cart-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T14:00:00Z"
+      },
+      "expected": {
+        "assembled": true,
+        "channel": "war-room-cart",
+        "chat_severity": "p2"
+      }
+    },
+    {
+      "id": "sev3-no-war-room",
+      "description": "Sev-3 is below the war-room threshold — no room assembled.",
+      "input": {
+        "verdict": {
+          "affected_service": "recommendation",
+          "severity": "Sev-3",
+          "confidence_score": 0.6,
+          "alert_summary": "Recommendation latency mildly elevated",
+          "assigned_team": "Discovery Team",
+          "assigned_engineer": "oncall@discovery.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T14:00:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["reco-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T14:00:00Z"
+      },
+      "expected": {
+        "assembled": false,
+        "chat_severity": "info",
+        "reason_contains": "below Sev-2"
+      }
+    },
+    {
+      "id": "sev1-suppressed-no-war-room",
+      "description": "A Sev-1 already suppressed by RA-001 (duplicate cluster) must not open a room.",
+      "input": {
+        "verdict": {
+          "affected_service": "payment",
+          "severity": "Sev-1",
+          "confidence_score": 0.95,
+          "alert_summary": "Payment service down — duplicate of active cluster",
+          "assigned_team": "Payments Team",
+          "assigned_engineer": "oncall@payments.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 7,
+          "status": "Suppressed",
+          "audit_metadata": {
+            "created_at": "2026-05-13T02:05:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["payment-002"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T02:05:00Z"
+      },
+      "expected": {
+        "assembled": false,
+        "reason_contains": "suppressed"
+      }
+    }
+  ]
+}

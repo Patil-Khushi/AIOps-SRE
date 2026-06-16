@@ -54,7 +54,7 @@ import re
 import subprocess
 import threading
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -90,13 +90,15 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
-from agents.alert_triage import Alert  # noqa: E402
+from agents.alert_triage import Alert, AuditMetadata, TriageVerdict  # noqa: E402
 from agents.auto_healer_lite import ExecutionRequest  # noqa: E402
 from agents.auto_healer_lite import execute as auto_heal_execute  # noqa: E402
 from agents.incident_commander import command as incident_command  # noqa: E402
 from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
 from agents.remediation_recommender import RemediationInput  # noqa: E402
 from agents.remediation_recommender import recommend as remediate  # noqa: E402
+from agents.war_room_assembler import assemble as assemble_war_room  # noqa: E402
+from agents.war_room_assembler import decide as decide_war_room  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
     ApprovalError,
@@ -373,12 +375,22 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
 
-    # INFRA-2 (#74): the RA-001 → RA-002 → RA-003 → RA-005 chain now lives in
-    # the orchestrator seam. ``to_api_dict`` reproduces this route's historical
-    # response shape verbatim, so the dashboard / SPA / existing tests are
-    # unaffected. Alert construction + the 400 mapping stay here because they
-    # are HTTP concerns, not pipeline logic.
-    return run_reactive_flow(alert_obj).to_api_dict()
+    # INFRA-2 (#74): the RA-001 → RA-002 → RA-003 → RA-005 chain lives in the
+    # orchestrator seam now; ``to_api_dict`` reproduces this route's historical
+    # response shape verbatim. Alert construction + the 400 mapping stay here as
+    # HTTP concerns, not pipeline logic.
+    result = run_reactive_flow(alert_obj)
+
+    # RA-006 War-Room Assembler: on Sev-1/Sev-2 stand up the incident war room
+    # (channel + on-call SME + context pack + seed timeline). ``assemble`` makes
+    # several sequential Slack calls (~5s each) and must not sit on the triage
+    # hot path (review #5) — offload to the background pool so /api/triage
+    # returns promptly. The assembly is recorded for the /api/war-room/recent
+    # feed + /metrics; the HTTP response keeps its legacy shape (war-room
+    # surfaces via its own endpoints, not inline).
+    _HITL_AGENT_POOL.submit(_assemble_war_room_bg, result.verdict)
+
+    return result.to_api_dict()
 
 
 @app.post("/api/triage/fixture/{fixture_id}", response_model=None)
@@ -1753,6 +1765,208 @@ async def classifier_evaluate() -> dict[str, Any]:
         return classifier_metrics()
     finally:
         _EVAL_RUNNING = False
+
+
+# ─── RA-006 War-Room Assembler surface (standalone dashboard) ──────────────
+#
+# Independent endpoints / page so RA-006 reads as its own product.
+#   - ``/api/war-room/assemble`` is the *try-it inspector*: build a verdict
+#     from simple form fields and run ``decide`` (pure — no chatops emit) so
+#     you can see exactly how RA-006 reacts to any severity / status without
+#     touching the live pipeline.
+#   - ``/api/war-room/recent`` is the *live feed*: assemblies produced by the
+#     real ``/api/triage`` pipeline, newest first, from an in-memory ring
+#     buffer (RA-006 has no DB table — the demo doesn't need durable history).
+
+_RECENT_WAR_ROOMS: deque[dict[str, Any]] = deque(maxlen=100)
+_WAR_ROOM_SEQ = 0
+
+# War-room lifecycle the dashboard board advances through:
+# open → in_call → call_ended → resolved. ``no_room`` is the terminal state
+# for minor/suppressed verdicts (no room was opened).
+WAR_ROOM_STATUSES = ("open", "in_call", "call_ended", "resolved", "no_room")
+
+
+def _record_war_room(assembly: dict[str, Any], verdict: TriageVerdict) -> str:
+    """Append a compact feed row for an assembly and return its feed id.
+
+    Each row carries a lifecycle ``status`` the board can advance:
+    ``open`` (room created, responders gathering) → ``in_call`` (live huddle)
+    → ``resolved``. Non-assembled verdicts land terminal as ``no_room``.
+    Best-effort — never raises into the triage pipeline."""
+    global _WAR_ROOM_SEQ
+    _WAR_ROOM_SEQ += 1
+    wid = str(_WAR_ROOM_SEQ)
+    assembled = assembly.get("assembled", False)
+    # Seed each invited SME's attendance so the board can track who actually
+    # joined the bridge. Starts at "invited"; an operator marks joined/declined.
+    for person in assembly.get("invited", []):
+        person.setdefault("attendance", "invited")
+    _RECENT_WAR_ROOMS.append(
+        {
+            "id": wid,
+            "status": "open" if assembled else "no_room",
+            "assembled": assembled,
+            "channel": assembly.get("channel"),
+            "severity": verdict.severity,
+            "chat_severity": assembly.get("chat_severity"),
+            "service": verdict.affected_service,
+            "team": verdict.assigned_team,
+            "sme_count": len(assembly.get("invited", [])),
+            "reason": assembly.get("reason"),
+            "bridge_url": assembly.get("bridge_url"),
+            "bridge_status": assembly.get("bridge_status"),
+            "assembled_at": assembly.get("assembled_at"),
+            "assembly": assembly,
+        }
+    )
+    return wid
+
+
+def _assemble_war_room_bg(verdict: TriageVerdict) -> None:
+    """Background worker for the triage hot path (review #5).
+
+    RA-006 assembly makes several sequential Slack calls (~5s each), so it runs
+    off-thread on the demo agent pool instead of inline in ``/api/triage``.
+    Records the assembly for the ``/api/war-room/recent`` feed + ``/metrics``; a
+    Slack hiccup is caught and logged and never touches the triage response that
+    has already returned."""
+    try:
+        wr = assemble_war_room(verdict).model_dump(mode="json")
+        _record_war_room(wr["assembly"], verdict)
+    except Exception:
+        logger.exception(
+            "RA-006: war-room assembly failed for verdict on %s", verdict.affected_service
+        )
+
+
+class WarRoomTryRequest(BaseModel):
+    """Try-it inspector input — simple fields the dashboard form collects.
+
+    Deliberately not a full ``TriageVerdict``: the operator picks a severity
+    and service and we synthesize the rest, so the page is about *RA-006's*
+    behaviour, not about reproducing the whole upstream triage."""
+
+    affected_service: str = Field(default="payment")
+    severity: str = Field(default="Sev-1")
+    assigned_team: str = Field(default="Payments Team")
+    assigned_engineer: str | None = Field(default="oncall@payments.example.com")
+    alert_summary: str | None = None
+    recommended_runbook: str | None = None
+    status: str = Field(default="Active")
+    incident_id: str | None = None
+    create_bridge: bool = Field(default=False)
+    """Safe by default: a pure ``decide`` preview with NO side effects, so
+    clicking *try-it* on the dashboard never touches the live workspace. Set
+    ``create_bridge=true`` to explicitly opt in to actually standing up the
+    Slack war room (``assemble`` — creates the channel, invites SMEs, returns a
+    join link)."""
+
+
+@app.post("/api/war-room/assemble")
+def war_room_assemble_endpoint(req: WarRoomTryRequest) -> dict[str, Any]:
+    """Try-it inspector: synthesize a verdict and run RA-006. Safe by default —
+    a pure ``decide`` preview with no side effects. Pass ``create_bridge=true``
+    to explicitly opt in to creating the real Slack war room and returning the
+    join link."""
+    if req.severity not in ("Sev-1", "Sev-2", "Sev-3", "Sev-4"):
+        raise HTTPException(status_code=400, detail="severity must be Sev-1..Sev-4")
+    if req.status not in ("Active", "Suppressed"):
+        raise HTTPException(status_code=400, detail="status must be Active or Suppressed")
+    verdict = TriageVerdict(
+        incident_id=req.incident_id,
+        affected_service=req.affected_service,
+        severity=req.severity,  # type: ignore[arg-type]
+        confidence_score=0.9,
+        alert_summary=req.alert_summary or f"{req.severity} on {req.affected_service}",
+        assigned_team=req.assigned_team,
+        assigned_engineer=req.assigned_engineer,
+        recommended_runbook=req.recommended_runbook,
+        status=req.status,  # type: ignore[arg-type]
+        audit_metadata=AuditMetadata(created_at=datetime.now(UTC), created_by="war-room-ui"),
+    )
+    if not req.create_bridge:
+        return decide_war_room(verdict).model_dump(mode="json")
+    assembly = assemble_war_room(verdict).assembly
+    # Surface it in the live feed too, so the try-it and pipeline share one view.
+    _record_war_room(assembly.model_dump(mode="json"), verdict)
+    return assembly.model_dump(mode="json")
+
+
+@app.get("/api/war-room/recent")
+def war_room_recent_endpoint(limit: int = 50) -> dict[str, Any]:
+    """Newest-first feed of war rooms the live pipeline has assembled."""
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    rows = list(reversed(_RECENT_WAR_ROOMS))[:limit]
+    return {"count": len(rows), "war_rooms": rows}
+
+
+@app.get("/api/war-room/metrics")
+def war_room_metrics_endpoint() -> dict[str, Any]:
+    """Header metrics for the RA-006 dashboard, derived from the live feed."""
+    rows = list(_RECENT_WAR_ROOMS)
+    assembled = [r for r in rows if r.get("assembled")]
+    total_smes = sum(r.get("sme_count", 0) for r in assembled)
+    return {
+        "total_seen": len(rows),
+        "assembled": len(assembled),
+        "suppressed_or_minor": len(rows) - len(assembled),
+        "open": sum(1 for r in rows if r.get("status") in ("open", "in_call", "call_ended")),
+        "resolved": sum(1 for r in rows if r.get("status") == "resolved"),
+        "avg_smes": round(total_smes / len(assembled), 2) if assembled else None,
+        "checked_at": datetime.now(UTC).isoformat(),
+    }
+
+
+class WarRoomStatusRequest(BaseModel):
+    status: str
+
+
+@app.post("/api/war-room/{wid}/status")
+def war_room_set_status_endpoint(wid: str, req: WarRoomStatusRequest) -> dict[str, Any]:
+    """Advance a war room's lifecycle (open → in_call → resolved). The board
+    uses this so an operator can mark the bridge call in progress or the
+    incident resolved. ``no_room`` rows are terminal and can't be advanced."""
+    if req.status not in WAR_ROOM_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {WAR_ROOM_STATUSES}")
+    for row in _RECENT_WAR_ROOMS:
+        if row.get("id") == wid:
+            if row.get("status") == "no_room":
+                raise HTTPException(status_code=409, detail="no_room war rooms are terminal")
+            row["status"] = req.status
+            return {"id": wid, "status": req.status}
+    raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
+
+
+ATTENDANCE_STATUSES = ("invited", "joined", "declined")
+
+
+class AttendeeStatusRequest(BaseModel):
+    handle: str
+    attendance: str
+
+
+@app.post("/api/war-room/{wid}/attendee")
+def war_room_set_attendee_endpoint(wid: str, req: AttendeeStatusRequest) -> dict[str, Any]:
+    """Set one invited SME's attendance (invited → joined / declined) on a war
+    room. Manual for now; an RSVP/presence feed can drive it automatically
+    later. Matches the person by their ``handle`` within the war room."""
+    if req.attendance not in ATTENDANCE_STATUSES:
+        raise HTTPException(
+            status_code=400, detail=f"attendance must be one of {ATTENDANCE_STATUSES}"
+        )
+    for row in _RECENT_WAR_ROOMS:
+        if row.get("id") != wid:
+            continue
+        for person in row.get("assembly", {}).get("invited", []):
+            if person.get("handle") == req.handle:
+                person["attendance"] = req.attendance
+                return {"id": wid, "handle": req.handle, "attendance": req.attendance}
+        raise HTTPException(
+            status_code=404, detail=f"attendee {req.handle!r} not in war room {wid!r}"
+        )
+    raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
 
 
 # ─── RA-002 Classifier UI mount (standalone Vite app under demo/classifier-ui) ─

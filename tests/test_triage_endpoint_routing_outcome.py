@@ -15,6 +15,7 @@ layer that implements them.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import pytest
@@ -37,13 +38,28 @@ def _alert_payload() -> dict[str, Any]:
 
 
 class _FakeFlowResult:
-    """Stand-in for ``ReactiveFlowResult`` — the endpoint only calls
-    ``to_api_dict()`` on whatever the orchestrator returns."""
+    """Stand-in for ``ReactiveFlowResult``: the endpoint calls ``to_api_dict()``
+    for the response and reads ``.verdict`` to hand the RA-006 war-room assembly
+    off to the background pool (review #5)."""
 
     SENTINEL: ClassVar[dict[str, Any]] = {
         "verdict": {"affected_service": "payment"},
         "persisted": {"verdict_id": 7},
     }
+
+    # A low-severity Active verdict so the background war-room assembly the
+    # endpoint fires is a clean no-op — RA-006 only assembles on Sev-1/Sev-2.
+    verdict: ClassVar = srv.TriageVerdict(
+        affected_service="payment",
+        severity="Sev-4",
+        confidence_score=0.9,
+        alert_summary="n/a",
+        assigned_team="Payments Team",
+        status="Active",
+        audit_metadata=srv.AuditMetadata(
+            created_at=datetime(2026, 1, 1, tzinfo=UTC), created_by="test"
+        ),
+    )
 
     def to_api_dict(self) -> dict[str, Any]:
         return self.SENTINEL

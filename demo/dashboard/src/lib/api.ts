@@ -45,6 +45,84 @@ function unwrap<T>(p: Promise<{ data: T }>): Promise<T> {
   });
 }
 
+// ── RA-006 War-Room Assembler shapes (agents/war_room_assembler models) ──
+export interface InvitedSME {
+  handle: string;
+  name?: string | null;
+  team?: string | null;
+  reason: string;
+  source: string;
+  slack_user_id?: string | null;
+  invite_status?: string | null;
+  attendance?: string | null; // invited | joined | declined
+}
+export interface ContextPackItem {
+  label: string;
+  value: string;
+  source?: string | null;
+}
+export interface TimelineEvent {
+  at: string;
+  event: string;
+}
+export interface WarRoomAssembly {
+  assembled: boolean;
+  channel: string;
+  title: string;
+  chat_severity: string;
+  invited: InvitedSME[];
+  context_pack: ContextPackItem[];
+  timeline: TimelineEvent[];
+  reason: string;
+  audit_trace: string[];
+  assembled_at: string;
+  bridge_status: string;
+  bridge_provider?: string | null;
+  bridge_channel_id?: string | null;
+  bridge_url?: string | null;
+  meeting_url?: string | null;
+}
+export interface WarRoomTryRequest {
+  affected_service: string;
+  severity: string;
+  assigned_team: string;
+  assigned_engineer?: string | null;
+  alert_summary?: string | null;
+  recommended_runbook?: string | null;
+  status: string;
+  incident_id?: string | null;
+  create_bridge?: boolean;
+}
+export interface WarRoomFeedRow {
+  id: string;
+  status: string; // open | in_call | resolved | no_room
+  assembled: boolean;
+  channel: string;
+  severity: string;
+  chat_severity: string;
+  service: string;
+  team: string;
+  sme_count: number;
+  reason: string;
+  bridge_url?: string | null;
+  bridge_status?: string | null;
+  assembled_at: string;
+  assembly: WarRoomAssembly;
+}
+export interface WarRoomRecentResponse {
+  count: number;
+  war_rooms: WarRoomFeedRow[];
+}
+export interface WarRoomMetrics {
+  total_seen: number;
+  assembled: number;
+  suppressed_or_minor: number;
+  open: number;
+  resolved: number;
+  avg_smes: number | null;
+  checked_at: string;
+}
+
 export const api = {
   health:      () => unwrap<HealthResponse>(http.get('/api/health')),
   liveAlerts:  () => unwrap<LiveAlertsResponse>(http.get('/api/live-alerts')),
@@ -168,5 +246,18 @@ export const api = {
   kbPublishOutcome: (approvalId: string) =>
     unwrap<{ status: string; approval_id?: string; approver?: string | null; error?: string | null }>(
       http.get(`/api/kb/publish/outcome/${approvalId}`),
+    ),
+
+  // ── RA-006 War-Room Assembler ───────────────────────────────────────────
+  warRoomAssemble: (req: WarRoomTryRequest) =>
+    unwrap<WarRoomAssembly>(http.post('/api/war-room/assemble', req)),
+  warRoomRecent: (limit = 50) =>
+    unwrap<WarRoomRecentResponse>(http.get('/api/war-room/recent', { params: { limit } })),
+  warRoomMetrics: () => unwrap<WarRoomMetrics>(http.get('/api/war-room/metrics')),
+  warRoomSetStatus: (id: string, status: string) =>
+    unwrap<{ id: string; status: string }>(http.post(`/api/war-room/${id}/status`, { status })),
+  warRoomSetAttendee: (id: string, handle: string, attendance: string) =>
+    unwrap<{ id: string; handle: string; attendance: string }>(
+      http.post(`/api/war-room/${id}/attendee`, { handle, attendance }),
     ),
 };
