@@ -161,6 +161,34 @@ def _hermetic_gate_approver():
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_slack_user_map_env(monkeypatch):
+    """Clear the Slack/on-call identity env overrides around every test (#174).
+
+    ``demo/ui/server.py`` calls ``load_dotenv()`` at import, so once any test
+    imports the server (the auto-triage / approval / triage-endpoint suites do)
+    a developer's real ``.env`` pushes ``AIOPS_SLACK_USER_MAP_JSON`` (and
+    ``AIOPS_ONCALL_ROSTER_JSON``) into the *process-wide* environment for the
+    rest of the session. The Slack user-map loader merges that env on top of
+    whatever file map a test wrote, so ``tests/test_chatops_slack_adapter.py``
+    and ``tests/test_chatops_slack_bot_adapter.py`` start resolving handles to
+    real member IDs instead of their fixtures — green in isolation, red in the
+    full suite (the order-dependent bleed in #174).
+
+    Clearing it here fixes #174 at the source for every test (not just the one
+    file that had its own guard), and protects the bot-adapter suite, which had
+    none. Tests that specifically need an override set it themselves via
+    ``monkeypatch.setenv`` after this autouse fixture runs.
+
+    ``AIOPS_ONCALL_ROSTER_JSON`` is cleared proactively for the same
+    ``.env``-injection class — NOT because the Slack loader reads it (it
+    doesn't; that var feeds ``scripts/seed_oncall``). It keeps a developer's
+    real roster from leaking real identities into any seed-driven test.
+    """
+    monkeypatch.delenv("AIOPS_SLACK_USER_MAP_JSON", raising=False)
+    monkeypatch.delenv("AIOPS_ONCALL_ROSTER_JSON", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_jaeger_circuit():
     """Reset the Jaeger circuit breaker around every test (#113).
 
@@ -176,3 +204,27 @@ def _hermetic_jaeger_circuit():
         yield
     finally:
         _jaeger._reset_circuit_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_chatops_hub():
+    """Reset the chatops WebSocket history hub around every test.
+
+    The hub (``demo/ui/chatops_ws._HUB``) keeps a process-global history ring
+    that a new ``/ws/chatops`` client replays on connect. A chatops message
+    emitted by one test — the chained-demo / reactive-flow / triage suites
+    route notifications through ``get_client().send()`` → the WebSocket
+    adapter → ``_HUB.push()`` — otherwise lingers in that ring and leaks into
+    the next test's replay, which is what makes
+    ``test_chatops_ws::test_websocket_endpoint_replays_history_and_streams_new_messages``
+    read a stale ``"product-catalog … Prometheus"`` message instead of its own
+    ``"first"``. Clearing at both ends, same discipline as the SQLite / gate /
+    Jaeger-circuit fixtures, makes the hub hermetic regardless of run order.
+    """
+    from demo.ui.chatops_ws import get_hub
+
+    get_hub()._reset_for_tests()
+    try:
+        yield
+    finally:
+        get_hub()._reset_for_tests()

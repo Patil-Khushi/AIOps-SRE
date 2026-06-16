@@ -89,7 +89,19 @@ class Decision:
 
 
 class GateError(RuntimeError):
-    """Raised when an action is blocked by HITL policy."""
+    """Raised when an action is blocked by HITL policy.
+
+    Carries the structured :class:`Decision` (``.decision``) so a caller that
+    uses :meth:`HITLGate.enforce` for *physical* gating can still report the
+    gate outcome — level, reason, approval id — on its own result object,
+    without a second :meth:`HITLGate.check` round-trip (which, for a REQUIRED
+    action, would re-invoke the approver and double-prompt the human).
+    ``None`` only when raised without one.
+    """
+
+    def __init__(self, message: str, *, decision: Decision | None = None) -> None:
+        super().__init__(message)
+        self.decision = decision
 
 
 # Phase 0 defaults. Phase 1+ replaces this dict with an OPA query.
@@ -112,6 +124,11 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     # Prescriptive-Adaptive phase
     "remediation.recommend": AutonomyLevel.REQUIRED,
     "auto_heal.execute": AutonomyLevel.OPTIONAL,
+    # PRS-002 auto_healer_lite: every execution is human-gated, no
+    # exceptions. Stricter than the OPTIONAL ``auto_heal.execute`` above
+    # because the "lite" path is the Day-1 scaffold — we trade autonomy
+    # for safety until the policy story matures.
+    "auto_heal.lite.execute": AutonomyLevel.REQUIRED,
     "policy.optimize": AutonomyLevel.REQUIRED,
     "feedback.promote_model": AutonomyLevel.REQUIRED,
     "knowledge.publish": AutonomyLevel.REQUIRED,
@@ -269,7 +286,10 @@ class HITLGate:
     def enforce(self, action: str, context: dict[str, Any] | None = None) -> Decision:
         d = self.check(action, context)
         if not d.allowed:
-            raise GateError(f"blocked: action={action!r} level={d.level.value} reason={d.reason}")
+            raise GateError(
+                f"blocked: action={action!r} level={d.level.value} reason={d.reason}",
+                decision=d,
+            )
         return d
 
 

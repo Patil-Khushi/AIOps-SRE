@@ -79,9 +79,13 @@ def test_close_succeeds_with_approver(fake_update):
         incident_id="INC1", sys_id="sys-1", close_code="Solved (Permanently)", hitl_context={}
     )
     assert out["status"] == "closed"
-    assert len(fake_update["calls"]) == 1
+    # Two-step Resolve → Close: state 6 (with resolution code + proof notes),
+    # then state 7 (Closed).
+    assert len(fake_update["calls"]) == 2
     assert fake_update["calls"][0]["fields"]["state"] == "6"  # Resolved
+    assert fake_update["calls"][1]["fields"]["state"] == "7"  # Closed
     assert "close_code" in fake_update["calls"][0]["fields"]
+    assert "close_notes" in fake_update["calls"][0]["fields"]
 
 
 # ─── verifier integration ────────────────────────────────────────────────────

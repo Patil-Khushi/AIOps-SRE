@@ -88,6 +88,19 @@ class _ChatOpsHub:
         with self._lock:
             self._listeners.discard(q)
 
+    def _reset_for_tests(self) -> None:
+        """Clear the history ring + listeners so a test starts from an empty hub.
+
+        The hub is a process-global singleton, so a chatops message emitted by
+        an earlier test (a reactive-flow / triage / chained-demo test that
+        routes a notification) lingers in ``_history`` and leaks into the next
+        test's replay. ``tests/conftest.py`` calls this around every test, same
+        discipline as the per-test SQLite / gate / Jaeger-circuit isolation.
+        """
+        with self._lock:
+            self._history.clear()
+            self._listeners.clear()
+
 
 def _safe_put(q: asyncio.Queue[dict[str, Any]], record: dict[str, Any]) -> None:
     """``Queue.put_nowait`` but never raises — drop on full so one slow client
@@ -123,11 +136,20 @@ def bootstrap_websocket_adapter() -> None:
 
     Must be called from inside the asyncio event loop (i.e. from the FastAPI
     lifespan context manager) so ``asyncio.get_running_loop()`` resolves to the
-    server's loop. Idempotent if the chatops client de-duplicates adapter
-    registrations; today it does not, so call exactly once at startup.
+    server's loop.
+
+    Idempotent: the loop is re-attached on every call (each app/lifespan owns a
+    different loop), but the ``WebSocketChatOpsAdapter`` is registered only
+    once. Without that guard, repeated lifespans — multiple ``TestClient``
+    contexts in a test session, or a hot reload — pile up duplicate adapters on
+    the process-global chatops client, so every message fans into the hub N
+    times and the ``/ws/chatops`` replay/stream order breaks.
     """
     _HUB.attach_loop(asyncio.get_running_loop())
-    get_chatops_client().register(WebSocketChatOpsAdapter(_HUB))
+    client = get_chatops_client()
+    if any(isinstance(a, WebSocketChatOpsAdapter) for a in client.adapters):
+        return
+    client.register(WebSocketChatOpsAdapter(_HUB))
     logger.info("chatops: registered websocket adapter (/ws/chatops)")
 
 
