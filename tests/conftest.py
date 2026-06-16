@@ -21,34 +21,7 @@ to capture and replay whatever the previous test left behind.
 
 from __future__ import annotations
 
-import os
-
 import pytest
-
-# Pin the observability backends to a fast-refusing endpoint before any
-# module that snapshots their URL/timeout at import time is loaded (#151 class).
-#
-# ``aiops.tools.observability.prometheus`` and ``...jaeger`` read
-# ``AIOPS_PROMETHEUS_URL`` / ``AIOPS_JAEGER_URL`` (and their timeouts) into
-# module-level constants at import — so a fixture set later cannot redirect
-# them. The agent path ``alert_triage.triage`` calls both providers for real
-# during ``_fetch_metric_context`` / ``_fetch_trace_context``; with no cluster
-# up, the eval-harness test that walks every agent's golden cases makes those
-# HTTP round-trips one after another and blows past the 60s pytest-timeout,
-# which (method="thread") hard-kills the whole process before the suite
-# finishes. Pointing every test at ``127.0.0.1:1`` (connection refused
-# instantly) with a sub-second timeout makes the calls fail fast and lets the
-# agent's existing graceful-degradation path (returns ``None`` on error) run.
-#
-# ``setdefault`` so a developer running ``@pytest.mark.integration`` tests
-# against a real cluster — who must export these vars anyway — is never
-# overridden. These run at conftest import, ahead of the agent/jaeger imports
-# below, so the module-level snapshots pick them up.
-os.environ.setdefault("AIOPS_PROMETHEUS_URL", "http://127.0.0.1:1")
-os.environ.setdefault("AIOPS_PROMETHEUS_TIMEOUT", "0.25")
-os.environ.setdefault("AIOPS_JAEGER_URL", "http://127.0.0.1:1")
-os.environ.setdefault("AIOPS_JAEGER_TIMEOUT", "0.25")
-os.environ.setdefault("AIOPS_JAEGER_CONNECT_TIMEOUT", "0.25")
 
 # Disable embeddings in the test suite by default (#113).
 #
