@@ -1,0 +1,148 @@
+{
+  "agent": "auto_healer_lite",
+  "version": "0.2.0",
+  "description": "Day-1 goldens for PRS-002 generic surface. The legacy HITL-1 narrow path (RestartRecommendation) is covered by tests/test_auto_healer_lite.py, not here. These cases pin the eval-harness deterministic outcomes: REFUSED (validation failures) and BLOCKED (valid option, gate cleared the path through, default _no_approver rejected the REQUIRED action). The DRY_RUN_OK happy path requires a live approver and is exercised by tests/test_auto_healer_lite_prs002.py instead — eval-harness goldens stay deterministic.",
+  "cases": [
+    {
+      "id": "valid_option_blocked_by_required_hitl",
+      "description": "A well-formed RemediationOption (LOW blast set_flag from PRS-001) reaches the gate. The default _no_approver returns nobody → REQUIRED action blocks. Asserts the contract invariants stay True on a BLOCKED verdict.",
+      "input": {
+        "option": {
+          "option_id": "rca-step-2",
+          "title": "Disable producer flag",
+          "description": "Disable producer flag",
+          "action_type": "set_flag",
+          "blast_radius": "low",
+          "blast_radius_score": 1,
+          "rollback": "Re-enable the flag.",
+          "rollback_tested": true,
+          "confidence": 0.73,
+          "estimated_mttr_minutes": 3,
+          "requires_hitl": true,
+          "rationale": "From RCA: ranked #2 of 2 fix steps.",
+          "tool_capability": "feature_flags.set_variant",
+          "tool_args": {"flag": "paymentEventsV2", "variant": "off"},
+          "source": "rca_fix_step"
+        },
+        "incident_id": "INC-0001",
+        "affected_service": "payment",
+        "operator": "alice@example.com"
+      },
+      "expected": {
+        "affected_service": "payment",
+        "option_id": "rca-step-2",
+        "status": "blocked",
+        "requires_hitl": true,
+        "dry_run": true,
+        "tool_capability": "feature_flags.set_variant",
+        "would_execute": false
+      }
+    },
+    {
+      "id": "refused_missing_requires_hitl",
+      "description": "The option does not declare requires_hitl=True. Auto-Healer refuses BEFORE consulting the gate so a buggy upstream never sneaks an unguarded action through. Catalog principle #3.",
+      "input": {
+        "option": {
+          "option_id": "bad-1",
+          "action_type": "set_flag",
+          "blast_radius": "low",
+          "rollback": "x",
+          "tool_capability": "feature_flags.set_variant",
+          "tool_args": {"flag": "x", "variant": "off"}
+        },
+        "affected_service": "payment"
+      },
+      "expected": {
+        "status": "refused",
+        "requires_hitl": true,
+        "would_execute": false
+      }
+    },
+    {
+      "id": "refused_non_manual_without_tool_capability",
+      "description": "An option declares action_type=set_flag (non-manual) but carries no tool_capability. Malformed contract — Auto-Healer has no way to act on it. Refused.",
+      "input": {
+        "option": {
+          "option_id": "bad-2",
+          "action_type": "set_flag",
+          "blast_radius": "low",
+          "rollback": "x",
+          "requires_hitl": true
+        },
+        "affected_service": "payment"
+      },
+      "expected": {
+        "status": "refused",
+        "requires_hitl": true,
+        "would_execute": false
+      }
+    },
+    {
+      "id": "refused_missing_option_id",
+      "description": "Option carries no option_id. The audit trail can't cross-reference back to PRS-001 without one → refused before the gate.",
+      "input": {
+        "option": {
+          "action_type": "manual",
+          "blast_radius": "low",
+          "rollback": "x",
+          "requires_hitl": true
+        },
+        "affected_service": "payment"
+      },
+      "expected": {
+        "status": "refused",
+        "requires_hitl": true,
+        "would_execute": false
+      }
+    },
+    {
+      "id": "manual_action_blocked_by_required_hitl",
+      "description": "Manual action — no tool_capability needed — still goes through the HITL gate. The gate blocks because the action is REQUIRED and there is no approver. Status=blocked, tool_capability=null is expected.",
+      "input": {
+        "option": {
+          "option_id": "manual-investigate",
+          "action_type": "manual",
+          "blast_radius": "low",
+          "rollback": "N/A — human-driven action.",
+          "requires_hitl": true
+        },
+        "incident_id": "INC-0002",
+        "affected_service": "cart"
+      },
+      "expected": {
+        "affected_service": "cart",
+        "option_id": "manual-investigate",
+        "status": "blocked",
+        "requires_hitl": true,
+        "dry_run": true,
+        "would_execute": false
+      }
+    },
+    {
+      "id": "rollback_deploy_option_blocked",
+      "description": "Higher-blast option (rollback_deploy, MEDIUM) carries its tool_capability cleanly. Same gate outcome — blocked because no approver is installed in the eval harness. Verifies the contract handles MEDIUM-blast actions identically.",
+      "input": {
+        "option": {
+          "option_id": "memory-rollback-recent-deploy",
+          "action_type": "rollback_deploy",
+          "blast_radius": "medium",
+          "blast_radius_score": 3,
+          "rollback": "Re-apply the current Helm release.",
+          "requires_hitl": true,
+          "tool_capability": "k8s.deployment.rollback",
+          "tool_args": {"namespace": "otel-demo", "deployment": "email"}
+        },
+        "incident_id": "INC-0003",
+        "affected_service": "email"
+      },
+      "expected": {
+        "affected_service": "email",
+        "option_id": "memory-rollback-recent-deploy",
+        "status": "blocked",
+        "requires_hitl": true,
+        "tool_capability": "k8s.deployment.rollback",
+        "would_execute": false
+      }
+    }
+  ]
+}
