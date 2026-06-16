@@ -27,16 +27,6 @@ from aiops.tools.chatops.adapters.slack import SlackWebhookAdapter
 WEBHOOK = "https://hooks.slack.com/services/T0000FAKE/B0000FAKE/abcdef"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_slack_user_map_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The real handle->user-id map lives in ``AIOPS_SLACK_USER_MAP_JSON``
-    (``.env.shared``, loaded by ``uv run``) and is merged on top of any file
-    map. Clear it so these tests exercise only the file map they write — not a
-    developer's real local env (otherwise ``chinmay`` resolves to the real id
-    instead of the test fixture's)."""
-    monkeypatch.delenv("AIOPS_SLACK_USER_MAP_JSON", raising=False)
-
-
 def _msg(**overrides: Any) -> ChatMessage:
     defaults: dict[str, Any] = {
         "channel": "incidents",

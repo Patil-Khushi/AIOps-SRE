@@ -161,6 +161,29 @@ def _hermetic_gate_approver():
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_slack_user_map_env(monkeypatch):
+    """Clear the Slack/on-call identity env overrides around every test (#174).
+
+    ``demo/ui/server.py`` calls ``load_dotenv()`` at import, so once any test
+    imports the server (the auto-triage / approval / triage-endpoint suites do)
+    a developer's real ``.env`` pushes ``AIOPS_SLACK_USER_MAP_JSON`` (and
+    ``AIOPS_ONCALL_ROSTER_JSON``) into the *process-wide* environment for the
+    rest of the session. The Slack user-map loader merges that env on top of
+    whatever file map a test wrote, so ``tests/test_chatops_slack_adapter.py``
+    and ``tests/test_chatops_slack_bot_adapter.py`` start resolving handles to
+    real member IDs instead of their fixtures — green in isolation, red in the
+    full suite (the order-dependent bleed in #174).
+
+    Clearing both vars here fixes it at the source for every test (not just the
+    one file that had its own guard), and protects the bot-adapter suite, which
+    had none. Tests that specifically need an override set it themselves via
+    ``monkeypatch.setenv`` after this autouse fixture runs.
+    """
+    monkeypatch.delenv("AIOPS_SLACK_USER_MAP_JSON", raising=False)
+    monkeypatch.delenv("AIOPS_ONCALL_ROSTER_JSON", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_jaeger_circuit():
     """Reset the Jaeger circuit breaker around every test (#113).
 
