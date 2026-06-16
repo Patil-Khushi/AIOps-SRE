@@ -90,6 +90,7 @@ def _migrate_add_columns_if_missing() -> None:
         # an Alembic rewrite.
         ("notifications", "routed_at", "TIMESTAMP"),
         ("notifications", "chat_severity", "VARCHAR"),
+        ("notifications", "response_mode", "VARCHAR"),
         ("notifications", "title", "VARCHAR"),
         ("notifications", "body", "VARCHAR"),
         ("notifications", "service", "VARCHAR"),

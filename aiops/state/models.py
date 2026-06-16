@@ -124,6 +124,12 @@ class NotificationRow(SQLModel, table=True):
     )
     channel: str = Field(index=True)
     chat_severity: str = Field(index=True)  # p0 | p1 | p2 | p3 | info
+    # The authoritative human-response mode RA-005 decided: page | notify | log.
+    # Stored (not re-derived from severity) because it also depends on business
+    # hours — a Sev-2 paged after-hours is "page", and the dashboard must render
+    # what the bot actually did, not a severity-only guess. Nullable for rows
+    # written before this column existed.
+    response_mode: str | None = Field(default=None, index=True)
     title: str
     body: str
     service: str | None = Field(default=None, index=True)

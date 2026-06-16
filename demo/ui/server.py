@@ -64,6 +64,7 @@ from typing import Any
 import httpx
 import yaml
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     HTTPException,
@@ -394,9 +395,90 @@ def triage_fixture(fixture_id: str) -> dict[str, Any]:
     return triage_alert(TriageRequest(alert=case["input"]))
 
 
+def _synthetic_alerts_for_active_scenarios() -> list[dict[str, Any]]:
+    """Canonical-alert payloads for every scenario whose flagd flag is non-off.
+
+    The cluster-side bridge (``aiops_scenario_active`` gauge + ``ScenarioActive``
+    Prometheus rule in values.yaml) only fires if Prometheus can scrape the UI's
+    ``/metrics`` AND the rule is loaded in the running prom-server. On dev
+    machines where Rancher Desktop's ``host.docker.internal`` doesn't resolve or
+    ``helm upgrade`` hasn't been re-run after editing values.yaml, the rule
+    never fires and Inject looks like a no-op in AlertStream.
+
+    Emitting the same alert directly from the UI guarantees AlertStream sees an
+    alert within one broadcaster tick of Inject, regardless of cluster state.
+    The ``alert_id`` matches the canonical Prom shape ``PROM-<alertname>-na`` so
+    a real Prometheus alert with the same alertname overrides the synthetic
+    one in dedup.
+    """
+    try:
+        res = get_registry().call("feature_flags.list_variants")
+    except Exception:
+        return []
+    if not res.ok:
+        return []
+    current: dict[str, str] = (res.data or {}).get("variants", {})
+    out: list[dict[str, Any]] = []
+    for sid, s in SCENARIOS.items():
+        flag = s.get("flag")
+        if not flag:
+            continue
+        if current.get(flag, "off") == "off":
+            continue
+        out.append(_synthetic_alert_for_scenario(sid, s))
+    return out
+
+
+def _synthetic_alert_for_scenario(sid: str, s: dict[str, Any]) -> dict[str, Any]:
+    """Build one canonical Alert payload for a scenario.
+
+    Shared by ``_synthetic_alerts_for_active_scenarios`` (Alert Stream feed)
+    and the inject-triggered triage (Notification page + Slack) so both
+    surfaces describe the injected failure identically. ``alert_id`` matches
+    the canonical Prom shape ``PROM-<alertname>-na`` so a real Prometheus
+    alert of the same name dedups against it.
+    """
+    alertname = s.get("alert") or "ScenarioActive"
+    service = s.get("service") or "unknown"
+    flag = s.get("flag") or ""
+    # Per-scenario severity (declared in demo/scenarios/*.yaml) so injected
+    # failures classify across the full Sev-1..Sev-3 range instead of all
+    # landing on Sev-2. RA-001's rule-based classifier maps the hint:
+    # critical→Sev-1 (page), high→Sev-2 (notify), warning→Sev-3 (daytime).
+    severity = str(s.get("severity") or "high")
+    return {
+        "alert_id": f"PROM-{alertname}-na",
+        "service": service,
+        "metric": alertname,
+        "value": 1.0,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "source": "Prometheus",
+        "severity_hint": severity,
+        "labels": {
+            "alertname": alertname,
+            "service": service,
+            "service_name": service,
+            "severity": severity,
+            "scenario_id": sid,
+            "flag": flag,
+            "synthetic": "true",
+        },
+        "annotations": {
+            "summary": s.get("title") or f"Scenario {sid} active on {service}",
+            "description": s.get("description") or f"flag={flag} active; injected via dashboard",
+        },
+    }
+
+
 @app.get("/api/live-alerts")
 def live_alerts() -> dict[str, Any]:
-    """Pull currently-firing alerts from Prometheus via the registry."""
+    """Pull currently-firing alerts from Prometheus + merge synthetic alerts
+    for any active scenario so Inject is always reflected in AlertStream.
+
+    Real Prometheus alerts win on ``alert_id`` collision — the synthetic
+    fallback fills the gap where the OTel demo's ``STATUS_CODE_UNSET`` spans
+    keep the upstream ``*ErrorRateHigh`` rules from firing.
+    """
     registry = get_registry()
     try:
         res = registry.call("observability.metrics.alerts")
@@ -406,10 +488,19 @@ def live_alerts() -> dict[str, Any]:
         )
     if not res.ok:
         raise HTTPException(status_code=502, detail=f"prometheus error: {res.error}")
-    alerts = (res.data or {}).get("alerts", [])
-    # Render each Prometheus alert as a candidate Alert payload the UI can post back.
-    candidates = [to_canonical_alert(a) for a in alerts]
-    return {"count": len(candidates), "alerts": candidates, "raw_count": len(alerts)}
+    raw_alerts = (res.data or {}).get("alerts", [])
+    real = [to_canonical_alert(a) for a in raw_alerts]
+    real_ids = {a["alert_id"] for a in real}
+    synthetic = [
+        a for a in _synthetic_alerts_for_active_scenarios() if a["alert_id"] not in real_ids
+    ]
+    candidates = real + synthetic
+    return {
+        "count": len(candidates),
+        "alerts": candidates,
+        "raw_count": len(raw_alerts),
+        "synthetic_count": len(synthetic),
+    }
 
 
 @app.post("/api/triage/live", response_model=None)
@@ -487,6 +578,17 @@ class _AutoTriageLoop:
 
     def forget_all(self) -> None:
         self._seen.clear()
+
+    def mark_seen(self, alert_id: str) -> None:
+        """Record ``alert_id`` as already handled so the poller skips it.
+
+        Used by the inject endpoint, which triages the injected alert
+        directly: marking it seen here stops the background poller (when
+        enabled) from triaging the same alert again and emitting a
+        duplicate notification.
+        """
+        if alert_id:
+            self._seen.add(alert_id)
 
     async def _run(self) -> None:
         logger.info("auto-triage loop started (interval=%.1fs)", self._interval)
@@ -1792,17 +1894,83 @@ def _variant_on(s: dict[str, Any]) -> str:
     return str(s.get("variant_on") or "on")
 
 
+def _clear_scenario_clusters(s: dict[str, Any]) -> None:
+    """Best-effort: drop the dedup clusters for a scenario's service.
+
+    A failed clear must not fail the reset — worst case the next inject is
+    Suppressed for up to the 5-minute cluster window, which is the old
+    (pre-fix) behaviour, not a new failure mode.
+    """
+    service = s.get("service")
+    if not service:
+        return
+    try:
+        removed = state_repo.clear_clusters_for_service(str(service))
+        if removed:
+            logger.info(
+                "scenario reset: cleared %d dedup cluster(s) for service=%r", removed, service
+            )
+    except Exception:
+        logger.exception("scenario reset: cluster clear failed for service=%r", service)
+
+
+def _triage_injected_scenario(scenario_id: str, s: dict[str, Any]) -> None:
+    """Run triage→classify→ticket→notify for a freshly injected scenario.
+
+    This is what connects the dashboard's **Inject** button to the
+    Notification page + Slack. Previously inject only flipped the flag and
+    surfaced a synthetic alert in Alert Stream; turning that into an actual
+    notification depended on the background auto-triage poller — which is
+    off by default here (``AIOPS_AUTO_TRIAGE_ENABLED``) and, even when on,
+    could suppress a re-inject against a still-warm dedup cluster.
+
+    Running the chain directly makes inject deterministic: every click
+    produces one Active verdict whose RA-005 routing emits to every chatops
+    sink (WebSocket → Notification page, Slack DM/channel, JSONL audit) and
+    persists a NotificationRow for the page's backfill.
+
+    Best-effort: a failure here must not break the (already-succeeded) flag
+    flip, so everything is caught and logged.
+    """
+    alert = _synthetic_alert_for_scenario(scenario_id, s)
+    try:
+        triage_alert(TriageRequest(alert=alert))
+        logger.info("inject: triage chain fired for scenario %s -> chatops", scenario_id)
+    except HTTPException as exc:
+        logger.warning("inject: triage chain skipped for %s: %s", scenario_id, exc.detail)
+    except Exception:
+        logger.exception("inject: triage chain failed for scenario %s", scenario_id)
+
+
 @app.post("/api/scenarios/{scenario_id}/inject")
-def inject_scenario(scenario_id: str) -> dict[str, Any]:
-    """Flip the scenario's flag to its on-variant. Returns the expected alert
-    name + ETA so the UI can poll ``/api/live-alerts`` until it fires."""
+def inject_scenario(scenario_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    """Flip the scenario's flag on AND fire the triage→notify chain.
+
+    Returns immediately; the chain runs as a background task so the button
+    doesn't block on the LLM. The notification lands on the Notification
+    page + Slack within a couple of seconds.
+    """
     s = SCENARIOS.get(scenario_id)
     if not s:
         raise HTTPException(
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
     result = _toggle_flagd_flag(s["flag"], _variant_on(s))
-    return {**s, "scenario_id": scenario_id, **result, "expected_alert": s["alert"]}
+    # Explicit inject = a fresh incident. Clear the service's dedup clusters
+    # so triage yields an Active verdict (not Suppressed against a warm
+    # cluster from a prior inject), and mark the synthetic alert id seen so
+    # the background poller (if enabled) doesn't double-fire it.
+    _clear_scenario_clusters(s)
+    alert = _synthetic_alert_for_scenario(scenario_id, s)
+    _AUTO_TRIAGE.mark_seen(alert.get("alert_id", ""))
+    background_tasks.add_task(_triage_injected_scenario, scenario_id, s)
+    return {
+        **s,
+        "scenario_id": scenario_id,
+        **result,
+        "expected_alert": s["alert"],
+        "triage_triggered": True,
+    }
 
 
 @app.post("/api/scenarios/{scenario_id}/reset")
@@ -1820,6 +1988,12 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
     # instance) so the previous id is the same — without this, the loop
     # would silently dedupe the re-inject.
     _AUTO_TRIAGE.forget_all()
+    # Reset ends the incident: clear this service's dedup clusters so the
+    # next inject triages as a NEW incident (Active verdict → chatops emit
+    # → Notifications page) instead of getting Suppressed against the
+    # previous run's still-warm cluster. Scoped to the one service so
+    # dedup keeps working for unrelated still-firing alerts.
+    _clear_scenario_clusters(s)
     return {**s, "scenario_id": scenario_id, **result}
 
 
@@ -1838,6 +2012,9 @@ def reset_all_scenarios() -> dict[str, Any]:
     _kick_flagd()
     # DEMO-AUTO-TRIAGE (#130): see comment in reset_scenario above.
     _AUTO_TRIAGE.forget_all()
+    # Same incident-over semantics as the single reset, for every scenario.
+    for s in SCENARIOS.values():
+        _clear_scenario_clusters(s)
     data = res.data or {}
     return {
         "reset_count": data.get("reset_count", 0),

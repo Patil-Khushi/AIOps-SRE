@@ -77,6 +77,31 @@ class ChatMessage:
     only fires when ``"page_oncall"`` is present; CHAT-1 Slack posts
     everything. Keeps routing policy in RA-005 and out of adapters.
     """
+    response_mode: str = "notify"
+    """How loud the human response should be — derived by RA-005 from
+    severity + business hours. One of:
+
+    * ``"page"`` — wake the on-call now (Sev-1, or Sev-2 after hours).
+    * ``"notify"`` — assign + send a personal heads-up; the engineer
+      reviews when free (Sev-2 in hours, Sev-3).
+    * ``"log"`` — record only, no human pinged (Sev-4 noise).
+
+    Adapters use this (not just ``actions``) to decide DM urgency, and
+    the dashboard renders it as a PAGE / NOTIFY / LOG badge so an operator
+    sees at a glance whether someone is being woken.
+    """
+    assignee: str | None = None
+    """Slack handle (or email fallback) of the engineer this notification
+    is assigned to. Decoupled from ``mentions`` on purpose: ``mentions``
+    drives the *channel* @-ping (kept quiet for low severity to avoid
+    fatigue), while ``assignee`` always carries the owner so the bot can
+    DM them a personal copy regardless of channel-ping policy.
+    """
+    assignee_name: str | None = None
+    """Human display name of the assignee (e.g. ``"Chinmay Kotkar"``)."""
+    assignee_email: str | None = None
+    """Email of the assignee, surfaced alongside the name so the recipient
+    knows exactly who owns it."""
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     interactive: InteractivePrompt | None = None
 
@@ -116,5 +141,9 @@ def to_record(msg: ChatMessage) -> dict[str, Any]:
         "category_display": msg.category_display,
         "mentions": list(msg.mentions),
         "actions": list(msg.actions),
+        "response_mode": msg.response_mode,
+        "assignee": msg.assignee,
+        "assignee_name": msg.assignee_name,
+        "assignee_email": msg.assignee_email,
         "interactive": interactive,
     }

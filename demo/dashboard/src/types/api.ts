@@ -117,11 +117,41 @@ export interface ChatNotification {
   timestamp: string;
   channel: string;
   severity: ChatSeverity;
+  // Authoritative human-response mode RA-005 decided (page | notify | log) —
+  // carried on the live WS frame (to_record) and persisted on the row.
+  // Optional for frames/rows written before it existed. Prefer this over a
+  // severity-only guess: it also reflects business hours.
+  response_mode?: string;
   title: string;
   body: string;
   incident_id: string | null;
   service: string | null;
   mentions: string[];
+}
+
+// Row shape of GET /api/notifications (the SQL-persisted RA-005 history,
+// aiops/state/repository.py::_notification_row_to_dict). Used to backfill
+// the Notifications page across server restarts — the WS feed's in-memory
+// replay ring starts empty after every uvicorn restart.
+export interface PersistedNotification {
+  id: number;
+  verdict_id: number | null;
+  routed_at: string | null;
+  channel: string;
+  target: string;
+  chat_severity: string;
+  response_mode: string | null;
+  title: string;
+  body: string;
+  service: string | null;
+  actions: string[];
+  reason: string;
+  audit_trace: string[];
+}
+
+export interface NotificationsResponse {
+  count: number;
+  notifications: PersistedNotification[];
 }
 
 export type ScenarioCategory = 'errors' | 'latency' | 'capacity' | 'infra';
