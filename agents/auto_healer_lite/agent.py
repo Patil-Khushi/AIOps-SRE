@@ -33,8 +33,9 @@ Legacy path::
 PRS-002 v1 path::
 
     execute(req) -> validate option (requires_hitl=True, tool_capability set, ...)
-                 -> get_gate().check("auto_heal.lite.execute", ctx)
-                 -> if not allowed:    -> REFUSED / PENDING_APPROVAL / BLOCKED
+                 -> get_gate().enforce("auto_heal.lite.execute", ctx)
+                 -> on GateError:      -> PENDING_APPROVAL / BLOCKED
+                                          (dispatch physically unreachable)
                     if allowed + dry:  -> DRY_RUN_OK (no tool call)
                     if allowed + real: -> registry.call(tool_capability, **tool_args)
                                           -> EXECUTED / EXECUTION_FAILED
@@ -70,7 +71,7 @@ from agents.auto_healer_lite.models import (
     RestartOutcome,
     RestartRecommendation,
 )
-from aiops.policy import get_gate
+from aiops.policy import GateError, get_gate
 from aiops.tools import get_registry
 
 logger = logging.getLogger(__name__)
@@ -267,10 +268,17 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
         f"blast={option.get('blast_radius')}"
     )
 
-    # 2. Consult the platform HITL gate. The agent does NOT enforce —
-    # that would raise GateError. Use ``check`` so we get a structured
-    # Decision back regardless of the outcome and can return it on the
-    # verdict for the dashboard / chatops layer to render.
+    # 2. Platform HITL gate — ENFORCE, don't just check.
+    #
+    # Principle #3: a buggy or compromised agent must not be able to reach the
+    # real tool dispatch (step 3c) without the platform gate. ``enforce()``
+    # raises ``GateError`` when the action isn't allowed, so the dispatch below
+    # is physically unreachable on a refusal — unlike a bare ``check()`` whose
+    # boolean an agent edit could ignore. We still render the structured
+    # outcome on the verdict: ``enforce()`` returns the Decision on the allowed
+    # path and attaches it to ``GateError.decision`` on the blocked path, so we
+    # report BLOCKED / PENDING_APPROVAL without a second approver round-trip
+    # (a re-``check()`` would double-prompt a human on a REQUIRED action).
     ctx: dict[str, Any] = dict(request.hitl_context or {})
     ctx.setdefault("option_id", option_id)
     ctx.setdefault("incident_id", request.incident_id)
@@ -290,22 +298,23 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
     # every production execute call regardless of dry_run — caught in
     # self-review of PR #170.
 
-    decision = get_gate().check(_PRS002_GATE_ACTION, ctx)
-    summary = _decision_to_summary(decision, ctx)
-    trace.append(
-        f"gate.check({_PRS002_GATE_ACTION!r}): allowed={summary.allowed} "
-        f"level={summary.level} reason={summary.reason!r}"
-    )
-
-    # 3a. Gate refused → terminal (no tool dispatch).
-    if not summary.allowed:
+    try:
+        decision = get_gate().enforce(_PRS002_GATE_ACTION, ctx)
+    except GateError as exc:
+        # 3a. Gate refused → terminal (no tool dispatch). The dispatch in 3c is
+        # physically unreachable from here. Rebuild the verdict from the
+        # Decision the gate attached to the error (no second approver call).
+        summary = _decision_to_summary(exc.decision, ctx)
         if summary.approval_id and summary.approval_status not in {"denied", "expired"}:
             status = ExecutionStatus.PENDING_APPROVAL
             rationale = f"Gate flow opened approval {summary.approval_id!r}; waiting on a human."
         else:
             status = ExecutionStatus.BLOCKED
             rationale = f"Gate refused the action: {summary.reason}"
-        trace.append(f"status={status.value}")
+        trace.append(
+            f"gate.enforce({_PRS002_GATE_ACTION!r}) blocked: "
+            f"level={summary.level} reason={summary.reason!r} -> status={status.value}"
+        )
         return _finalise(
             ExecutionVerdict(
                 request_id=request_id,
@@ -320,6 +329,13 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
                 audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
             )
         )
+
+    # Gate cleared — the action is allowed; dispatch in 3c is now reachable.
+    summary = _decision_to_summary(decision, ctx)
+    trace.append(
+        f"gate.enforce({_PRS002_GATE_ACTION!r}): allowed={summary.allowed} "
+        f"level={summary.level} reason={summary.reason!r}"
+    )
 
     # 3b. Gate cleared. Branch on dry_run.
     if request.dry_run:

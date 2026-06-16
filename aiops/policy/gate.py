@@ -89,7 +89,19 @@ class Decision:
 
 
 class GateError(RuntimeError):
-    """Raised when an action is blocked by HITL policy."""
+    """Raised when an action is blocked by HITL policy.
+
+    Carries the structured :class:`Decision` (``.decision``) so a caller that
+    uses :meth:`HITLGate.enforce` for *physical* gating can still report the
+    gate outcome — level, reason, approval id — on its own result object,
+    without a second :meth:`HITLGate.check` round-trip (which, for a REQUIRED
+    action, would re-invoke the approver and double-prompt the human).
+    ``None`` only when raised without one.
+    """
+
+    def __init__(self, message: str, *, decision: Decision | None = None) -> None:
+        super().__init__(message)
+        self.decision = decision
 
 
 # Phase 0 defaults. Phase 1+ replaces this dict with an OPA query.
@@ -274,7 +286,10 @@ class HITLGate:
     def enforce(self, action: str, context: dict[str, Any] | None = None) -> Decision:
         d = self.check(action, context)
         if not d.allowed:
-            raise GateError(f"blocked: action={action!r} level={d.level.value} reason={d.reason}")
+            raise GateError(
+                f"blocked: action={action!r} level={d.level.value} reason={d.reason}",
+                decision=d,
+            )
         return d
 
 
