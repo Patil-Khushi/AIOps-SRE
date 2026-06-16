@@ -9,7 +9,10 @@ import type {
   NotificationsResponse,
   PrometheusAlert,
   RCAVerdict,
+  RunbookOutcome,
+  RunbookRunResponse,
   ScenariosResponse,
+  VerdictsResponse,
   SynthesisResult,
   SystemPodsResponse,
   TopologyResponse,
@@ -122,6 +125,31 @@ export const api = {
     unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/approve`, { approver, reason })),
   deny: (id: string, approver: string, reason = '') =>
     unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/deny`, { approver, reason })),
+  // ─── Runbook Executor (RA-004) ────────────────────────────────────────────
+  // Kick off the real agent: selects a runbook, simulates, then runs it with
+  // the destructive step gated through the platform HITL gate. Returns an
+  // approval id + the planned steps immediately; the gated execution runs on a
+  // server pool thread.
+  runbookExecutorRun: (req?: {
+    service?: string;
+    severity?: string | null;
+    tags?: string[];
+    incident_id?: string;
+    summary?: string;
+    timeout_seconds?: number;
+  }) =>
+    unwrap<RunbookRunResponse>(http.post('/api/demo/runbook-executor/run', req ?? {})),
+  // Newest-first triaged incidents (each injected failure lands here once
+  // triage assigns it a severity). Drives the agent page's incident list.
+  verdicts: (params?: { limit?: number; service?: string; severity?: string }) =>
+    unwrap<VerdictsResponse>(http.get('/api/verdicts', { params })),
+  // Poll the shared HITL outcome store — returns { status: 'pending' } until
+  // the agent thread finishes, then the full RunbookExecution.
+  runbookOutcome: (approvalId: string) =>
+    unwrap<RunbookOutcome>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
+  // Read one approval (PENDING → APPROVED/DENIED), to drive the HITL stage.
+  getApproval: (approvalId: string) =>
+    unwrap<ApprovalRecord>(http.get(`/api/approvals/${approvalId}`)),
 
   // ─── Knowledge Synthesizer (PRS-007) ──────────────────────────────────────
   // Synthesize a resolved-incident bundle → postmortem + runbook + KB draft.

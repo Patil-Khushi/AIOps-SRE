@@ -24,6 +24,11 @@ level := "optional" if input.action == "itsm.incident.create"
 level := "optional" if input.action == "itsm.incident.update"
 level := "required" if input.action == "automation.runbook.execute"
 
+# RA-004 Runbook Executor: preview + non-destructive steps are autonomous;
+# only the destructive execute path above is human-gated.
+level := "none"     if input.action == "automation.runbook.simulate"
+level := "none"     if input.action == "automation.runbook.apply"
+
 # Phase: Proactive
 level := "none"     if input.action == "topology.discover"
 level := "optional" if input.action == "anomaly.report"

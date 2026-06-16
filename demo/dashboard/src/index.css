@@ -142,6 +142,12 @@
     @apply rounded-xl border border-ink-200 bg-white shadow-card dark:border-ink-700 dark:bg-ink-900;
   }
   .card-body { @apply p-5; }
+  .card-header {
+    @apply flex items-center justify-between border-b border-ink-200 px-5 py-3 dark:border-ink-700;
+  }
+  .card-title {
+    @apply text-sm font-semibold uppercase tracking-wider text-ink-500 dark:text-ink-400;
+  }
   .input {
     @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900
            placeholder:text-ink-400 outline-none transition-colors

@@ -444,6 +444,30 @@ class ApprovalRequester:
         # pending request that has to time out.
         if context.get("skip_approval"):
             return ApproverResult(approver=None, summary=None)
+        # ``hitl_context.pre_authorized_by=<approval_id>`` carries the tested
+        # *reverse* of an action a human already approved (e.g. a runbook
+        # rollback after a later step failed). Principle #5: the reverse must
+        # not strand the system waiting on a second human decision. We honour it
+        # only after VERIFYING — against the registry, never the flag alone
+        # (#3) — that the referenced approval was actually granted. Anything
+        # else (missing / pending / denied / expired) falls through to a normal
+        # approval so a forged id can't bypass the gate.
+        pre = context.get("pre_authorized_by")
+        if pre:
+            try:
+                orig = self._registry.get(pre)
+            except ApprovalError:
+                orig = None
+            if orig is not None and orig.status is ApprovalStatus.APPROVED:
+                return ApproverResult(
+                    approver=f"pre-authorized (reverse of {pre})",
+                    summary=ApprovalSummary(
+                        id=pre,
+                        status="approved",
+                        approver=orig.approver,
+                        reason=f"pre-authorized reverse of approved action {pre}",
+                    ),
+                )
         req = self._registry.create(
             action=action,
             context=context,

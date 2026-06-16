@@ -112,6 +112,11 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "itsm.incident.create": AutonomyLevel.OPTIONAL,
     "itsm.incident.update": AutonomyLevel.OPTIONAL,
     "automation.runbook.execute": AutonomyLevel.REQUIRED,
+    # RA-004 Runbook Executor: a dry-run preview and a non-destructive step
+    # change nothing dangerous, so they run autonomously; the gate fires only
+    # on the destructive ``automation.runbook.execute`` path above.
+    "automation.runbook.simulate": AutonomyLevel.NONE,
+    "automation.runbook.apply": AutonomyLevel.NONE,
     "notify.send": AutonomyLevel.NONE,
     "observability.metrics.query": AutonomyLevel.NONE,
     "observability.metrics.alerts": AutonomyLevel.NONE,
