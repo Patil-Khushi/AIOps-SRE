@@ -305,3 +305,41 @@ def test_golden_cases_all_pass():
         actual = run(case["input"])
         scored = score_case(actual=actual, expected=case["expected"])
         assert scored["passed"], f"{case['id']}: {scored['details']}"
+
+
+# ─── pre-authorized rollback (principle #5) ──────────────────────────────────
+
+
+def test_destructive_reverse_is_preauthorized_by_original_approval():
+    """The reverse of an already-approved destructive step rides that original
+    approval — it does not re-prompt, so a failed multi-step run can't strand
+    the system waiting on a second human decision (principle #5)."""
+    from aiops.policy.approvals import ApprovalRequester, get_approval_registry
+
+    reg = get_approval_registry()
+    reg.create(action="automation.runbook.execute", request_id="fwd-approved-rb")
+    reg.decide("fwd-approved-rb", approved=True, approver="alice")
+
+    approver = ApprovalRequester(timeout_seconds=1)
+    pending_before = len(reg.list_pending())
+    res = approver("automation.runbook.execute", {"pre_authorized_by": "fwd-approved-rb"})
+
+    assert res.approver and "pre-authorized" in res.approver
+    # Rode the original grant — no new approval request was minted.
+    assert len(reg.list_pending()) == pending_before
+
+
+def test_preauthorization_requires_a_genuinely_approved_reference():
+    """The flag alone never bypasses the gate (#3): a reverse referencing a
+    denied/pending/unknown approval is not honoured and falls through to a
+    normal approval (which, with no approver, blocks)."""
+    from aiops.policy.approvals import ApprovalRequester, get_approval_registry
+
+    reg = get_approval_registry()
+    reg.create(action="automation.runbook.execute", request_id="fwd-denied-rb")
+    reg.decide("fwd-denied-rb", approved=False, approver="alice", reason="nope")
+
+    approver = ApprovalRequester(timeout_seconds=1)  # 1s min → fast expiry
+    res = approver("automation.runbook.execute", {"pre_authorized_by": "fwd-denied-rb"})
+
+    assert res.approver is None  # not pre-authorized; fell through and expired

@@ -37,11 +37,16 @@ class RunbookStep(BaseModel):
     ``destructive`` is the single bit that decides routing: destructive steps go
     through the REQUIRED-HITL ``automation.runbook.execute`` capability; the rest
     run autonomously via ``automation.runbook.apply``. ``rollback_action`` is the
-    reverse op invoked when a later step fails."""
+    reverse op invoked when a later step fails.
+
+    The default is ``True`` (fail-closed): a runbook step that *forgets* to
+    declare ``destructive`` is gated for human approval rather than silently
+    running autonomously. A step is autonomous only when it explicitly opts in
+    with ``destructive: false``."""
 
     name: str
     action: str
-    destructive: bool = False
+    destructive: bool = True
     idempotent: bool = True
     rollback_action: str | None = None
     target: str | None = None

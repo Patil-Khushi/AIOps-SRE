@@ -162,7 +162,21 @@ def _rollback(
         cap = EXECUTE_CAP if step.destructive else APPLY_CAP
         extra: dict[str, Any] = {"action": step.rollback_action, "mode": "rollback"}
         if step.destructive:
-            extra |= {"runbook": execution.selected_runbook, "dry_run": False, "hitl_context": ctx}
+            # The reverse of a destructive step re-enters the REQUIRED gate. Don't
+            # re-prompt a human mid-failure (principle #5): authorize it with the
+            # approval already granted for the forward action. Drop ``approval_id``
+            # so the gate can't try to mint a fresh approval under the same (now
+            # taken) id; the platform verifies ``pre_authorized_by`` against the
+            # registry before honouring it. With no original approval (e.g. the
+            # eval/skip path), this is absent and the reverse gates as before.
+            rb_ctx = {k: v for k, v in ctx.items() if k != "approval_id"}
+            if execution.approval_id:
+                rb_ctx["pre_authorized_by"] = execution.approval_id
+            extra |= {
+                "runbook": execution.selected_runbook,
+                "dry_run": False,
+                "hitl_context": rb_ctx,
+            }
         result = _call(cap, step, incident, **extra)
         rec.rollback = result.data if result.ok else {"error": result.error}
         rec.rolled_back = result.ok
