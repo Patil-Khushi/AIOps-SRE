@@ -18,6 +18,10 @@ import logging
 import os
 from pathlib import Path
 
+# Registers the ``chatops.war_room.create`` capability (RA-006) via @tool on
+# import, so it's available in every context the chatops seam is (server, CLI,
+# evals) without each host wiring it explicitly.
+from . import war_room_bridge  # noqa: F401
 from .adapters.jsonfile import JsonFileChatOpsAdapter
 from .adapters.pagerduty import PagerDutyAdapter
 from .adapters.slack import SlackWebhookAdapter

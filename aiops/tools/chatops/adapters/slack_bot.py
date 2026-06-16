@@ -109,26 +109,42 @@ class SlackBotAdapter:
         )
 
     def send(self, msg: ChatMessage) -> None:
-        # Filter: only DM when a paging action is present.
-        if not (set(msg.actions) & PAGE_ACTIONS):
-            return
-        if not msg.mentions:
-            logger.debug("slack_bot: page action set but no mentions; skipping DM")
+        # Two delivery modes:
+        #   page   — wake the on-call now. DM everyone mentioned (the same
+        #            people the channel @-pings) plus the explicit assignee.
+        #   notify — personal heads-up, review when free. DM only the
+        #            assignee, so a quiet channel post doesn't fan out DMs.
+        # ``response_mode`` is the primary signal; ``page_oncall`` in actions
+        # is honoured too for back-compat with callers that predate it.
+        is_page = bool(set(msg.actions) & PAGE_ACTIONS) or msg.response_mode == "page"
+        is_notify = msg.response_mode == "notify"
+
+        if is_page:
+            targets = list(msg.mentions)
+            if msg.assignee and msg.assignee not in targets:
+                targets.append(msg.assignee)
+        elif is_notify and msg.assignee:
+            targets = [msg.assignee]
+        else:
             return
 
-        for raw_mention in msg.mentions:
+        if not targets:
+            logger.debug("slack_bot: nobody to DM (no mentions/assignee); skipping")
+            return
+
+        for raw_mention in targets:
             key = raw_mention.lstrip("@")
             user_id = self._user_map.get(key)
             if not user_id:
                 logger.info(
-                    "slack_bot: no Slack user_id for mention %r; cannot DM",
+                    "slack_bot: no Slack user_id for %r; cannot DM",
                     raw_mention,
                 )
                 continue
-            self._post_dm(user_id, msg)
+            self._post_dm(user_id, msg, paged=is_page)
 
-    def _post_dm(self, user_id: str, msg: ChatMessage) -> None:
-        payload = self._build_payload(user_id, msg)
+    def _post_dm(self, user_id: str, msg: ChatMessage, *, paged: bool = True) -> None:
+        payload = self._build_payload(user_id, msg, paged=paged)
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json; charset=utf-8",
@@ -155,9 +171,27 @@ class SlackBotAdapter:
 
     # ─── payload ─────────────────────────────────────────────────────────
 
-    def _build_payload(self, user_id: str, msg: ChatMessage) -> dict[str, Any]:
+    def _build_payload(
+        self, user_id: str, msg: ChatMessage, *, paged: bool = True
+    ) -> dict[str, Any]:
         color = _COLOR_BY_SEVERITY.get(msg.severity, _FALLBACK_COLOR)
         fallback = f"[{msg.severity.value}] {msg.title}"
+
+        # Framing varies by urgency: a page demands immediate attention; a
+        # notify is an FYI the engineer reviews when free. Both are personal
+        # DMs so they reach the owner regardless of channel-ping policy.
+        if paged:
+            context_text = (
+                ":rotating_light: *You're paged.* This DM is a personal "
+                "copy of the on-call alert. The same message is in the team "
+                "channel — please acknowledge now."
+            )
+        else:
+            context_text = (
+                ":bell: *Assigned to you — review when free.* This is a "
+                "heads-up, not a page; no immediate action required. The "
+                "same message is in the team channel."
+            )
 
         blocks: list[dict[str, Any]] = [
             {
@@ -169,17 +203,7 @@ class SlackBotAdapter:
             },
             {
                 "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": (
-                            ":rotating_light: *You're paged.* "
-                            "This DM is a personal copy of the on-call "
-                            "alert. The same message is in the team "
-                            "channel."
-                        ),
-                    }
-                ],
+                "elements": [{"type": "mrkdwn", "text": context_text}],
             },
         ]
 

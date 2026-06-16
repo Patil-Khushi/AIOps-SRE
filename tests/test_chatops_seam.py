@@ -163,5 +163,9 @@ def test_to_record_full_key_contract():
         "category_display",
         "mentions",
         "actions",
+        "response_mode",
+        "assignee",
+        "assignee_name",
+        "assignee_email",
         "interactive",
     }

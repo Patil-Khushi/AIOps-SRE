@@ -6,3 +6,4 @@ service: ad
 title: Ad service failure
 description: Ad service returns 5xx errors — banners disappear from the homepage.
 eta_seconds: 90
+severity: high

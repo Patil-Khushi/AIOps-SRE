@@ -112,6 +112,11 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "itsm.incident.create": AutonomyLevel.OPTIONAL,
     "itsm.incident.update": AutonomyLevel.OPTIONAL,
     "automation.runbook.execute": AutonomyLevel.REQUIRED,
+    # RA-004 Runbook Executor: a dry-run preview and a non-destructive step
+    # change nothing dangerous, so they run autonomously; the gate fires only
+    # on the destructive ``automation.runbook.execute`` path above.
+    "automation.runbook.simulate": AutonomyLevel.NONE,
+    "automation.runbook.apply": AutonomyLevel.NONE,
     "notify.send": AutonomyLevel.NONE,
     "observability.metrics.query": AutonomyLevel.NONE,
     "observability.metrics.alerts": AutonomyLevel.NONE,
@@ -121,6 +126,10 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "observability.traces.services": AutonomyLevel.NONE,
     "itsm.cmdb.lookup": AutonomyLevel.NONE,
     "oncall.schedule.lookup": AutonomyLevel.NONE,
+    # RA-006 War-Room Assembler: create a Slack war-room channel + invite SMEs.
+    # Non-destructive (a channel/invite, reversible) — agent acts by default;
+    # a tenant can switch on a human gate (matches the agent's HITL=Optional).
+    "chatops.war_room.create": AutonomyLevel.OPTIONAL,
     # Prescriptive-Adaptive phase
     "remediation.recommend": AutonomyLevel.REQUIRED,
     "auto_heal.execute": AutonomyLevel.OPTIONAL,

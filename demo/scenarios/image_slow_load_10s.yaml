@@ -7,3 +7,4 @@ service: frontend
 title: Slow image load (10 s)
 description: Frontend image responses delayed 10 s — page-load p95 spikes.
 eta_seconds: 120
+severity: warning

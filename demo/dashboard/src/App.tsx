@@ -13,9 +13,12 @@ import Notifications from '@/pages/Notifications';
 import Reasoning from '@/pages/Reasoning';
 import RcaConsole from '@/pages/RcaConsole';
 import IncidentCommander from '@/pages/IncidentCommander';
+import WarRoom from '@/pages/WarRoom';
 import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
 import Knowledge from '@/pages/Knowledge';
+import RunbookExecutor from '@/pages/RunbookExecutor';
+import ErrorBoundary from '@/components/ErrorBoundary';
 
 export default function App() {
   return (
@@ -39,12 +42,22 @@ export default function App() {
         <Route path="alerts" element={<AlertStream />} />
         <Route path="rca" element={<RcaConsole />} />
         <Route path="incident-commander" element={<IncidentCommander />} />
+        <Route path="war-room" element={<WarRoom />} />
         <Route path="approvals" element={<Approvals />} />
         <Route path="notifications" element={<Notifications />} />
         <Route path="reasoning" element={<Reasoning />} />
         <Route path="knowledge" element={<Knowledge />} />
         <Route path="topology" element={<Topology />} />
         <Route path="health" element={<SystemHealth />} />
+      </Route>
+
+      {/* Per-agent live surfaces — share the console chrome. Linked from the
+          agent catalog as /agents/<id> (e.g. /agents/runbook-executor). */}
+      <Route path="/agents" element={<Layout />}>
+        <Route
+          path="runbook-executor"
+          element={<ErrorBoundary><RunbookExecutor /></ErrorBoundary>}
+        />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

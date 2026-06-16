@@ -7,9 +7,13 @@ import type {
   KbListResponse,
   KBArticleRow,
   LiveAlertsResponse,
+  NotificationsResponse,
   PrometheusAlert,
   RCAVerdict,
+  RunbookOutcome,
+  RunbookRunResponse,
   ScenariosResponse,
+  VerdictsResponse,
   SynthesisResult,
   SystemPodsResponse,
   TopologyResponse,
@@ -42,6 +46,84 @@ function unwrap<T>(p: Promise<{ data: T }>): Promise<T> {
   });
 }
 
+// ── RA-006 War-Room Assembler shapes (agents/war_room_assembler models) ──
+export interface InvitedSME {
+  handle: string;
+  name?: string | null;
+  team?: string | null;
+  reason: string;
+  source: string;
+  slack_user_id?: string | null;
+  invite_status?: string | null;
+  attendance?: string | null; // invited | joined | declined
+}
+export interface ContextPackItem {
+  label: string;
+  value: string;
+  source?: string | null;
+}
+export interface TimelineEvent {
+  at: string;
+  event: string;
+}
+export interface WarRoomAssembly {
+  assembled: boolean;
+  channel: string;
+  title: string;
+  chat_severity: string;
+  invited: InvitedSME[];
+  context_pack: ContextPackItem[];
+  timeline: TimelineEvent[];
+  reason: string;
+  audit_trace: string[];
+  assembled_at: string;
+  bridge_status: string;
+  bridge_provider?: string | null;
+  bridge_channel_id?: string | null;
+  bridge_url?: string | null;
+  meeting_url?: string | null;
+}
+export interface WarRoomTryRequest {
+  affected_service: string;
+  severity: string;
+  assigned_team: string;
+  assigned_engineer?: string | null;
+  alert_summary?: string | null;
+  recommended_runbook?: string | null;
+  status: string;
+  incident_id?: string | null;
+  create_bridge?: boolean;
+}
+export interface WarRoomFeedRow {
+  id: string;
+  status: string; // open | in_call | resolved | no_room
+  assembled: boolean;
+  channel: string;
+  severity: string;
+  chat_severity: string;
+  service: string;
+  team: string;
+  sme_count: number;
+  reason: string;
+  bridge_url?: string | null;
+  bridge_status?: string | null;
+  assembled_at: string;
+  assembly: WarRoomAssembly;
+}
+export interface WarRoomRecentResponse {
+  count: number;
+  war_rooms: WarRoomFeedRow[];
+}
+export interface WarRoomMetrics {
+  total_seen: number;
+  assembled: number;
+  suppressed_or_minor: number;
+  open: number;
+  resolved: number;
+  avg_smes: number | null;
+  checked_at: string;
+}
+
 export const api = {
   health:      () => unwrap<HealthResponse>(http.get('/api/health')),
   liveAlerts:  () => unwrap<LiveAlertsResponse>(http.get('/api/live-alerts')),
@@ -71,6 +153,11 @@ export const api = {
     ),
   topology:    () => unwrap<TopologyResponse>(http.get('/api/topology')),
   pods:        () => unwrap<SystemPodsResponse>(http.get('/api/system/pods')),
+  // Persisted RA-005 notification history (SQL) — backfills the
+  // Notifications page so it survives server restarts; live updates still
+  // arrive over /ws/chatops.
+  notifications: (limit = 200) =>
+    unwrap<NotificationsResponse>(http.get('/api/notifications', { params: { limit } })),
 
   // RCA → approve → apply. Fires the REQUIRED-HITL-gated flag flip; returns an
   // approval id immediately while the platform blocks on human approval.
@@ -124,6 +211,31 @@ export const api = {
     unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/approve`, { approver, reason })),
   deny: (id: string, approver: string, reason = '') =>
     unwrap<ApprovalRecord>(http.post(`/api/approvals/${id}/deny`, { approver, reason })),
+  // ─── Runbook Executor (RA-004) ────────────────────────────────────────────
+  // Kick off the real agent: selects a runbook, simulates, then runs it with
+  // the destructive step gated through the platform HITL gate. Returns an
+  // approval id + the planned steps immediately; the gated execution runs on a
+  // server pool thread.
+  runbookExecutorRun: (req?: {
+    service?: string;
+    severity?: string | null;
+    tags?: string[];
+    incident_id?: string;
+    summary?: string;
+    timeout_seconds?: number;
+  }) =>
+    unwrap<RunbookRunResponse>(http.post('/api/demo/runbook-executor/run', req ?? {})),
+  // Newest-first triaged incidents (each injected failure lands here once
+  // triage assigns it a severity). Drives the agent page's incident list.
+  verdicts: (params?: { limit?: number; service?: string; severity?: string }) =>
+    unwrap<VerdictsResponse>(http.get('/api/verdicts', { params })),
+  // Poll the shared HITL outcome store — returns { status: 'pending' } until
+  // the agent thread finishes, then the full RunbookExecution.
+  runbookOutcome: (approvalId: string) =>
+    unwrap<RunbookOutcome>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
+  // Read one approval (PENDING → APPROVED/DENIED), to drive the HITL stage.
+  getApproval: (approvalId: string) =>
+    unwrap<ApprovalRecord>(http.get(`/api/approvals/${approvalId}`)),
 
   // ─── Knowledge Synthesizer (PRS-007) ──────────────────────────────────────
   // Synthesize a resolved-incident bundle → postmortem + runbook + KB draft.
@@ -142,5 +254,18 @@ export const api = {
   kbPublishOutcome: (approvalId: string) =>
     unwrap<{ status: string; approval_id?: string; approver?: string | null; error?: string | null }>(
       http.get(`/api/kb/publish/outcome/${approvalId}`),
+    ),
+
+  // ── RA-006 War-Room Assembler ───────────────────────────────────────────
+  warRoomAssemble: (req: WarRoomTryRequest) =>
+    unwrap<WarRoomAssembly>(http.post('/api/war-room/assemble', req)),
+  warRoomRecent: (limit = 50) =>
+    unwrap<WarRoomRecentResponse>(http.get('/api/war-room/recent', { params: { limit } })),
+  warRoomMetrics: () => unwrap<WarRoomMetrics>(http.get('/api/war-room/metrics')),
+  warRoomSetStatus: (id: string, status: string) =>
+    unwrap<{ id: string; status: string }>(http.post(`/api/war-room/${id}/status`, { status })),
+  warRoomSetAttendee: (id: string, handle: string, attendance: string) =>
+    unwrap<{ id: string; handle: string; attendance: string }>(
+      http.post(`/api/war-room/${id}/attendee`, { handle, attendance }),
     ),
 };

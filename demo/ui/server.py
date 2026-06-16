@@ -54,7 +54,7 @@ import re
 import subprocess
 import threading
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -64,6 +64,7 @@ from typing import Any
 import httpx
 import yaml
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     HTTPException,
@@ -89,13 +90,15 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
-from agents.alert_triage import Alert  # noqa: E402
+from agents.alert_triage import Alert, AuditMetadata, TriageVerdict  # noqa: E402
 from agents.auto_healer_lite import ExecutionRequest  # noqa: E402
 from agents.auto_healer_lite import execute as auto_heal_execute  # noqa: E402
 from agents.incident_commander import command as incident_command  # noqa: E402
 from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
 from agents.remediation_recommender import RemediationInput  # noqa: E402
 from agents.remediation_recommender import recommend as remediate  # noqa: E402
+from agents.war_room_assembler import assemble as assemble_war_room  # noqa: E402
+from agents.war_room_assembler import decide as decide_war_room  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
     ApprovalError,
@@ -372,12 +375,22 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
 
-    # INFRA-2 (#74): the RA-001 → RA-002 → RA-003 → RA-005 chain now lives in
-    # the orchestrator seam. ``to_api_dict`` reproduces this route's historical
-    # response shape verbatim, so the dashboard / SPA / existing tests are
-    # unaffected. Alert construction + the 400 mapping stay here because they
-    # are HTTP concerns, not pipeline logic.
-    return run_reactive_flow(alert_obj).to_api_dict()
+    # INFRA-2 (#74): the RA-001 → RA-002 → RA-003 → RA-005 chain lives in the
+    # orchestrator seam now; ``to_api_dict`` reproduces this route's historical
+    # response shape verbatim. Alert construction + the 400 mapping stay here as
+    # HTTP concerns, not pipeline logic.
+    result = run_reactive_flow(alert_obj)
+
+    # RA-006 War-Room Assembler: on Sev-1/Sev-2 stand up the incident war room
+    # (channel + on-call SME + context pack + seed timeline). ``assemble`` makes
+    # several sequential Slack calls (~5s each) and must not sit on the triage
+    # hot path (review #5) — offload to the background pool so /api/triage
+    # returns promptly. The assembly is recorded for the /api/war-room/recent
+    # feed + /metrics; the HTTP response keeps its legacy shape (war-room
+    # surfaces via its own endpoints, not inline).
+    _HITL_AGENT_POOL.submit(_assemble_war_room_bg, result.verdict)
+
+    return result.to_api_dict()
 
 
 @app.post("/api/triage/fixture/{fixture_id}", response_model=None)
@@ -394,9 +407,90 @@ def triage_fixture(fixture_id: str) -> dict[str, Any]:
     return triage_alert(TriageRequest(alert=case["input"]))
 
 
+def _synthetic_alerts_for_active_scenarios() -> list[dict[str, Any]]:
+    """Canonical-alert payloads for every scenario whose flagd flag is non-off.
+
+    The cluster-side bridge (``aiops_scenario_active`` gauge + ``ScenarioActive``
+    Prometheus rule in values.yaml) only fires if Prometheus can scrape the UI's
+    ``/metrics`` AND the rule is loaded in the running prom-server. On dev
+    machines where Rancher Desktop's ``host.docker.internal`` doesn't resolve or
+    ``helm upgrade`` hasn't been re-run after editing values.yaml, the rule
+    never fires and Inject looks like a no-op in AlertStream.
+
+    Emitting the same alert directly from the UI guarantees AlertStream sees an
+    alert within one broadcaster tick of Inject, regardless of cluster state.
+    The ``alert_id`` matches the canonical Prom shape ``PROM-<alertname>-na`` so
+    a real Prometheus alert with the same alertname overrides the synthetic
+    one in dedup.
+    """
+    try:
+        res = get_registry().call("feature_flags.list_variants")
+    except Exception:
+        return []
+    if not res.ok:
+        return []
+    current: dict[str, str] = (res.data or {}).get("variants", {})
+    out: list[dict[str, Any]] = []
+    for sid, s in SCENARIOS.items():
+        flag = s.get("flag")
+        if not flag:
+            continue
+        if current.get(flag, "off") == "off":
+            continue
+        out.append(_synthetic_alert_for_scenario(sid, s))
+    return out
+
+
+def _synthetic_alert_for_scenario(sid: str, s: dict[str, Any]) -> dict[str, Any]:
+    """Build one canonical Alert payload for a scenario.
+
+    Shared by ``_synthetic_alerts_for_active_scenarios`` (Alert Stream feed)
+    and the inject-triggered triage (Notification page + Slack) so both
+    surfaces describe the injected failure identically. ``alert_id`` matches
+    the canonical Prom shape ``PROM-<alertname>-na`` so a real Prometheus
+    alert of the same name dedups against it.
+    """
+    alertname = s.get("alert") or "ScenarioActive"
+    service = s.get("service") or "unknown"
+    flag = s.get("flag") or ""
+    # Per-scenario severity (declared in demo/scenarios/*.yaml) so injected
+    # failures classify across the full Sev-1..Sev-3 range instead of all
+    # landing on Sev-2. RA-001's rule-based classifier maps the hint:
+    # critical→Sev-1 (page), high→Sev-2 (notify), warning→Sev-3 (daytime).
+    severity = str(s.get("severity") or "high")
+    return {
+        "alert_id": f"PROM-{alertname}-na",
+        "service": service,
+        "metric": alertname,
+        "value": 1.0,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "source": "Prometheus",
+        "severity_hint": severity,
+        "labels": {
+            "alertname": alertname,
+            "service": service,
+            "service_name": service,
+            "severity": severity,
+            "scenario_id": sid,
+            "flag": flag,
+            "synthetic": "true",
+        },
+        "annotations": {
+            "summary": s.get("title") or f"Scenario {sid} active on {service}",
+            "description": s.get("description") or f"flag={flag} active; injected via dashboard",
+        },
+    }
+
+
 @app.get("/api/live-alerts")
 def live_alerts() -> dict[str, Any]:
-    """Pull currently-firing alerts from Prometheus via the registry."""
+    """Pull currently-firing alerts from Prometheus + merge synthetic alerts
+    for any active scenario so Inject is always reflected in AlertStream.
+
+    Real Prometheus alerts win on ``alert_id`` collision — the synthetic
+    fallback fills the gap where the OTel demo's ``STATUS_CODE_UNSET`` spans
+    keep the upstream ``*ErrorRateHigh`` rules from firing.
+    """
     registry = get_registry()
     try:
         res = registry.call("observability.metrics.alerts")
@@ -406,10 +500,19 @@ def live_alerts() -> dict[str, Any]:
         )
     if not res.ok:
         raise HTTPException(status_code=502, detail=f"prometheus error: {res.error}")
-    alerts = (res.data or {}).get("alerts", [])
-    # Render each Prometheus alert as a candidate Alert payload the UI can post back.
-    candidates = [to_canonical_alert(a) for a in alerts]
-    return {"count": len(candidates), "alerts": candidates, "raw_count": len(alerts)}
+    raw_alerts = (res.data or {}).get("alerts", [])
+    real = [to_canonical_alert(a) for a in raw_alerts]
+    real_ids = {a["alert_id"] for a in real}
+    synthetic = [
+        a for a in _synthetic_alerts_for_active_scenarios() if a["alert_id"] not in real_ids
+    ]
+    candidates = real + synthetic
+    return {
+        "count": len(candidates),
+        "alerts": candidates,
+        "raw_count": len(raw_alerts),
+        "synthetic_count": len(synthetic),
+    }
 
 
 @app.post("/api/triage/live", response_model=None)
@@ -487,6 +590,17 @@ class _AutoTriageLoop:
 
     def forget_all(self) -> None:
         self._seen.clear()
+
+    def mark_seen(self, alert_id: str) -> None:
+        """Record ``alert_id`` as already handled so the poller skips it.
+
+        Used by the inject endpoint, which triages the injected alert
+        directly: marking it seen here stops the background poller (when
+        enabled) from triaging the same alert again and emitting a
+        duplicate notification.
+        """
+        if alert_id:
+            self._seen.add(alert_id)
 
     async def _run(self) -> None:
         logger.info("auto-triage loop started (interval=%.1fs)", self._interval)
@@ -1036,6 +1150,147 @@ def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
     return {"status": "pending", "approval_id": approval_id}
 
 
+# ─── Runbook Executor demo (RA-004): select → simulate → gated execute ─────
+#
+# The /agents/runbook-executor dashboard page POSTs here to run the *real*
+# Runbook Executor against the mock automation providers. Same HITL shape as
+# the auto-heal restart above: fire the agent on a pool thread, return the
+# pre-minted approval id immediately, and park the RunbookExecution outcome in
+# the shared _HITL_OUTCOMES store (polled via /api/demo/auto-heal/outcome/{id}).
+#
+# The destructive step routes through the REQUIRED-gated
+# automation.runbook.execute capability, so the platform HITL gate creates the
+# approval and blocks until a human resolves it in the /hitl approver console.
+
+
+class HitlDemoRunbookRequest(BaseModel):
+    service: str = Field("cart", min_length=1)
+    severity: str | None = Field("sev2")
+    tags: list[str] = Field(default_factory=list)
+    incident_id: str = Field("INC-DEMO-RB")
+    # Free-text alert/triage summary — keyword-scanned into symptom tags so a
+    # live triaged incident (which carries no explicit tags) still scores
+    # against the runbook library.
+    summary: str = Field("")
+    timeout_seconds: int = Field(120, ge=5, le=900)
+
+
+# Symptom keyword → runbook tags. The runbook selector matches on service
+# first (mandatory) then scores tag overlap, so these only refine the match /
+# drive the "matched on" display — service alone already picks the runbook.
+_RUNBOOK_TAG_KEYWORDS: dict[str, list[str]] = {
+    "latency": ["latency", "load"],
+    "slow": ["latency", "load"],
+    "p95": ["latency"],
+    "saturat": ["load", "saturation"],
+    "load": ["load"],
+    "oom": ["oom", "crash"],
+    "memory": ["oom", "memory"],
+    "leak": ["memory"],
+    "crash": ["crash", "restart"],
+    "restart": ["restart"],
+    "loop": ["crashloop"],
+    "deploy": ["deploy", "regression"],
+    "regression": ["regression"],
+    "rollback": ["deploy"],
+    "error": ["error"],
+    "5xx": ["error"],
+    "500": ["error"],
+    "fail": ["error"],
+    "cpu": ["cpu"],
+    "queue": ["queue", "load"],
+    "backpressure": ["queue"],
+}
+
+
+def _derive_runbook_tags(summary: str, provided: list[str]) -> list[str]:
+    """Merge caller-supplied tags with symptom tags scanned from the summary,
+    de-duplicated and order-stable."""
+    tags = list(provided)
+    blob = (summary or "").lower()
+    for needle, mapped in _RUNBOOK_TAG_KEYWORDS.items():
+        if needle in blob:
+            tags.extend(mapped)
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in tags:
+        key = t.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+@app.post("/api/demo/runbook-executor/run")
+async def trigger_runbook_executor(req: HitlDemoRunbookRequest) -> dict[str, Any]:
+    """Kick off the Runbook Executor and return the approval id immediately.
+
+    Runbook selection and the read-only dry-run preview are cheap and
+    synchronous, so we do them here and return them up-front: the dashboard
+    renders the selected runbook, the match criteria, the planned steps, and the
+    per-step dry-run results before the gated execution finishes. The agent then
+    runs on a pool thread; the destructive step blocks at the HITL gate until a
+    human resolves the approval in /hitl. Poll
+    ``/api/demo/auto-heal/outcome/{approval_id}`` for the final RunbookExecution.
+    """
+    from agents.runbook_executor import Incident, execute_runbook, select
+
+    tags = _derive_runbook_tags(req.summary, req.tags)
+    incident = Incident(
+        incident_id=req.incident_id,
+        service=req.service,
+        severity=req.severity,
+        tags=tags,
+    )
+    runbook = select(incident)
+
+    # Read-only dry-run preview per step (NONE-level simulate capability — never
+    # gated, makes no changes). Surfaces stage-2 results before the gated run.
+    registry = get_registry()
+    planned_steps: list[dict[str, Any]] = []
+    for s in runbook.steps if runbook else []:
+        try:
+            sim = registry.call(
+                "automation.runbook.simulate",
+                step=s.name,
+                target=s.target or req.service,
+                namespace=s.namespace,
+                action=s.action,
+            )
+            simulate = sim.data if sim.ok else {"error": sim.error}
+        except Exception as exc:  # pragma: no cover - defensive
+            simulate = {"error": f"{type(exc).__name__}: {exc}"}
+        planned_steps.append(
+            {"name": s.name, "action": s.action, "destructive": s.destructive, "simulate": simulate}
+        )
+
+    approval_id = _uuid_hex()
+    ctx = {"approval_id": approval_id, "approval_timeout_seconds": req.timeout_seconds}
+
+    def _run_agent() -> None:
+        execution = execute_runbook(incident, hitl_context=ctx)
+        out = execution.model_dump(mode="json")
+        # Computed properties don't serialize — flatten them for the UI.
+        out["steps_total"] = execution.steps_total
+        out["steps_executed"] = execution.steps_executed
+        out["destructive_steps"] = execution.destructive_steps
+        _HITL_OUTCOMES[approval_id] = out
+
+    _HITL_AGENT_POOL.submit(_run_agent)
+
+    return {
+        "approval_id": approval_id,
+        "status": "pending" if runbook is not None else "no_runbook",
+        "service": req.service,
+        "incident_id": req.incident_id,
+        "selected_runbook": runbook.id if runbook else None,
+        "runbook_title": runbook.title if runbook else None,
+        "matched_on": {"service": req.service, "severity": req.severity, "tags": tags},
+        "planned_steps": planned_steps,
+        "timeout_seconds": req.timeout_seconds,
+    }
+
+
 # ─── RCA fix-step remediation (RCA → approve → apply) ──────────────────────
 #
 # The RCA panel's "Approve & apply" button POSTs here. Same shape as the
@@ -1512,6 +1767,208 @@ async def classifier_evaluate() -> dict[str, Any]:
         _EVAL_RUNNING = False
 
 
+# ─── RA-006 War-Room Assembler surface (standalone dashboard) ──────────────
+#
+# Independent endpoints / page so RA-006 reads as its own product.
+#   - ``/api/war-room/assemble`` is the *try-it inspector*: build a verdict
+#     from simple form fields and run ``decide`` (pure — no chatops emit) so
+#     you can see exactly how RA-006 reacts to any severity / status without
+#     touching the live pipeline.
+#   - ``/api/war-room/recent`` is the *live feed*: assemblies produced by the
+#     real ``/api/triage`` pipeline, newest first, from an in-memory ring
+#     buffer (RA-006 has no DB table — the demo doesn't need durable history).
+
+_RECENT_WAR_ROOMS: deque[dict[str, Any]] = deque(maxlen=100)
+_WAR_ROOM_SEQ = 0
+
+# War-room lifecycle the dashboard board advances through:
+# open → in_call → call_ended → resolved. ``no_room`` is the terminal state
+# for minor/suppressed verdicts (no room was opened).
+WAR_ROOM_STATUSES = ("open", "in_call", "call_ended", "resolved", "no_room")
+
+
+def _record_war_room(assembly: dict[str, Any], verdict: TriageVerdict) -> str:
+    """Append a compact feed row for an assembly and return its feed id.
+
+    Each row carries a lifecycle ``status`` the board can advance:
+    ``open`` (room created, responders gathering) → ``in_call`` (live huddle)
+    → ``resolved``. Non-assembled verdicts land terminal as ``no_room``.
+    Best-effort — never raises into the triage pipeline."""
+    global _WAR_ROOM_SEQ
+    _WAR_ROOM_SEQ += 1
+    wid = str(_WAR_ROOM_SEQ)
+    assembled = assembly.get("assembled", False)
+    # Seed each invited SME's attendance so the board can track who actually
+    # joined the bridge. Starts at "invited"; an operator marks joined/declined.
+    for person in assembly.get("invited", []):
+        person.setdefault("attendance", "invited")
+    _RECENT_WAR_ROOMS.append(
+        {
+            "id": wid,
+            "status": "open" if assembled else "no_room",
+            "assembled": assembled,
+            "channel": assembly.get("channel"),
+            "severity": verdict.severity,
+            "chat_severity": assembly.get("chat_severity"),
+            "service": verdict.affected_service,
+            "team": verdict.assigned_team,
+            "sme_count": len(assembly.get("invited", [])),
+            "reason": assembly.get("reason"),
+            "bridge_url": assembly.get("bridge_url"),
+            "bridge_status": assembly.get("bridge_status"),
+            "assembled_at": assembly.get("assembled_at"),
+            "assembly": assembly,
+        }
+    )
+    return wid
+
+
+def _assemble_war_room_bg(verdict: TriageVerdict) -> None:
+    """Background worker for the triage hot path (review #5).
+
+    RA-006 assembly makes several sequential Slack calls (~5s each), so it runs
+    off-thread on the demo agent pool instead of inline in ``/api/triage``.
+    Records the assembly for the ``/api/war-room/recent`` feed + ``/metrics``; a
+    Slack hiccup is caught and logged and never touches the triage response that
+    has already returned."""
+    try:
+        wr = assemble_war_room(verdict).model_dump(mode="json")
+        _record_war_room(wr["assembly"], verdict)
+    except Exception:
+        logger.exception(
+            "RA-006: war-room assembly failed for verdict on %s", verdict.affected_service
+        )
+
+
+class WarRoomTryRequest(BaseModel):
+    """Try-it inspector input — simple fields the dashboard form collects.
+
+    Deliberately not a full ``TriageVerdict``: the operator picks a severity
+    and service and we synthesize the rest, so the page is about *RA-006's*
+    behaviour, not about reproducing the whole upstream triage."""
+
+    affected_service: str = Field(default="payment")
+    severity: str = Field(default="Sev-1")
+    assigned_team: str = Field(default="Payments Team")
+    assigned_engineer: str | None = Field(default="oncall@payments.example.com")
+    alert_summary: str | None = None
+    recommended_runbook: str | None = None
+    status: str = Field(default="Active")
+    incident_id: str | None = None
+    create_bridge: bool = Field(default=False)
+    """Safe by default: a pure ``decide`` preview with NO side effects, so
+    clicking *try-it* on the dashboard never touches the live workspace. Set
+    ``create_bridge=true`` to explicitly opt in to actually standing up the
+    Slack war room (``assemble`` — creates the channel, invites SMEs, returns a
+    join link)."""
+
+
+@app.post("/api/war-room/assemble")
+def war_room_assemble_endpoint(req: WarRoomTryRequest) -> dict[str, Any]:
+    """Try-it inspector: synthesize a verdict and run RA-006. Safe by default —
+    a pure ``decide`` preview with no side effects. Pass ``create_bridge=true``
+    to explicitly opt in to creating the real Slack war room and returning the
+    join link."""
+    if req.severity not in ("Sev-1", "Sev-2", "Sev-3", "Sev-4"):
+        raise HTTPException(status_code=400, detail="severity must be Sev-1..Sev-4")
+    if req.status not in ("Active", "Suppressed"):
+        raise HTTPException(status_code=400, detail="status must be Active or Suppressed")
+    verdict = TriageVerdict(
+        incident_id=req.incident_id,
+        affected_service=req.affected_service,
+        severity=req.severity,  # type: ignore[arg-type]
+        confidence_score=0.9,
+        alert_summary=req.alert_summary or f"{req.severity} on {req.affected_service}",
+        assigned_team=req.assigned_team,
+        assigned_engineer=req.assigned_engineer,
+        recommended_runbook=req.recommended_runbook,
+        status=req.status,  # type: ignore[arg-type]
+        audit_metadata=AuditMetadata(created_at=datetime.now(UTC), created_by="war-room-ui"),
+    )
+    if not req.create_bridge:
+        return decide_war_room(verdict).model_dump(mode="json")
+    assembly = assemble_war_room(verdict).assembly
+    # Surface it in the live feed too, so the try-it and pipeline share one view.
+    _record_war_room(assembly.model_dump(mode="json"), verdict)
+    return assembly.model_dump(mode="json")
+
+
+@app.get("/api/war-room/recent")
+def war_room_recent_endpoint(limit: int = 50) -> dict[str, Any]:
+    """Newest-first feed of war rooms the live pipeline has assembled."""
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    rows = list(reversed(_RECENT_WAR_ROOMS))[:limit]
+    return {"count": len(rows), "war_rooms": rows}
+
+
+@app.get("/api/war-room/metrics")
+def war_room_metrics_endpoint() -> dict[str, Any]:
+    """Header metrics for the RA-006 dashboard, derived from the live feed."""
+    rows = list(_RECENT_WAR_ROOMS)
+    assembled = [r for r in rows if r.get("assembled")]
+    total_smes = sum(r.get("sme_count", 0) for r in assembled)
+    return {
+        "total_seen": len(rows),
+        "assembled": len(assembled),
+        "suppressed_or_minor": len(rows) - len(assembled),
+        "open": sum(1 for r in rows if r.get("status") in ("open", "in_call", "call_ended")),
+        "resolved": sum(1 for r in rows if r.get("status") == "resolved"),
+        "avg_smes": round(total_smes / len(assembled), 2) if assembled else None,
+        "checked_at": datetime.now(UTC).isoformat(),
+    }
+
+
+class WarRoomStatusRequest(BaseModel):
+    status: str
+
+
+@app.post("/api/war-room/{wid}/status")
+def war_room_set_status_endpoint(wid: str, req: WarRoomStatusRequest) -> dict[str, Any]:
+    """Advance a war room's lifecycle (open → in_call → resolved). The board
+    uses this so an operator can mark the bridge call in progress or the
+    incident resolved. ``no_room`` rows are terminal and can't be advanced."""
+    if req.status not in WAR_ROOM_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {WAR_ROOM_STATUSES}")
+    for row in _RECENT_WAR_ROOMS:
+        if row.get("id") == wid:
+            if row.get("status") == "no_room":
+                raise HTTPException(status_code=409, detail="no_room war rooms are terminal")
+            row["status"] = req.status
+            return {"id": wid, "status": req.status}
+    raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
+
+
+ATTENDANCE_STATUSES = ("invited", "joined", "declined")
+
+
+class AttendeeStatusRequest(BaseModel):
+    handle: str
+    attendance: str
+
+
+@app.post("/api/war-room/{wid}/attendee")
+def war_room_set_attendee_endpoint(wid: str, req: AttendeeStatusRequest) -> dict[str, Any]:
+    """Set one invited SME's attendance (invited → joined / declined) on a war
+    room. Manual for now; an RSVP/presence feed can drive it automatically
+    later. Matches the person by their ``handle`` within the war room."""
+    if req.attendance not in ATTENDANCE_STATUSES:
+        raise HTTPException(
+            status_code=400, detail=f"attendance must be one of {ATTENDANCE_STATUSES}"
+        )
+    for row in _RECENT_WAR_ROOMS:
+        if row.get("id") != wid:
+            continue
+        for person in row.get("assembly", {}).get("invited", []):
+            if person.get("handle") == req.handle:
+                person["attendance"] = req.attendance
+                return {"id": wid, "handle": req.handle, "attendance": req.attendance}
+        raise HTTPException(
+            status_code=404, detail=f"attendee {req.handle!r} not in war room {wid!r}"
+        )
+    raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
+
+
 # ─── RA-002 Classifier UI mount (standalone Vite app under demo/classifier-ui) ─
 
 CLASSIFIER_DIST = Path(__file__).parent.parent / "classifier-ui" / "dist"
@@ -1792,17 +2249,83 @@ def _variant_on(s: dict[str, Any]) -> str:
     return str(s.get("variant_on") or "on")
 
 
+def _clear_scenario_clusters(s: dict[str, Any]) -> None:
+    """Best-effort: drop the dedup clusters for a scenario's service.
+
+    A failed clear must not fail the reset — worst case the next inject is
+    Suppressed for up to the 5-minute cluster window, which is the old
+    (pre-fix) behaviour, not a new failure mode.
+    """
+    service = s.get("service")
+    if not service:
+        return
+    try:
+        removed = state_repo.clear_clusters_for_service(str(service))
+        if removed:
+            logger.info(
+                "scenario reset: cleared %d dedup cluster(s) for service=%r", removed, service
+            )
+    except Exception:
+        logger.exception("scenario reset: cluster clear failed for service=%r", service)
+
+
+def _triage_injected_scenario(scenario_id: str, s: dict[str, Any]) -> None:
+    """Run triage→classify→ticket→notify for a freshly injected scenario.
+
+    This is what connects the dashboard's **Inject** button to the
+    Notification page + Slack. Previously inject only flipped the flag and
+    surfaced a synthetic alert in Alert Stream; turning that into an actual
+    notification depended on the background auto-triage poller — which is
+    off by default here (``AIOPS_AUTO_TRIAGE_ENABLED``) and, even when on,
+    could suppress a re-inject against a still-warm dedup cluster.
+
+    Running the chain directly makes inject deterministic: every click
+    produces one Active verdict whose RA-005 routing emits to every chatops
+    sink (WebSocket → Notification page, Slack DM/channel, JSONL audit) and
+    persists a NotificationRow for the page's backfill.
+
+    Best-effort: a failure here must not break the (already-succeeded) flag
+    flip, so everything is caught and logged.
+    """
+    alert = _synthetic_alert_for_scenario(scenario_id, s)
+    try:
+        triage_alert(TriageRequest(alert=alert))
+        logger.info("inject: triage chain fired for scenario %s -> chatops", scenario_id)
+    except HTTPException as exc:
+        logger.warning("inject: triage chain skipped for %s: %s", scenario_id, exc.detail)
+    except Exception:
+        logger.exception("inject: triage chain failed for scenario %s", scenario_id)
+
+
 @app.post("/api/scenarios/{scenario_id}/inject")
-def inject_scenario(scenario_id: str) -> dict[str, Any]:
-    """Flip the scenario's flag to its on-variant. Returns the expected alert
-    name + ETA so the UI can poll ``/api/live-alerts`` until it fires."""
+def inject_scenario(scenario_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    """Flip the scenario's flag on AND fire the triage→notify chain.
+
+    Returns immediately; the chain runs as a background task so the button
+    doesn't block on the LLM. The notification lands on the Notification
+    page + Slack within a couple of seconds.
+    """
     s = SCENARIOS.get(scenario_id)
     if not s:
         raise HTTPException(
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
     result = _toggle_flagd_flag(s["flag"], _variant_on(s))
-    return {**s, "scenario_id": scenario_id, **result, "expected_alert": s["alert"]}
+    # Explicit inject = a fresh incident. Clear the service's dedup clusters
+    # so triage yields an Active verdict (not Suppressed against a warm
+    # cluster from a prior inject), and mark the synthetic alert id seen so
+    # the background poller (if enabled) doesn't double-fire it.
+    _clear_scenario_clusters(s)
+    alert = _synthetic_alert_for_scenario(scenario_id, s)
+    _AUTO_TRIAGE.mark_seen(alert.get("alert_id", ""))
+    background_tasks.add_task(_triage_injected_scenario, scenario_id, s)
+    return {
+        **s,
+        "scenario_id": scenario_id,
+        **result,
+        "expected_alert": s["alert"],
+        "triage_triggered": True,
+    }
 
 
 @app.post("/api/scenarios/{scenario_id}/reset")
@@ -1820,6 +2343,12 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
     # instance) so the previous id is the same — without this, the loop
     # would silently dedupe the re-inject.
     _AUTO_TRIAGE.forget_all()
+    # Reset ends the incident: clear this service's dedup clusters so the
+    # next inject triages as a NEW incident (Active verdict → chatops emit
+    # → Notifications page) instead of getting Suppressed against the
+    # previous run's still-warm cluster. Scoped to the one service so
+    # dedup keeps working for unrelated still-firing alerts.
+    _clear_scenario_clusters(s)
     return {**s, "scenario_id": scenario_id, **result}
 
 
@@ -1838,6 +2367,9 @@ def reset_all_scenarios() -> dict[str, Any]:
     _kick_flagd()
     # DEMO-AUTO-TRIAGE (#130): see comment in reset_scenario above.
     _AUTO_TRIAGE.forget_all()
+    # Same incident-over semantics as the single reset, for every scenario.
+    for s in SCENARIOS.values():
+        _clear_scenario_clusters(s)
     data = res.data or {}
     return {
         "reset_count": data.get("reset_count", 0),

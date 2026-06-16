@@ -91,6 +91,39 @@ def test_real_cmdb_miss_and_demo_miss_returns_none(monkeypatch):
     assert result.metadata["fallback"] == "demo_cmdb"
 
 
+def test_cmdb_row_with_empty_team_falls_back_to_demo(monkeypatch):
+    """A short service name like ``ad`` can LIKE-match an unrelated CI that
+    has no support_group. Such a row is useless (it would collapse the agent
+    to its Platform On-Call default), so we defer to the demo table — ``ad``
+    must route to Ads Team, not the wildcard escalation."""
+    _stub_httpx(
+        monkeypatch,
+        results=[
+            {"name": "admin-portal", "support_group": "", "sys_class_name": "cmdb_ci_service"}
+        ],
+    )
+    result = servicenow.cmdb_lookup("ad")
+    assert result.ok
+    assert result.data is not None
+    assert result.data["team"] == "Ads Team"
+    assert result.metadata["fallback"] == "demo_cmdb"
+
+
+def test_cmdb_error_falls_back_to_demo(monkeypatch):
+    """When ServiceNow is unreachable / not configured (``res`` not ok), the
+    lookup still resolves via the demo table instead of returning an error
+    that collapses the agent to its 'Platform On-Call' default (which routes
+    every service to the global wildcard escalation engineer)."""
+    monkeypatch.delenv("AIOPS_SERVICENOW_INSTANCE_URL", raising=False)
+    monkeypatch.delenv("AIOPS_SERVICENOW_USER", raising=False)
+    monkeypatch.delenv("AIOPS_SERVICENOW_PASSWORD", raising=False)
+    result = servicenow.cmdb_lookup("ad")
+    assert result.ok
+    assert result.data is not None
+    assert result.data["team"] == "Ads Team"
+    assert result.metadata["fallback"] == "demo_cmdb"
+
+
 def test_demo_cmdb_lookup_returns_none_for_unknown_service():
     """Direct unit test of the demo-table helper: unknown service -> None."""
     assert _demo_cmdb.lookup("weather-forecast-service") is None

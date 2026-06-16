@@ -6,3 +6,4 @@ service: recommendation
 title: Recommendation cache miss
 description: Recommendation service slows down — every request bypasses the cache.
 eta_seconds: 120
+severity: high

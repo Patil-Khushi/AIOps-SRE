@@ -6,3 +6,4 @@ service: checkout
 title: Kafka queue backpressure
 description: Kafka consumer falls behind — checkout pipeline starts erroring out.
 eta_seconds: 120
+severity: high

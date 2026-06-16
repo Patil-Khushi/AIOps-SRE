@@ -6,3 +6,4 @@ service: ad
 title: Ad service CPU saturation
 description: Ad service pegs CPU above 80%.
 eta_seconds: 120
+severity: warning

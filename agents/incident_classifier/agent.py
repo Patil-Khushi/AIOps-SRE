@@ -372,9 +372,12 @@ def _cmdb_lookup(service: str, trace: list[str]) -> tuple[str, str | None]:
     return "Platform On-Call", None
 
 
-def _oncall_lookup(team: str, trace: list[str]) -> str | None:
+def _oncall_lookup(team: str, trace: list[str], *, service: str | None = None) -> str | None:
     try:
-        res = get_registry().call("oncall.schedule.lookup", team=team)
+        # ``service`` lets the DB provider apply sticky assignment, keeping
+        # RA-002's on_call_engineer consistent with the engineer RA-001
+        # already named on the verdict. The mock provider ignores it.
+        res = get_registry().call("oncall.schedule.lookup", team=team, service=service)
     except KeyError:
         trace.append("oncall.schedule.lookup capability not registered; no engineer assigned")
         return None
@@ -548,7 +551,7 @@ def classify(payload: ClassificationInput) -> Classification:
 
     # Stage 5 — CMDB re-query (independent — choice D)
     team, cmdb_runbook = _cmdb_lookup(payload.alert.service, trace)
-    engineer = _oncall_lookup(team, trace)
+    engineer = _oncall_lookup(team, trace, service=payload.alert.service)
     dependencies = _dependencies_lookup(payload.alert.service, trace)
 
     # Runbook preference: similar-incident match wins over CMDB default.

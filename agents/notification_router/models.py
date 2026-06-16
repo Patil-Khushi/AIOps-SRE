@@ -54,6 +54,17 @@ class RoutingDecision(BaseModel):
     """Human-readable failure sub-domain ("Payment Gateway"). Populated
     when the expertise-aware on-call lookup matched a category; ``None``
     when no match (no keywords, off-shift specialist, mock provider)."""
+    response_mode: str = "notify"
+    """``"page"`` (wake on-call now), ``"notify"`` (assign + heads-up,
+    review when free), or ``"log"`` (record only). Derived from severity
+    + business hours; drives DM urgency and the dashboard badge."""
+    assignee: str | None = None
+    """Slack handle (or email) of the owning engineer, carried so the bot
+    can DM them even when the channel @-ping is suppressed for low sev."""
+    assignee_name: str | None = None
+    """Display name of the assignee."""
+    assignee_email: str | None = None
+    """Email of the assignee."""
 
 
 class RoutingOutcome(BaseModel):

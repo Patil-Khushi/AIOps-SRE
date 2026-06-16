@@ -630,6 +630,18 @@ def _fetch_trace_context(alert: Alert, trace: list[str]) -> dict[str, Any] | Non
 # ─── stage 7: summary ───────────────────────────────────────────────────────
 
 
+# A "summary" that is essentially just a severity verdict (e.g.
+# "Sev-4, confidence: 0.72", "Sev-2, confidence: medium", "Sev-4 0.55") is the
+# severity classifier's format leaking into the summary slot. We reject it and
+# use the template instead. The ``.{0,40}`` tail keeps a real summary that
+# merely opens with a severity mention ("Sev-1 outage: payment is down …", far
+# longer) from matching.
+_SUMMARY_LOOKS_LIKE_SEVERITY_RE = re.compile(
+    r"^\s*sev(?:erity)?[\s:\-]*[1-4]\b.{0,40}$",
+    re.IGNORECASE,
+)
+
+
 def _template_summary(alert: Alert) -> str:
     """Deterministic fallback used when the LLM can't help (stub provider, etc)."""
     if alert.threshold is not None:
@@ -684,6 +696,13 @@ def _generate_summary(
             return _template_summary(alert)
         # Take first non-empty line, cap length
         first = next((ln for ln in text.split("\n") if ln.strip()), "")
+        # Guard: occasionally a reasoning model returns the severity-classifier
+        # format ("Sev-4, confidence: 0.72") instead of a description. That's a
+        # useless, confusing summary (it contradicts the Severity field), so
+        # fall back to the deterministic template when the "summary" is just a
+        # bare Sev-N verdict.
+        if _SUMMARY_LOOKS_LIKE_SEVERITY_RE.match(first):
+            return _template_summary(alert)
         return first[:200]
     except Exception as exc:
         logger.warning("LLM summary failed: %s", exc)
@@ -836,7 +855,10 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
 
     engineer: str | None = None
     try:
-        oc = registry.call("oncall.schedule.lookup", team=team)
+        # ``service`` enables sticky assignment in the DB provider (same
+        # incident → same engineer); the mock provider's signature doesn't
+        # declare it, so the registry's kwargs filter drops it there.
+        oc = registry.call("oncall.schedule.lookup", team=team, service=alert.service)
         if oc.ok and oc.data:
             oc_engineer = oc.data.get("engineer_email")
             # Same shape as the CMDB block: refuse to set a verdict field

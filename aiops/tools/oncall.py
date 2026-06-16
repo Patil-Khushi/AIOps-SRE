@@ -78,10 +78,11 @@ def db_oncall_lookup(
     team: str,
     required_skills: list[str] | None = None,
     category_keywords: list[str] | None = None,
+    service: str | None = None,
 ) -> ToolResult:
     """Resolve the engineer who should be paged for ``team`` right now.
 
-    Two optional refinements layer on top of the basic shift lookup:
+    Three optional refinements layer on top of the basic shift lookup:
 
     * ``required_skills`` — engineers tagged with all of them are
       preferred, with a graceful fallback to "anyone on shift" if no
@@ -92,6 +93,10 @@ def db_oncall_lookup(
       any matched failure category (e.g. ``payment-gateway`` vs
       ``payment-database`` within the Payments Team). Falls back to the
       plain shift lookup if nothing matches.
+    * ``service`` — the alert's affected service. Enables sticky
+      assignment: a service with an incident assigned within the sticky
+      window re-pages the same engineer (if still active + on shift)
+      instead of rotating — same incident, same person.
 
     See ``aiops/state/oncall_repository`` for the full fallback ladder.
     """
@@ -104,10 +109,14 @@ def db_oncall_lookup(
                 keywords,
                 now=now,
                 required_skills=list(required_skills or []),
+                service=service,
             )
         else:
             engineer = find_oncall_for_team(
-                team, now=now, required_skills=list(required_skills or [])
+                team,
+                now=now,
+                required_skills=list(required_skills or []),
+                service=service,
             )
     except Exception as exc:  # boundary: never let a DB blip break triage
         logger.exception("oncall.schedule.lookup: DB lookup failed for team=%r", team)
