@@ -22,6 +22,10 @@ export default function RcaConsole() {
   const verdicts = useFetch(api.triageLive, { intervalMs: 0 });
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [rca, setRca] = useState<RCAVerdict | null>(null);
+  // ServiceNow incident number for the verdict the current RCA was run on.
+  // Pinned at RCA time and forwarded to apply-fix so the backend fires the
+  // resolution verifier → the 2nd (ticket-close) HITL approval.
+  const [rcaIncidentId, setRcaIncidentId] = useState<string | null>(null);
   const [rcaBusy, setRcaBusy] = useState(false);
   const [rcaError, setRcaError] = useState<string | null>(null);
 
@@ -33,21 +37,29 @@ export default function RcaConsole() {
 
   const results = verdicts.data?.results ?? [];
   const list: TriageVerdict[] = results.map((r) => r.verdict);
-  const selected: TriageVerdict | null = list[selectedIdx] ?? null;
+  const selectedResult = results[selectedIdx] ?? null;
+  const selected: TriageVerdict | null = selectedResult?.verdict ?? null;
 
   // Clear any RCA when the selected verdict changes so we never show a stale
   // analysis for a different incident.
   useEffect(() => {
     setRca(null);
     setRcaError(null);
+    setRcaIncidentId(null);
   }, [selectedIdx]);
 
-  const runRca = async (target?: TriageVerdict) => {
+  const runRca = async (target?: TriageVerdict, incidentId?: string | null) => {
     const v = target ?? selected;
     if (!v) return;
+    // Pin the ServiceNow incident number for this verdict (from RA-003's ticket
+    // on the triage result). apply-fix forwards it so the verifier runs and the
+    // ticket-close approval appears; without it only the fix approval shows.
+    const inc =
+      incidentId !== undefined ? incidentId : (selectedResult?.ticket?.ticket_id ?? null);
     setRca(null);
     setRcaError(null);
     setRcaBusy(true);
+    setRcaIncidentId(inc);
     try {
       setRca(await api.rca(v));
     } catch (e) {
@@ -65,7 +77,7 @@ export default function RcaConsole() {
     if (idx >= 0) {
       handedOff.current = true;
       setSelectedIdx(idx);
-      runRca(list[idx]);
+      runRca(results[idx].verdict, results[idx]?.ticket?.ticket_id ?? null);
       return;
     }
     // The just-triaged verdict may not be in this snapshot yet (intervalMs: 0,
@@ -175,7 +187,7 @@ export default function RcaConsole() {
                   </div>
                 )}
                 {rcaError && <p className="text-sm text-bad">{rcaError}</p>}
-                {rca && !rcaBusy && <RcaView v={rca} />}
+                {rca && !rcaBusy && <RcaView v={rca} incidentId={rcaIncidentId} />}
               </div>
             </div>
           </aside>
@@ -216,13 +228,14 @@ type ApplyStatus =
   | 'idle' | 'pending' | 'executed' | 'denied' | 'expired' | 'blocked' | 'unsupported' | 'error';
 
 function RemediationBox({
-  flag, status, error, approver, onApply,
+  flag, status, error, approver, onApply, closeFollows = false,
 }: {
   flag: string;
   status: ApplyStatus;
   error: string | null;
   approver: string | null;
   onApply: () => void;
+  closeFollows?: boolean;
 }) {
   const by = approver ? ` by ${approver}` : '';
   const busy = status === 'pending';
@@ -261,7 +274,10 @@ function RemediationBox({
       )}
       {status === 'executed' && (
         <p className="mt-2 flex items-center gap-1 text-[11px] text-ok">
-          <CheckCircle2 className="h-3 w-3" /> Approved{by} — {flag} set to off. The service should recover shortly.
+          <CheckCircle2 className="h-3 w-3" /> Approved{by} — {flag} set to off.{' '}
+          {closeFollows
+            ? 'Verifying recovery — a ticket-close approval will appear in the HITL console shortly.'
+            : 'The service should recover shortly.'}
         </p>
       )}
       {status === 'denied' && (
@@ -277,7 +293,7 @@ function RemediationBox({
   );
 }
 
-function RcaView({ v }: { v: RCAVerdict }) {
+function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string | null }) {
   const fixStep = v.ranked_fix_steps.find((s) => s.action_type === 'set_flag' && s.flag);
   const flag = fixStep?.flag ?? flagForService(v.affected_service);
   const fixVariant = fixStep?.variant ?? 'off';
@@ -319,7 +335,17 @@ function RcaView({ v }: { v: RCAVerdict }) {
     setApplyStatus('pending');
     setApplyError(null);
     try {
-      const res = await api.applyRcaFix(flag, fixVariant, 'set_flag');
+      // Forward the incident number (+ service + RCA verdict) so the backend
+      // persists the verdict and fires the resolution verifier after the flag
+      // flip — that's what raises the 2nd (ticket-close) HITL approval. With no
+      // incident_id the verifier is skipped and only the fix approval appears.
+      const context: Record<string, unknown> = {};
+      if (incidentId) {
+        context.incident_id = incidentId;
+        context.service = v.affected_service;
+        context.rca_verdict = v;
+      }
+      const res = await api.applyRcaFix(flag, fixVariant, 'set_flag', undefined, context);
       setApprovalId(res.approval_id);
     } catch (e) {
       setApplyStatus('error');
@@ -346,6 +372,7 @@ function RcaView({ v }: { v: RCAVerdict }) {
           error={applyError}
           approver={applyApprover}
           onApply={applyFix}
+          closeFollows={!!incidentId}
         />
       )}
 
