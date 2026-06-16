@@ -21,7 +21,34 @@ to capture and replay whatever the previous test left behind.
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Pin the observability backends to a fast-refusing endpoint before any
+# module that snapshots their URL/timeout at import time is loaded (#151 class).
+#
+# ``aiops.tools.observability.prometheus`` and ``...jaeger`` read
+# ``AIOPS_PROMETHEUS_URL`` / ``AIOPS_JAEGER_URL`` (and their timeouts) into
+# module-level constants at import — so a fixture set later cannot redirect
+# them. The agent path ``alert_triage.triage`` calls both providers for real
+# during ``_fetch_metric_context`` / ``_fetch_trace_context``; with no cluster
+# up, the eval-harness test that walks every agent's golden cases makes those
+# HTTP round-trips one after another and blows past the 60s pytest-timeout,
+# which (method="thread") hard-kills the whole process before the suite
+# finishes. Pointing every test at ``127.0.0.1:1`` (connection refused
+# instantly) with a sub-second timeout makes the calls fail fast and lets the
+# agent's existing graceful-degradation path (returns ``None`` on error) run.
+#
+# ``setdefault`` so a developer running ``@pytest.mark.integration`` tests
+# against a real cluster — who must export these vars anyway — is never
+# overridden. These run at conftest import, ahead of the agent/jaeger imports
+# below, so the module-level snapshots pick them up.
+os.environ.setdefault("AIOPS_PROMETHEUS_URL", "http://127.0.0.1:1")
+os.environ.setdefault("AIOPS_PROMETHEUS_TIMEOUT", "0.25")
+os.environ.setdefault("AIOPS_JAEGER_URL", "http://127.0.0.1:1")
+os.environ.setdefault("AIOPS_JAEGER_TIMEOUT", "0.25")
+os.environ.setdefault("AIOPS_JAEGER_CONNECT_TIMEOUT", "0.25")
 
 # Disable embeddings in the test suite by default (#113).
 #
@@ -79,6 +106,26 @@ def _disable_auto_triage(monkeypatch):
     # Same hygiene for the SNOW resolved-ticket watcher (#PRS-007): don't let
     # the lifespan spawn a background poller during TestClient-based tests.
     monkeypatch.setenv("SNOW_WATCHER_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_slack_user_map(monkeypatch):
+    """Clear ``AIOPS_SLACK_USER_MAP_JSON`` around every test (#151 class).
+
+    ``.env`` ships a real ``handle -> Slack-user-id`` map in this var, and
+    ``demo/ui/server.py`` calls ``load_dotenv()`` at import. Once any
+    ``TestClient(srv.app)`` test imports the server, that map leaks into the
+    process-wide environment for the rest of the session. ``load_slack_user_map``
+    then merges the env override *on top of* whatever ``user_map_path`` a test
+    passed in — env wins — so ``SlackWebhookAdapter`` tests that build their own
+    temp map (or assert a missing/malformed file degrades to plain text) get the
+    real id instead, and fail order-dependently (green in isolation, red after a
+    server-importing test runs first). Deleting the var per-test makes the Slack
+    adapter hermetic regardless of ``.env`` or import order; the lone test that
+    needs the override sets it with its own ``monkeypatch.setenv`` after this
+    fixture, which then takes precedence.
+    """
+    monkeypatch.delenv("AIOPS_SLACK_USER_MAP_JSON", raising=False)
 
 
 @pytest.fixture(autouse=True)
