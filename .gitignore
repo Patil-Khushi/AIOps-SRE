@@ -59,7 +59,9 @@ demo/audit/*
 !demo/audit/.gitkeep
 
 # Persistent state DB (aiops.state default lives under data/)
-data/
+# Anchored to repo root so it does not also ignore source dirs like
+# demo/dashboard/src/data/ (see agentCatalog.ts).
+/data/
 *.db
 *.db-journal
 *.db-wal
