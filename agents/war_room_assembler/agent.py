@@ -4,7 +4,7 @@ Reads a ``TriageVerdict`` (RA-001, ticketed by RA-003) and, for severe
 incidents (Sev-1 / Sev-2), stands up the incident war room: a dedicated
 chatops channel, the on-call SME pulled in, a live context pack (current
 metrics + recent traces), and a seed timeline for RCA.
-                                                        
+
 v1 scope (deliberately small, expand once evals are green):
 
 - **SME selection: on-call only.** One ``oncall.schedule.lookup`` for the
@@ -133,9 +133,7 @@ def _build_context_pack(verdict: TriageVerdict) -> list[ContextPackItem]:
     ]
     if verdict.recommended_runbook:
         pack.append(
-            ContextPackItem(
-                label="Runbook", value=verdict.recommended_runbook, source="verdict"
-            )
+            ContextPackItem(label="Runbook", value=verdict.recommended_runbook, source="verdict")
         )
     # Best-effort live telemetry. PromQL kept generic so it works against the
     # OTel demo's standard request metrics; degrades to "unavailable" off-cluster.
@@ -216,7 +214,11 @@ def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> WarRoomAss
     audit.append(f"smes: invited {len(invited)} (source=oncall)")
 
     context_pack = _build_context_pack(verdict)
-    live = sum(1 for i in context_pack if i.source and i.source.startswith("observability") and i.value != "unavailable")
+    live = sum(
+        1
+        for i in context_pack
+        if i.source and i.source.startswith("observability") and i.value != "unavailable"
+    )
     audit.append(f"context_pack: {len(context_pack)} items, {live} live telemetry")
 
     timeline = _seed_timeline(verdict, now, invited, channel)
@@ -288,7 +290,13 @@ def _create_bridge(assembly: WarRoomAssembly) -> WarRoomAssembly:
         )
     except KeyError:
         return assembly.model_copy(
-            update={"bridge_status": "skipped", "audit_trace": [*assembly.audit_trace, "bridge: no chatops.war_room.create provider registered"]}
+            update={
+                "bridge_status": "skipped",
+                "audit_trace": [
+                    *assembly.audit_trace,
+                    "bridge: no chatops.war_room.create provider registered",
+                ],
+            }
         )
 
     if not result.ok or not isinstance(result.data, dict):
