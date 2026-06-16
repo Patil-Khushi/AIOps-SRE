@@ -256,6 +256,7 @@ export const AGENTS: AgentCatalogItem[] = [
   agent('Incident Commander', 'Reactive-Active', 8, 'Orchestrate the response end-to-end.', 'Keeps the incident moving, assigns ownership, and coordinates the response.', {
     status: 'Shipped',
     sre: true,
+    liveSurface: '/console/incident-commander', liveSurfaceLabel: 'Open incident command console',
     howItWorks: [
       'Picks up a newly declared incident and its verdict.',
       'Assigns ownership and pulls in the right responders.',
