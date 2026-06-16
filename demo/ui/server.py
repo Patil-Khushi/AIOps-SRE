@@ -90,8 +90,12 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
 from agents.alert_triage import Alert  # noqa: E402
+from agents.auto_healer_lite import ExecutionRequest  # noqa: E402
+from agents.auto_healer_lite import execute as auto_heal_execute  # noqa: E402
 from agents.incident_commander import command as incident_command  # noqa: E402
 from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
+from agents.remediation_recommender import RemediationInput  # noqa: E402
+from agents.remediation_recommender import recommend as remediate  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
     ApprovalError,
@@ -640,6 +644,222 @@ def list_verdicts_endpoint(
         raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
     verdicts = state_repo.list_verdicts(limit=limit, service=service, severity=severity)
     return {"count": len(verdicts), "verdicts": verdicts}
+
+
+# ─── Prescriptive chain HTTP surface (PRS-001 + PRS-002) ───────────────────
+#
+# Three endpoints let the demo drive the full Reactive→Prescriptive loop
+# without Python imports:
+#
+#   /api/remediation  — POST RCA verdict + triage context → ranked options
+#                       (Remediation Recommender, PRS-001).  No side effects.
+#   /api/execute      — POST a single chosen option → real tool dispatch
+#                       (Auto-Healer Lite, PRS-002).  Gated by platform
+#                       HITL; dry_run defaults True for safety.
+#   /api/triage-full  — POST an Alert → chain triage → classify → ticket →
+#                       notify → RCA → remediation in one call.  Stops at
+#                       the operator's decision point: execution stays a
+#                       separate /api/execute call so the human is always
+#                       in the loop.
+
+
+class RemediationHttpRequest(BaseModel):
+    rca_verdict: dict[str, Any] = Field(
+        ..., description="RCAVerdict-shape dict (root_cause, ranked_fix_steps, …)"
+    )
+    triage_verdict: dict[str, Any] | None = Field(
+        default=None, description="Optional upstream TriageVerdict for incident summary"
+    )
+    environment: str = Field(
+        default="production",
+        description="production | staging | dev — influences blast-radius preference",
+    )
+    operator_preferences: dict[str, Any] = Field(
+        default_factory=dict, description="Future v1 hook; only 'prefer_safe' honoured today"
+    )
+
+
+@app.post("/api/remediation", response_model=None)
+def remediation_endpoint(req: RemediationHttpRequest) -> dict[str, Any]:
+    """Rank remediation options for a diagnosed incident (PRS-001).
+
+    Body: ``{"rca_verdict": {...}, "triage_verdict"?: {...},
+    "environment"?: "production", "operator_preferences"?: {...}}``.
+    Returns a ``RemediationVerdict`` with ``options`` (sorted, len ≥ 1),
+    ``recommended_option_id``, ``confidence_score``, and the audit
+    trace. Auto-pick eligibility is hard-False — every option still
+    flows through the HITL gate when the operator picks one and POSTs
+    to ``/api/execute``.
+
+    No tool dispatch happens here; this endpoint is pure data
+    (read-only on the platform tool registry).
+    """
+    try:
+        typed = RemediationInput.model_validate(
+            {
+                "rca_verdict": req.rca_verdict,
+                "triage_verdict": req.triage_verdict,
+                "environment": req.environment,
+                "operator_preferences": req.operator_preferences,
+            }
+        )
+        verdict = remediate(typed)
+    except Exception as exc:
+        logger.exception("PRS-001 remediation endpoint raised")
+        raise HTTPException(status_code=500, detail=f"remediation failed: {exc}") from exc
+    return verdict.model_dump(mode="json")
+
+
+class ExecuteHttpRequest(BaseModel):
+    option: dict[str, Any] = Field(
+        ..., description="A single RemediationOption (dict-form) the operator chose."
+    )
+    incident_id: str | None = None
+    affected_service: str = Field(..., min_length=1)
+    operator: str | None = Field(
+        default=None,
+        description="Operator initiating the execute call — recorded in the audit row.",
+    )
+    dry_run: bool = Field(
+        default=True,
+        description=(
+            "True (default): validate + consult the HITL gate but do not call "
+            "the tool. False: full execution after gate clears."
+        ),
+    )
+    hitl_context: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/api/execute", response_model=None)
+def execute_endpoint(req: ExecuteHttpRequest) -> dict[str, Any]:
+    """Execute a chosen remediation option through Auto-Healer Lite (PRS-002).
+
+    Body: ``{"option": {<RemediationOption dict>}, "affected_service": "...",
+    "incident_id"?: "...", "operator"?: "...", "dry_run"?: bool,
+    "hitl_context"?: {...}}``. Returns an ``ExecutionVerdict``
+    (status ∈ refused / pending_approval / blocked / dry_run_ok /
+    executed / execution_failed), the platform's gate decision, the
+    tool result (when status=executed), and the audit trace.
+
+    HITL: the gate action ``auto_heal.lite.execute`` is REQUIRED in
+    ``aiops/policy/gate.py:DEFAULT_LEVELS``. With a real approver
+    installed (``install_default_approver`` runs at startup) the
+    operator's approve/deny click on the /hitl page (or the Slack
+    interactive prompt) drives the outcome. Without one, the default
+    fail-closed approver blocks every REQUIRED action.
+
+    Persists an ``ExecutionRow`` for every attempt — REFUSED, BLOCKED,
+    DRY_RUN_OK, EXECUTED, and EXECUTION_FAILED — so the dashboard
+    history view + future historical-effectiveness loop both query
+    the same source of truth.
+    """
+    try:
+        typed = ExecutionRequest.model_validate(req.model_dump())
+        verdict = auto_heal_execute(typed)
+    except Exception as exc:
+        logger.exception("PRS-002 execute endpoint raised")
+        raise HTTPException(status_code=500, detail=f"execute failed: {exc}") from exc
+    return verdict.model_dump(mode="json")
+
+
+class TriageFullRequest(BaseModel):
+    alert: dict[str, Any] = Field(..., description="Canonical Alert payload (RA-001 input)")
+    scenario_id: str | None = Field(
+        default=None,
+        description="Optional scenario id forwarded to RCA for deterministic fallback.",
+    )
+    environment: str = Field(
+        default="production",
+        description="Forwarded to PRS-001 for environment-aware ranking.",
+    )
+
+
+@app.post("/api/triage-full", response_model=None)
+async def triage_full_endpoint(req: TriageFullRequest) -> dict[str, Any]:
+    """Run the full Reactive→Prescriptive chain on one alert.
+
+    Pipeline (each step's output feeds the next):
+
+    1. RA-001 Alert Triage → ``TriageVerdict`` (severity, team, on-call)
+    2. RA-002 Incident Classifier → ``Classification`` (incident_type, root cause text)
+    3. RA-003 Auto-Ticketing → ``TicketRecord`` (real ServiceNow PDI or mock)
+    4. RA-005 Notification Router → ``RoutingDecision`` (chatops fan-out)
+    5. PRS-008 RCA Agent → ``RCAVerdict`` (ranked fix steps with rollback)
+    6. PRS-001 Remediation Recommender → ``RemediationVerdict`` (ranked options)
+
+    The chain **stops here** — execution (PRS-002) stays a separate
+    ``/api/execute`` call so a human is always in the loop. This
+    endpoint is the "what to consider" half of the demo; the operator
+    picks an option from ``remediation.options`` and POSTs it to
+    ``/api/execute``.
+
+    Response shape::
+
+        {
+          "verdict": TriageVerdict,
+          "classification": Classification,
+          "ticket": TicketRecord,
+          "notifications": RoutingDecision | null,
+          "deliveries": {adapter_name: DeliveryResult} | null,
+          "rca": RCAVerdict | null,
+          "remediation": RemediationVerdict | null,
+          "persisted": {verdict_id, classification_id, notification_id},
+          "errors": {step_name: error_string}   # populated when a step soft-failed
+        }
+
+    Each prescriptive step (RCA + recommendation) soft-fails: an
+    LLM hiccup on RCA leaves ``rca: null`` and ``errors.rca`` set, but
+    the reactive half of the chain still returns a usable response.
+    """
+    # Reactive half — reuse the existing ``triage_alert`` to avoid drift.
+    try:
+        reactive = triage_alert(TriageRequest(alert=req.alert))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("triage-full: reactive chain raised")
+        raise HTTPException(status_code=500, detail=f"reactive chain failed: {exc}") from exc
+
+    errors: dict[str, str] = {}
+    verdict_dict = reactive["verdict"]
+
+    # 5. RCA — best-effort. An LLM blip should NOT lose the rest of the chain.
+    rca_dict: dict[str, Any] | None = None
+    try:
+        rca_verdict = await asyncio.to_thread(
+            rca_analyze, verdict_dict, scenario_id=req.scenario_id
+        )
+        rca_dict = rca_verdict.model_dump(mode="json")
+    except Exception as exc:
+        logger.exception("triage-full: RCA step raised; continuing without it")
+        errors["rca"] = f"{type(exc).__name__}: {exc}"
+
+    # 6. Remediation Recommender — only runs if RCA produced a verdict.
+    remediation_dict: dict[str, Any] | None = None
+    if rca_dict is not None:
+        try:
+            reco_input = RemediationInput.model_validate(
+                {
+                    "rca_verdict": rca_dict,
+                    "triage_verdict": verdict_dict,
+                    "environment": req.environment,
+                    "operator_preferences": {},
+                }
+            )
+            reco_verdict = remediate(reco_input)
+            remediation_dict = reco_verdict.model_dump(mode="json")
+        except Exception as exc:
+            logger.exception("triage-full: PRS-001 step raised; continuing without it")
+            errors["remediation"] = f"{type(exc).__name__}: {exc}"
+    else:
+        errors["remediation"] = "skipped because RCA did not produce a verdict"
+
+    return {
+        **reactive,
+        "rca": rca_dict,
+        "remediation": remediation_dict,
+        "errors": errors,
+    }
 
 
 # ─── HITL demo agent trigger (issue #77) ───────────────────────────────────

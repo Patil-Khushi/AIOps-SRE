@@ -204,3 +204,27 @@ def _hermetic_jaeger_circuit():
         yield
     finally:
         _jaeger._reset_circuit_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_chatops_hub():
+    """Reset the chatops WebSocket history hub around every test.
+
+    The hub (``demo/ui/chatops_ws._HUB``) keeps a process-global history ring
+    that a new ``/ws/chatops`` client replays on connect. A chatops message
+    emitted by one test — the chained-demo / reactive-flow / triage suites
+    route notifications through ``get_client().send()`` → the WebSocket
+    adapter → ``_HUB.push()`` — otherwise lingers in that ring and leaks into
+    the next test's replay, which is what makes
+    ``test_chatops_ws::test_websocket_endpoint_replays_history_and_streams_new_messages``
+    read a stale ``"product-catalog … Prometheus"`` message instead of its own
+    ``"first"``. Clearing at both ends, same discipline as the SQLite / gate /
+    Jaeger-circuit fixtures, makes the hub hermetic regardless of run order.
+    """
+    from demo.ui.chatops_ws import get_hub
+
+    get_hub()._reset_for_tests()
+    try:
+        yield
+    finally:
+        get_hub()._reset_for_tests()
