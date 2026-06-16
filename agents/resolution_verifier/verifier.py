@@ -105,13 +105,14 @@ def _default_close(
             f"{len(report.passed)} check(s) passed, {len(report.skipped)} skipped."
         ),
     }
+    # Put the full verification proof into close_notes so it lands in the
+    # incident's Resolution Information (not just the Work Notes activity log).
     return request_ticket_close(
         incident_id=ctx.incident_id,
         sys_id=sys_id,
         close_code=report.close_code(),
         close_notes=(
-            f"Verified resolved: {len(report.passed)} check(s) passed, "
-            f"{len(report.skipped)} skipped. Closed via HITL approval."
+            report.work_note() + "\n\nClosed via HITL approval after resolution verification."
         ),
         hitl_context=hitl_context,
     )

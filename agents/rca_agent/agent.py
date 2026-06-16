@@ -234,6 +234,75 @@ def _coerce_action(step: dict[str, Any]) -> tuple[FixActionType, str | None, str
     return action_type, flag, variant
 
 
+def _live_flag_names() -> set[str] | None:
+    """Best-effort set of flag names configured in the live flagd config, via
+    the feature-flags seam (``feature_flags.list_variants``).
+
+    Returns ``None`` when the list can't be fetched — no flagd, not configured,
+    or the call failed — so callers fail *open*: grounding is a safety net, never
+    a hard dependency for the offline / eval / unit-test paths. Uses the tool
+    registry seam (not a vendor SDK), matching the platform's seam rule.
+    """
+    try:
+        from aiops.tools import get_registry
+
+        res = get_registry().call("feature_flags.list_variants")
+        if not getattr(res, "ok", False):
+            return None
+        variants = (getattr(res, "data", None) or {}).get("variants") or {}
+        names = set(variants)
+        return names or None
+    except Exception:  # registry missing capability, flagd unreachable, etc.
+        return None
+
+
+def _ground_set_flags_against_flagd(
+    steps: list[RankedFixStep], *, decision_trace: list[str]
+) -> list[RankedFixStep]:
+    """Downgrade any ``set_flag`` step whose flag isn't in the live flagd config
+    to ``manual`` — so the dashboard never offers a one-click apply the executor
+    will reject with "flag not present in flagd config".
+
+    Used for services the curated map doesn't cover (e.g. ``frontend``, which
+    has *no* one-flag remediation in the OTel demo). The LLM follows the
+    ``<service>Failure`` naming pattern and confidently invents flags like
+    ``frontendFailure`` that don't exist; grounding them against the real config
+    turns that into an honest "investigate manually" instead of a dead button.
+
+    Fails open: if the flag list is unavailable the steps are returned unchanged
+    and the executor remains the backstop. Skips the flagd lookup entirely when
+    there's no ``set_flag`` step to validate.
+    """
+    if not any(s.action_type is FixActionType.SET_FLAG and s.flag for s in steps):
+        return steps
+    available = _live_flag_names()
+    if not available:
+        return steps
+    grounded: list[RankedFixStep] = []
+    for i, s in enumerate(steps):
+        if s.action_type is FixActionType.SET_FLAG and s.flag and s.flag not in available:
+            decision_trace.append(
+                f"downgraded fix step #{i + 1}: flag {s.flag!r} is not a configured flagd "
+                "flag — no one-flag remediation for this service; marked manual"
+            )
+            grounded.append(
+                s.model_copy(
+                    update={
+                        "action_type": FixActionType.MANUAL,
+                        "flag": None,
+                        "variant": "off",
+                        "description": (
+                            f"{s.description}  [NOTE: '{s.flag}' is not a configured flagd "
+                            "flag, so no automated flag-flip is available — investigate manually.]"
+                        ),
+                    }
+                )
+            )
+        else:
+            grounded.append(s)
+    return grounded
+
+
 def _ensure_executable_action(
     steps: list[RankedFixStep],
     *,
@@ -251,14 +320,14 @@ def _ensure_executable_action(
     not present in flagd config". The map values are real flagd flags, so we
     trust them over the model's spelling.
 
-    For services the map doesn't know, the LLM's ``set_flag`` step is left as-is
-    and the executor validates it against the live flagd config (rejecting an
-    unknown flag with the available list), so we never silently flip the wrong
-    thing.
+    For services the map doesn't know, we ground the LLM's ``set_flag`` step
+    against the live flagd config: a real flag is kept, an invented one is
+    downgraded to ``manual`` so the UI never offers an un-runnable apply. The
+    executor still validates as a final backstop.
     """
     mapped = flag_for_service(service)
     if not mapped:
-        return steps
+        return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
     # Target the first set_flag step the LLM proposed; if it proposed none,
     # fall back to the top-ranked step so the demo still offers one-click apply.
     target_idx = next(

@@ -139,6 +139,72 @@ def test_ensure_executable_action_noop_when_unmapped_service():
     assert out[0].action_type is FixActionType.MANUAL
 
 
+def test_ensure_executable_action_downgrades_invented_flag_for_unmapped_service(monkeypatch):
+    """Regression: the LLM invents 'frontendFailure' (no such flag) for the
+    unmapped 'frontend' service. Grounding against the live flagd config must
+    downgrade it to manual so the UI never offers an un-runnable apply."""
+    import agents.rca_agent.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod, "_live_flag_names", lambda: {"paymentFailure", "cartFailure", "adFailure"}
+    )
+    steps = [
+        RankedFixStep(
+            description="Set flag frontendFailure off",
+            blast_radius=BlastRadius.LOW,
+            rollback="re-flip",
+            action_type=FixActionType.SET_FLAG,
+            flag="frontendFailure",
+            variant="off",
+        )
+    ]
+    trace: list[str] = []
+    out = _ensure_executable_action(steps, service="frontend", decision_trace=trace)
+    assert out[0].action_type is FixActionType.MANUAL
+    assert out[0].flag is None
+    assert any("not a configured flagd" in line for line in trace)
+
+
+def test_ensure_executable_action_keeps_real_flag_for_unmapped_service(monkeypatch):
+    """A real flag for a service the curated map doesn't cover is kept as-is."""
+    import agents.rca_agent.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod, "_live_flag_names", lambda: {"emailMemoryLeak", "paymentFailure"}
+    )
+    steps = [
+        RankedFixStep(
+            description="Set flag emailMemoryLeak off",
+            blast_radius=BlastRadius.LOW,
+            rollback="re-flip",
+            action_type=FixActionType.SET_FLAG,
+            flag="emailMemoryLeak",
+            variant="off",
+        )
+    ]
+    out = _ensure_executable_action(steps, service="emailservice", decision_trace=[])
+    assert out[0].action_type is FixActionType.SET_FLAG
+    assert out[0].flag == "emailMemoryLeak"
+
+
+def test_ground_set_flags_skips_lookup_when_no_set_flag_step(monkeypatch):
+    """Fail-open + no wasted flagd call: a manual-only step list is unchanged
+    and never triggers the live flag lookup."""
+    import agents.rca_agent.agent as agent_mod
+
+    called = {"n": 0}
+
+    def _boom() -> set[str]:
+        called["n"] += 1
+        raise AssertionError("should not fetch flags when there's no set_flag step")
+
+    monkeypatch.setattr(agent_mod, "_live_flag_names", _boom)
+    steps = [RankedFixStep(description="investigate", blast_radius=BlastRadius.LOW, rollback="n/a")]
+    out = _ensure_executable_action(steps, service="totally-unknown", decision_trace=[])
+    assert out[0].action_type is FixActionType.MANUAL
+    assert called["n"] == 0
+
+
 # ─── executor dispatch (no cluster needed) ─────────────────────────────────
 
 
