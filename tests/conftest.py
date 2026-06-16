@@ -109,26 +109,6 @@ def _disable_auto_triage(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_slack_user_map(monkeypatch):
-    """Clear ``AIOPS_SLACK_USER_MAP_JSON`` around every test (#151 class).
-
-    ``.env`` ships a real ``handle -> Slack-user-id`` map in this var, and
-    ``demo/ui/server.py`` calls ``load_dotenv()`` at import. Once any
-    ``TestClient(srv.app)`` test imports the server, that map leaks into the
-    process-wide environment for the rest of the session. ``load_slack_user_map``
-    then merges the env override *on top of* whatever ``user_map_path`` a test
-    passed in — env wins — so ``SlackWebhookAdapter`` tests that build their own
-    temp map (or assert a missing/malformed file degrades to plain text) get the
-    real id instead, and fail order-dependently (green in isolation, red after a
-    server-importing test runs first). Deleting the var per-test makes the Slack
-    adapter hermetic regardless of ``.env`` or import order; the lone test that
-    needs the override sets it with its own ``monkeypatch.setenv`` after this
-    fixture, which then takes precedence.
-    """
-    monkeypatch.delenv("AIOPS_SLACK_USER_MAP_JSON", raising=False)
-
-
-@pytest.fixture(autouse=True)
 def _hermetic_llm_provider(monkeypatch):
     """Pin the LLM provider to the offline ``stub`` around every test (#151).
 
