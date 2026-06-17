@@ -349,6 +349,86 @@ class TriageRequest(BaseModel):
     alert: dict[str, Any] = Field(..., description="Canonical Alert payload")
 
 
+# DEMO closure bridge (UI flow): the dashboard analyzes the live-triage verdict,
+# which can be a Suppressed duplicate carrying no ServiceNow ticket (dedup → no
+# ticket on that triage). The real incident for the service was opened by an
+# earlier triage (e.g. the Inject button's background chain). Record
+# service → newest incident number here so apply-fix can recover it when the UI
+# has none, and the resolution verifier / close gate (the 2nd HITL approval)
+# still fires. In-process + best-effort by design (a restart just falls back to
+# the UI-supplied incident_id).
+_LATEST_INCIDENT_BY_SERVICE: dict[str, str] = {}
+
+
+def _norm_service(service: str | None) -> str:
+    """Collapse service-name spellings to a stable key: lower-case, strip
+    separators, drop a trailing ``service`` suffix — so ``product-catalog``,
+    ``productcatalog`` and ``productcatalogservice`` all match."""
+    s = (service or "").lower().strip()
+    for sep in ("-", "_", " "):
+        s = s.replace(sep, "")
+    if s.endswith("service") and len(s) > len("service"):
+        s = s[: -len("service")]
+    return s
+
+
+def _record_incident_for_service(flow: Any) -> None:
+    """Best-effort: remember the incident number RA-003 just opened, keyed by
+    the normalised affected service, for the apply-fix closure fallback."""
+    try:
+        number = getattr(flow.ticket, "ticket_id", None)
+        service = getattr(flow.verdict, "affected_service", None)
+        if number and service:
+            _LATEST_INCIDENT_BY_SERVICE[_norm_service(service)] = str(number)
+    except Exception:
+        logger.debug("could not record incident-for-service mapping", exc_info=True)
+
+
+def _incident_is_open(number: str) -> bool:
+    """True when a ServiceNow incident exists and isn't Resolved(6)/Closed(7).
+    Used to reject a stale in-process hint pointing at an already-closed ticket
+    (which the verifier would skip as already-verified → no close card)."""
+    if not number:
+        return False
+    try:
+        res = get_registry().call("itsm.incident.get", number=number, fields="number,state")
+        if not getattr(res, "ok", False):
+            return False
+        rec = (getattr(res, "data", None) or {}).get("incident") or {}
+        return str(rec.get("state") or "") not in {"6", "7"}
+    except Exception:
+        return False
+
+
+def _latest_incident_for_service(service: str | None) -> str:
+    """Resolve the OPEN ServiceNow incident for a service, for the apply-fix
+    closure fallback when the UI analyzed a Suppressed verdict with no ticket.
+
+    Prefer the in-process hint (the exact incident RA-003 last opened) but only
+    if it's still open; otherwise query ServiceNow for the newest *active*
+    incident whose short description names the service (RA-003 writes
+    ``[Sev-X] {service}: …``). The ``active=true`` filter guarantees we never
+    return a ticket the verifier already closed."""
+    hint = _LATEST_INCIDENT_BY_SERVICE.get(_norm_service(service), "")
+    if hint and _incident_is_open(hint):
+        return hint
+    raw = (service or "").strip()
+    if not raw:
+        return ""
+    try:
+        q = f"active=true^short_descriptionLIKE{raw}^ORDERBYDESCopened_at"
+        res = get_registry().call(
+            "itsm.incident.query", query=q, fields="number,short_description,state", limit=1
+        )
+        if getattr(res, "ok", False):
+            rows = (getattr(res, "data", None) or {}).get("incidents", []) or []
+            if rows:
+                return str(rows[0].get("number") or "")
+    except Exception:
+        logger.debug("incident-for-service query failed for %r", service, exc_info=True)
+    return ""
+
+
 @app.post("/api/triage", response_model=None)
 def triage_alert(req: TriageRequest) -> dict[str, Any]:
     """Triage + classify + auto-ticket + notify chatops for a single alert.
@@ -380,6 +460,10 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     # response shape verbatim. Alert construction + the 400 mapping stay here as
     # HTTP concerns, not pipeline logic.
     result = run_reactive_flow(alert_obj)
+    # Remember the incident this triage opened (if any), keyed by service, so the
+    # apply-fix closure path can recover it when the UI analyzed a Suppressed
+    # verdict that carried no ticket (see _record_incident_for_service).
+    _record_incident_for_service(result)
 
     # RA-006 War-Room Assembler: on Sev-1/Sev-2 stand up the incident war room
     # (channel + on-call SME + context pack + seed timeline). ``assemble`` makes
@@ -1388,6 +1472,19 @@ def _post_fix_verify(req: RcaApplyFixRequest) -> None:
     do anything, and the caller already wraps this so it can't affect the
     fix-apply outcome."""
     incident_id = (req.incident_id or "").strip()
+    if not incident_id and req.service:
+        # The UI may have no incident number when the analyzed verdict was a
+        # Suppressed duplicate (dedup → no ticket on that triage). Fall back to
+        # the most recent incident RA-003 opened for this service — e.g. the one
+        # the Inject button's background triage created — so the close gate (2nd
+        # HITL approval) still fires.
+        incident_id = _latest_incident_for_service(req.service)
+        if incident_id:
+            logger.info(
+                "post-fix verify: UI sent no incident_id; recovered %s for service=%r",
+                incident_id,
+                req.service,
+            )
     if not incident_id:
         return  # no ServiceNow ticket to verify/close against
     service = req.service or (req.rca_verdict or {}).get("affected_service") or "unknown"
