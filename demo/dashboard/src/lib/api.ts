@@ -3,6 +3,7 @@ import type {
   ApprovalRecord,
   ApprovalsResponse,
   HealthResponse,
+  IncidentCommandResult,
   KbListResponse,
   KBArticleRow,
   LiveAlertsResponse,
@@ -142,6 +143,13 @@ export const api = {
   rca: (triageVerdict: TriageVerdict, scenarioId?: string) =>
     unwrap<RCAVerdict>(
       http.post('/api/rca', { triage_verdict: triageVerdict, scenario_id: scenarioId ?? null }),
+    ),
+  // RA-008 Incident Commander — chains the reactive flow + RCA into one
+  // coordinated Sev-1/Sev-2 response. Takes the firing alert (it re-runs the
+  // flow) and returns the timeline, RCA, postmortem seed, and handoff status.
+  incidentCommander: (alert: PrometheusAlert, scenarioId?: string) =>
+    unwrap<IncidentCommandResult>(
+      http.post('/api/incident-commander', { alert, scenario_id: scenarioId ?? null }),
     ),
   topology:    () => unwrap<TopologyResponse>(http.get('/api/topology')),
   pods:        () => unwrap<SystemPodsResponse>(http.get('/api/system/pods')),

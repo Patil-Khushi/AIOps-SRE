@@ -87,6 +87,39 @@ export interface RCAVerdict {
   audit_metadata: RCAAuditMetadata;
 }
 
+// RA-008 Incident Commander — mirrors agents/incident_commander/models.py.
+// Chains the reactive flow + RCA into one coordinated Sev-1/Sev-2 response.
+export interface IcTimelineEntry {
+  ts: string;
+  stage: string;   // triage | classify | correlate | ticket | notify | rca | comms | handoff
+  detail: string;
+}
+
+export interface PostmortemSeed {
+  affected_service: string;
+  severity: string;
+  incident_summary: string;
+  incident_type?: string | null;
+  ticket_id?: string | null;
+  root_cause?: string | null;
+  confidence_score?: number | null;
+  ranked_fix_steps: RankedFixStep[];
+  contributing_signals: string[];
+  timeline: IcTimelineEntry[];
+}
+
+export interface IncidentCommandResult {
+  engaged: boolean;                       // true only for Sev-1/Sev-2
+  severity: Severity;
+  affected_service: string;
+  reactive: TriageResult;                 // the /api/triage bundle (verdict + ticket + …)
+  rca: RCAVerdict | null;                 // null below Sev-2
+  timeline: IcTimelineEntry[];
+  postmortem_seed: PostmortemSeed | null; // null below Sev-2
+  handoff_requested: boolean;
+  audit_metadata: RCAAuditMetadata;
+}
+
 export interface HealthResponse {
   status: string;
   llm_provider: string | null;       // probed provider (= request that succeeded), null on failure

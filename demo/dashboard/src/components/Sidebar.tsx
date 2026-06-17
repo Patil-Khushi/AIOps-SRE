@@ -6,6 +6,7 @@ import {
   Bell,
   Brain,
   Sparkles,
+  Siren,
   Gavel,
   Network,
   HeartPulse,
@@ -33,6 +34,7 @@ const ITEMS: Record<string, NavItem> = {
   '/console/alerts':        { to: '/console/alerts',        label: 'Alert Stream',  icon: BellRing,        end: false },
   '/console/reasoning':     { to: '/console/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
   '/console/rca':           { to: '/console/rca',           label: 'RCA Agent',     icon: Sparkles,        end: false },
+  '/console/incident-commander': { to: '/console/incident-commander', label: 'Incident Commander', icon: Siren, end: false },
   '/console/notifications': { to: '/console/notifications', label: 'Notifications', icon: Bell,            end: false },
   '/console/knowledge':     { to: '/console/knowledge',     label: 'Knowledge',     icon: BookOpen,        end: false },
   '/console/approvals':     { to: '/console/approvals',     label: 'Approvals',     icon: Gavel,           end: false },
@@ -50,6 +52,9 @@ const AGENT_SURFACES: Record<string, string[]> = {
   'alert-triage':        ['/console', '/console/alerts', '/console/reasoning', ...SHARED_TAIL],
   // RCA's console is focused on the analysis + approvals — no Overview/Topology.
   'rca-agent':           ['/console/rca', '/console/health'],
+  // Incident Commander coordinates from the alert; its console + the approvals
+  // it hands off to are the surface that matters.
+  'incident-commander':  ['/console/incident-commander', '/console/approvals', '/console/health'],
   'notification-router': ['/console', '/console/notifications', ...SHARED_TAIL],
   // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
   'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],

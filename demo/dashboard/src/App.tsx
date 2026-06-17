@@ -12,6 +12,7 @@ import Approvals from '@/pages/Approvals';
 import Notifications from '@/pages/Notifications';
 import Reasoning from '@/pages/Reasoning';
 import RcaConsole from '@/pages/RcaConsole';
+import IncidentCommander from '@/pages/IncidentCommander';
 import WarRoom from '@/pages/WarRoom';
 import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
@@ -40,6 +41,7 @@ export default function App() {
         <Route index element={<Overview />} />
         <Route path="alerts" element={<AlertStream />} />
         <Route path="rca" element={<RcaConsole />} />
+        <Route path="incident-commander" element={<IncidentCommander />} />
         <Route path="war-room" element={<WarRoom />} />
         <Route path="approvals" element={<Approvals />} />
         <Route path="notifications" element={<Notifications />} />
