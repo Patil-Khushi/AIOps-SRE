@@ -103,6 +103,11 @@ def _disable_auto_triage(monkeypatch):
     # Same hygiene for the SNOW resolved-ticket watcher (#PRS-007): don't let
     # the lifespan spawn a background poller during TestClient-based tests.
     monkeypatch.setenv("SNOW_WATCHER_ENABLED", "false")
+    # Don't let the lifespan auto-seed the on-call roster into the hermetic
+    # per-test DB — tests that exercise on-call seed their own rows, and the
+    # triage-endpoint/orchestrator suites assert against the empty-roster
+    # (mock-provider) path. Demo runs leave this unset (auto-seed on).
+    monkeypatch.setenv("AIOPS_ONCALL_AUTOSEED", "false")
 
 
 @pytest.fixture(autouse=True)

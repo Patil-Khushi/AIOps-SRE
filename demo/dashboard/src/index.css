@@ -158,6 +158,7 @@
            transition-colors disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary { @apply bg-accent text-white hover:bg-accent-hover; }
+  .btn-danger { @apply bg-bad text-white hover:opacity-90; }
   .btn-ghost {
     @apply border border-ink-200 bg-white text-ink-700 hover:bg-ink-100
            dark:border-ink-700 dark:bg-ink-900 dark:text-ink-200 dark:hover:bg-ink-800;

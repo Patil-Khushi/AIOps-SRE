@@ -164,11 +164,41 @@ def _activate_db_oncall_provider() -> None:
         engineer_count = int(session.exec(select(func.count()).select_from(EngineerRow)).one() or 0)
 
     if engineer_count == 0:
-        logger.warning(
-            "oncall: engineers table empty; keeping mock provider active. "
-            "Run `uv run python -m scripts.seed_oncall` to populate it."
-        )
-        return
+        # Auto-seed so the demo "just works" — the #1 cause of the on-call
+        # showing a generic ``oncall@<team>.example.com`` (the mock provider's
+        # placeholder) is simply that nobody ran the seed script. Seeding here
+        # activates the DB provider with named engineers and, when
+        # ``AIOPS_ONCALL_ROSTER_JSON`` is set (`.env` / `.env.shared`), their
+        # real emails + Slack IDs. Opt out with ``AIOPS_ONCALL_AUTOSEED=false``
+        # (the test suite does, to keep the hermetic DB empty).
+        autoseed = os.environ.get("AIOPS_ONCALL_AUTOSEED", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not autoseed:
+            logger.warning(
+                "oncall: engineers table empty and auto-seed disabled "
+                "(AIOPS_ONCALL_AUTOSEED=false); keeping mock provider active. "
+                "Run `uv run python -m scripts.seed_oncall` to populate it."
+            )
+            return
+        try:
+            from scripts.seed_oncall import _seed
+
+            with Session(get_engine()) as seed_session:
+                engineer_count = _seed(seed_session, force=False)
+            logger.info(
+                "oncall: auto-seeded roster (%d engineers). Set "
+                "AIOPS_ONCALL_ROSTER_JSON for real identities instead of placeholders.",
+                engineer_count,
+            )
+        except Exception:
+            logger.exception("oncall: auto-seed failed; mock provider stays active")
+            return
+        if engineer_count == 0:
+            return
 
     try:
         get_registry().select_provider("oncall.schedule.lookup", "db.oncall.schedule.lookup")
@@ -1148,6 +1178,72 @@ def get_auto_heal_outcome(approval_id: str) -> dict[str, Any]:
     if approval_id in _HITL_OUTCOMES:
         return _HITL_OUTCOMES[approval_id]
     return {"status": "pending", "approval_id": approval_id}
+
+
+# ─── Auto-Healer Lite demo (PRS-002): gated, non-blocking execute ──────────
+#
+# The dashboard's Auto-Healer page POSTs a chosen RemediationOption (from the
+# Remediation Recommender, PRS-001) here. Unlike the synchronous /api/execute
+# above — which calls gate.enforce() inline and would block the request thread
+# for the whole approval window — this mirrors the auto-heal-restart and
+# runbook-executor pattern: pre-mint the approval id, fire the agent on a pool
+# thread, return immediately, and park the ExecutionVerdict in the shared
+# _HITL_OUTCOMES store. Poll /api/demo/auto-heal/outcome/{approval_id} for it.
+#
+# The gate action ``auto_heal.lite.execute`` is REQUIRED, so the agent blocks
+# at the platform HITL gate until a human resolves the approval in /hitl (or
+# Slack). dry_run defaults True — the Day-1 stub never fires a real tool.
+
+
+class HitlDemoExecuteRequest(BaseModel):
+    option: dict[str, Any] = Field(
+        ..., description="A single RemediationOption (dict-form) the operator chose."
+    )
+    affected_service: str = Field(..., min_length=1)
+    incident_id: str | None = None
+    operator: str | None = None
+    dry_run: bool = Field(
+        default=True,
+        description="Day-1 stub forces dry_run; kept here so the contract matches v1.",
+    )
+    timeout_seconds: int = Field(120, ge=5, le=900)
+
+
+@app.post("/api/demo/auto-heal/execute")
+async def trigger_auto_heal_execute(req: HitlDemoExecuteRequest) -> dict[str, Any]:
+    """Fire Auto-Healer Lite (PRS-002 generic path) on a pool thread and return
+    the approval id immediately.
+
+    The agent validates the option, then blocks inside ``execute`` at the
+    REQUIRED HITL gate until the human resolves the approval. We don't wait for
+    that here (browsers would time out). Poll
+    ``/api/demo/auto-heal/outcome/{approval_id}`` for the final ExecutionVerdict.
+    """
+    approval_id = _uuid_hex()
+    hitl_ctx = {"approval_id": approval_id, "approval_timeout_seconds": req.timeout_seconds}
+    execution_req = ExecutionRequest(
+        option=req.option,
+        affected_service=req.affected_service,
+        incident_id=req.incident_id,
+        operator=req.operator,
+        dry_run=req.dry_run,
+        hitl_context=hitl_ctx,
+    )
+
+    def _run_agent() -> None:
+        verdict = auto_heal_execute(execution_req)
+        _HITL_OUTCOMES[approval_id] = verdict.model_dump(mode="json")
+
+    _HITL_AGENT_POOL.submit(_run_agent)
+
+    return {
+        "approval_id": approval_id,
+        "status": "pending",
+        "option_id": req.option.get("option_id"),
+        "affected_service": req.affected_service,
+        "dry_run": req.dry_run,
+        "timeout_seconds": req.timeout_seconds,
+    }
 
 
 # ─── Runbook Executor demo (RA-004): select → simulate → gated execute ─────

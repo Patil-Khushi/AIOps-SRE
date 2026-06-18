@@ -2,6 +2,8 @@ import axios, { AxiosError } from 'axios';
 import type {
   ApprovalRecord,
   ApprovalsResponse,
+  ExecuteRunResponse,
+  ExecutionVerdict,
   HealthResponse,
   IncidentCommandResult,
   KbListResponse,
@@ -10,6 +12,8 @@ import type {
   NotificationsResponse,
   PrometheusAlert,
   RCAVerdict,
+  RemediationOption,
+  RemediationVerdict,
   RunbookOutcome,
   RunbookRunResponse,
   ScenariosResponse,
@@ -198,6 +202,61 @@ export const api = {
       variant?: string;
       error?: string | null;
     }>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
+
+  // ─── Remediation Recommender (PRS-001) ────────────────────────────────────
+  // Rank remediation options for a diagnosed incident. Pure data, no tool
+  // dispatch — the operator picks one and hands it to Auto-Healer to execute.
+  remediation: (
+    rcaVerdict: RCAVerdict,
+    triageVerdict?: TriageVerdict,
+    environment: 'production' | 'staging' | 'dev' = 'production',
+  ) =>
+    unwrap<RemediationVerdict>(
+      http.post('/api/remediation', {
+        rca_verdict: rcaVerdict,
+        triage_verdict: triageVerdict ?? null,
+        environment,
+        operator_preferences: {},
+      }),
+    ),
+
+  // ─── Auto-Healer Lite (PRS-002) ───────────────────────────────────────────
+  // Execute a chosen RemediationOption through the REQUIRED-HITL gate. Async:
+  // returns an approval id immediately; the agent blocks at the gate on a pool
+  // thread until a human resolves it. Poll autoHealOutcome for the verdict.
+  executeOption: (
+    option: RemediationOption,
+    affectedService: string,
+    opts?: { incidentId?: string | null; operator?: string; dryRun?: boolean },
+  ) =>
+    unwrap<ExecuteRunResponse>(
+      http.post('/api/demo/auto-heal/execute', {
+        option,
+        affected_service: affectedService,
+        incident_id: opts?.incidentId ?? null,
+        operator: opts?.operator ?? null,
+        dry_run: opts?.dryRun ?? true,
+      }),
+    ),
+  // Poll the shared HITL outcome store for an Auto-Healer execution. Returns
+  // { status: 'pending' } until the agent thread finishes, then the verdict.
+  autoHealOutcome: (approvalId: string) =>
+    unwrap<ExecutionVerdict>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
+  // Legacy HITL-1 narrow path: recommend + execute a deployment restart. Same
+  // async approval-id + poll shape (poll autoHealOutcome).
+  autoHealRestart: (req?: {
+    deployment?: string;
+    namespace?: string;
+    reason?: string;
+    timeout_seconds?: number;
+  }) =>
+    unwrap<{
+      approval_id: string;
+      deployment: string;
+      namespace: string;
+      status: string;
+      timeout_seconds: number;
+    }>(http.post('/api/demo/auto-heal/restart', req ?? {})),
 
   // ── HITL approval loop ──────────────────────────────────────────────────
   approvals: (includeResolved = false) =>

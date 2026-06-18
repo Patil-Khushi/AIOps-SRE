@@ -18,6 +18,8 @@ import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
 import Knowledge from '@/pages/Knowledge';
 import RunbookExecutor from '@/pages/RunbookExecutor';
+import RemediationRecommender from '@/pages/RemediationRecommender';
+import AutoHealer from '@/pages/AutoHealer';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 export default function App() {
@@ -57,6 +59,14 @@ export default function App() {
         <Route
           path="runbook-executor"
           element={<ErrorBoundary><RunbookExecutor /></ErrorBoundary>}
+        />
+        <Route
+          path="remediation-recommender"
+          element={<ErrorBoundary><RemediationRecommender /></ErrorBoundary>}
+        />
+        <Route
+          path="auto-healer"
+          element={<ErrorBoundary><AutoHealer /></ErrorBoundary>}
         />
       </Route>
 

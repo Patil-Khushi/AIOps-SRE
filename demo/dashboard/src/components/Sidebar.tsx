@@ -58,6 +58,11 @@ const AGENT_SURFACES: Record<string, string[]> = {
   'notification-router': ['/console', '/console/notifications', ...SHARED_TAIL],
   // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
   'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],
+  // Remediation Recommender consumes the RCA verdict and ranks options; the
+  // approvals it hands to Auto-Healer are the surface that matters.
+  'remediation-recommender': ['/console/rca', '/console/approvals', '/console/health'],
+  // Auto-Healer executes a chosen option through the gate — approvals + health.
+  'auto-healer': ['/console/approvals', '/console/health'],
   // Topology Discovery's live surface IS the topology map (existing page).
   'topology-discovery':  ['/console/topology', '/console/health'],
 };

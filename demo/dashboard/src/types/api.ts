@@ -452,6 +452,103 @@ export interface RunbookOutcome {
   destructive_steps?: number;
 }
 
+// ─── Remediation Recommender (PRS-001) ──────────────────────────────────────
+// Mirrors agents/remediation_recommender/models.py and POST /api/remediation.
+
+export type RemediationActionType =
+  | 'set_flag'
+  | 'rollback_deploy'
+  | 'scale'
+  | 'restart'
+  | 'circuit_breaker'
+  | 'manual';
+
+export type OptionSource = 'rca_fix_step' | 'playbook_pattern' | 'operator_seeded';
+
+export interface RemediationOption {
+  option_id: string;
+  title: string;
+  description: string;
+  action_type: RemediationActionType;
+  blast_radius: BlastRadius;
+  blast_radius_score: number; // 1..5, lower = safer
+  rollback: string;
+  rollback_tested: boolean;
+  confidence: number;
+  estimated_mttr_minutes: number;
+  requires_hitl: true;
+  rationale: string;
+  // Tool seam handoff: how Auto-Healer would execute this option.
+  tool_capability: string | null;
+  tool_args: Record<string, unknown>;
+  source: OptionSource;
+}
+
+export interface RemediationVerdict {
+  affected_service: string;
+  incident_summary: string;
+  options: RemediationOption[];          // sorted; index 0 is the top pick
+  recommended_option_id: string;
+  auto_pick_eligible: false;
+  confidence_score: number;
+  requires_hitl: true;
+  rationale: string;
+  audit_metadata: RCAAuditMetadata;
+}
+
+// ─── Auto-Healer Lite (PRS-002) ──────────────────────────────────────────────
+// Mirrors agents/auto_healer_lite/models.py and the
+// /api/demo/auto-heal/execute route shape.
+
+// Terminal status of one execution attempt. The outcome poll returns the
+// synthetic 'pending' while the agent thread is still blocked at the gate.
+export type ExecutionStatus =
+  | 'pending'
+  | 'refused'
+  | 'pending_approval'
+  | 'blocked'
+  | 'approved'
+  | 'dry_run_ok'
+  | 'executed'
+  | 'execution_failed';
+
+export interface GateDecisionSummary {
+  allowed: boolean;
+  level: string;                 // AutonomyLevel.value, e.g. "required"
+  reason: string;
+  approver: string | null;
+  approval_id: string | null;
+  approval_status: string | null;
+}
+
+export interface ExecutionVerdict {
+  status: ExecutionStatus;
+  request_id?: string;
+  option_id?: string;
+  affected_service?: string;
+  dry_run?: boolean;
+  requires_hitl?: true;
+  decision?: GateDecisionSummary;
+  tool_capability?: string | null;
+  tool_args?: Record<string, unknown>;
+  tool_result?: Record<string, unknown> | null;
+  would_execute?: boolean;
+  error?: string | null;
+  rationale?: string;
+  audit_metadata?: RCAAuditMetadata;
+}
+
+// POST /api/demo/auto-heal/execute — returned immediately (the gated execution
+// runs on a pool thread; poll /api/demo/auto-heal/outcome/{id} for the verdict).
+export interface ExecuteRunResponse {
+  approval_id: string;
+  status: 'pending';
+  option_id: string | null;
+  affected_service: string;
+  dry_run: boolean;
+  timeout_seconds: number;
+}
+
 // GET /api/approvals/{id} — ApprovalRequest.to_record().
 export type ApprovalState = 'pending' | 'approved' | 'denied' | 'expired';
 
