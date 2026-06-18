@@ -2218,7 +2218,7 @@ SCENARIOS: dict[str, dict[str, Any]] = _load_scenarios()
 _SCENARIO_ACTIVE = Gauge(
     "aiops_scenario_active",
     "1 when the scenario's flag is in a non-off variant per flagd; 0 otherwise.",
-    ["scenario_id", "flag", "service"],
+    ["scenario_id", "flag", "service", "severity"],
 )
 
 
@@ -2238,10 +2238,15 @@ def _refresh_scenario_gauge() -> None:
     current: dict[str, str] = (res.data or {}).get("variants", {})
     for sid, s in SCENARIOS.items():
         variant = current.get(s["flag"], "off")
+        # severity travels on the gauge so the ScenarioActive Prometheus rule
+        # can template it ({{ $labels.severity }}) instead of hard-coding one
+        # value for every scenario. Same source-of-truth as the UI synthetic
+        # alert (_synthetic_alert_for_scenario) — demo/scenarios/*.yaml.
         _SCENARIO_ACTIVE.labels(
             scenario_id=sid,
             flag=s["flag"],
             service=s.get("service", "unknown"),
+            severity=str(s.get("severity") or "high"),
         ).set(1 if variant != "off" else 0)
 
 
