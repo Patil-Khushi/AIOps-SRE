@@ -26,6 +26,9 @@ export interface AuditMetadata {
 
 export interface TriageVerdict {
   affected_service: string;
+  // True when the affected service is on the customer-facing path. Derived by
+  // RA-001 and surfaced so the UI can flag customer impact at a glance.
+  customer_facing?: boolean;
   severity: Severity;
   confidence_score: number;
   alert_summary: string;
@@ -409,8 +412,32 @@ export interface RunbookRunResponse {
   runbook_title: string | null;
   // Optional: older backend builds omit it — the UI falls back to `service`.
   matched_on?: { service: string; severity: string | null; tags: string[] };
+  // True when the operator picked this runbook instead of the auto-selected match.
+  overridden?: boolean;
   planned_steps: PlannedStep[];
   timeout_seconds: number;
+}
+
+// One library runbook for the picker (GET /api/runbook-executor/runbooks).
+export interface RunbookLibraryStep {
+  name: string;
+  action: string;
+  destructive: boolean;
+}
+export interface RunbookLibraryItem {
+  id: string;
+  title: string;
+  service: string;
+  severity: string | null;
+  tags: string[];
+  matches_service: boolean;
+  recommended: boolean;
+  steps: RunbookLibraryStep[];
+}
+export interface RunbookLibraryResponse {
+  count: number;
+  recommended: string | null;
+  runbooks: RunbookLibraryItem[];
 }
 
 // GET /api/verdicts — persisted triage verdicts (newest-first). Each injected
@@ -450,6 +477,13 @@ export interface RunbookOutcome {
   steps_total?: number;
   steps_executed?: number;
   destructive_steps?: number;
+  // Post-run verification: re-reads the flags the runbook reset and confirms
+  // the injected scenario actually cleared (⑤ Verify stage).
+  verification?: {
+    status: 'verified' | 'unverified' | 'skipped';
+    reason?: string;
+    checks: { name: string; flag: string; variant: string | null; ok: boolean; available: boolean }[];
+  };
 }
 
 // ─── Remediation Recommender (PRS-001) ──────────────────────────────────────

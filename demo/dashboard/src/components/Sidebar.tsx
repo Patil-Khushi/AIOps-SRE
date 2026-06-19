@@ -12,6 +12,7 @@ import {
   HeartPulse,
   ShieldCheck,
   BookOpen,
+  Users,
 } from 'lucide-react';
 import { clsx } from '@/lib/format';
 import { api } from '@/lib/api';
@@ -35,6 +36,7 @@ const ITEMS: Record<string, NavItem> = {
   '/console/reasoning':     { to: '/console/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
   '/console/rca':           { to: '/console/rca',           label: 'RCA Agent',     icon: Sparkles,        end: false },
   '/console/incident-commander': { to: '/console/incident-commander', label: 'Incident Commander', icon: Siren, end: false },
+  '/console/war-room':      { to: '/console/war-room',      label: 'War Room',      icon: Users,           end: false },
   '/console/notifications': { to: '/console/notifications', label: 'Notifications', icon: Bell,            end: false },
   '/console/knowledge':     { to: '/console/knowledge',     label: 'Knowledge',     icon: BookOpen,        end: false },
   '/console/approvals':     { to: '/console/approvals',     label: 'Approvals',     icon: Gavel,           end: false },
@@ -55,6 +57,9 @@ const AGENT_SURFACES: Record<string, string[]> = {
   // Incident Commander coordinates from the alert; its console + the approvals
   // it hands off to are the surface that matters.
   'incident-commander':  ['/console/incident-commander', '/console/approvals', '/console/health'],
+  // War-Room Assembler opens straight to its console; carry the alert stream it
+  // assembled from plus the shared infra surfaces.
+  'war-room-assembler':  ['/console', '/console/alerts', '/console/war-room', ...SHARED_TAIL],
   'notification-router': ['/console', '/console/notifications', ...SHARED_TAIL],
   // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
   'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],

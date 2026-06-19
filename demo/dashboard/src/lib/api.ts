@@ -14,6 +14,7 @@ import type {
   RCAVerdict,
   RemediationOption,
   RemediationVerdict,
+  RunbookLibraryResponse,
   RunbookOutcome,
   RunbookRunResponse,
   ScenariosResponse,
@@ -281,9 +282,14 @@ export const api = {
     tags?: string[];
     incident_id?: string;
     summary?: string;
+    runbook_id?: string;
     timeout_seconds?: number;
   }) =>
     unwrap<RunbookRunResponse>(http.post('/api/demo/runbook-executor/run', req ?? {})),
+  // Available runbooks for the picker — each with its steps so the operator can
+  // review them and choose a different runbook than the auto-selected match.
+  runbookExecutorRunbooks: (params?: { service?: string; severity?: string | null; summary?: string }) =>
+    unwrap<RunbookLibraryResponse>(http.get('/api/runbook-executor/runbooks', { params })),
   // Newest-first triaged incidents (each injected failure lands here once
   // triage assigns it a severity). Drives the agent page's incident list.
   verdicts: (params?: { limit?: number; service?: string; severity?: string }) =>

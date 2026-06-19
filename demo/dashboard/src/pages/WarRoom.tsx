@@ -45,6 +45,10 @@ const ATT_STYLE: Record<string, string> = {
 };
 
 function AssemblyView({ a }: { a: WarRoomAssembly }) {
+  // The context pack carries the affected service; use it to open the local
+  // runbook (data/runbooks) instead of the placeholder CMDB URL — same behavior
+  // as the Alert Stream verdict link.
+  const svc = a.context_pack.find((c) => c.label === 'Affected service')?.value;
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -136,7 +140,18 @@ function AssemblyView({ a }: { a: WarRoomAssembly }) {
                   )}
                   title={c.value}
                 >
-                  {c.value}
+                  {c.label === 'Runbook' && svc ? (
+                    <a
+                      href={`/api/runbooks/by-service/${encodeURIComponent(svc)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-accent hover:underline"
+                    >
+                      {c.value}
+                    </a>
+                  ) : (
+                    c.value
+                  )}
                 </dd>
               </div>
             ))}

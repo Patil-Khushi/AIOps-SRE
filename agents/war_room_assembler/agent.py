@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from agents.alert_triage import TriageVerdict
 from aiops.tools import get_registry
@@ -112,15 +114,51 @@ def _invited_smes(verdict: TriageVerdict, oncall: dict | None) -> list[InvitedSM
     ]
 
 
-def _context_item(label: str, capability: str, **kwargs) -> ContextPackItem:
+def _fmt_request_rate(data: Any) -> str:
+    """Reduce a Prometheus vector result to a human one-liner instead of dumping
+    the raw ``{'query':..., 'results':[...]}`` dict into the context pack."""
+    if not isinstance(data, dict):
+        return str(data)
+    results = data.get("results") or []
+    if not results:
+        return "no data"
+    first = results[0]
+    val: Any = None
+    if isinstance(first, dict):
+        v = first.get("value")
+        # Prometheus vector samples are ``[timestamp, "<value>"]``.
+        val = v[1] if isinstance(v, list | tuple) and len(v) == 2 else v
+    if val is None:
+        return f"{len(results)} series"
+    try:
+        return f"{float(val):.2f} req/s"
+    except (TypeError, ValueError):
+        return f"{val} req/s"
+
+
+def _fmt_recent_traces(data: Any) -> str:
+    """Summarize a trace-search result as a count + window."""
+    if not isinstance(data, dict):
+        return str(data)
+    n = data.get("trace_count")
+    if n is None:
+        n = len(data.get("traces") or [])
+    lookback = data.get("lookback")
+    return f"{n} trace{'' if n == 1 else 's'}" + (f" (last {lookback})" if lookback else "")
+
+
+def _context_item(
+    label: str, capability: str, *, fmt: Callable[[Any], str] = str, **kwargs
+) -> ContextPackItem:
     """Call a read-only observability seam and fold the result into one pack
-    line. Any failure (no cluster, gate block, provider error) becomes
+    line. ``fmt`` renders the seam's data into a readable value (defaults to
+    ``str``). Any failure (no cluster, gate block, provider error) becomes
     ``"unavailable"`` rather than raising — the assembly must not depend on
     live infra being up."""
     result = get_registry().call(capability, **kwargs)
     if not result.ok:
         return ContextPackItem(label=label, value="unavailable", source=capability)
-    return ContextPackItem(label=label, value=str(result.data), source=capability)
+    return ContextPackItem(label=label, value=fmt(result.data), source=capability)
 
 
 def _build_context_pack(verdict: TriageVerdict) -> list[ContextPackItem]:
@@ -141,6 +179,7 @@ def _build_context_pack(verdict: TriageVerdict) -> list[ContextPackItem]:
         _context_item(
             "Request rate (5m)",
             "observability.metrics.query",
+            fmt=_fmt_request_rate,
             promql=f'sum(rate(http_server_request_duration_count{{service_name="{svc}"}}[5m]))',
         )
     )
@@ -148,6 +187,7 @@ def _build_context_pack(verdict: TriageVerdict) -> list[ContextPackItem]:
         _context_item(
             "Recent traces",
             "observability.traces.search",
+            fmt=_fmt_recent_traces,
             service=svc,
             lookback="15m",
             limit=5,

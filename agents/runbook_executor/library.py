@@ -28,6 +28,10 @@ from agents.runbook_executor.models import RunbookStep
 
 logger = logging.getLogger(__name__)
 
+# Executable runbooks (with a ``steps:`` block) are version-controlled here,
+# next to this module. This is the source of truth for what the executor can
+# run — distinct from the runtime ``data/runbooks`` library the platform store /
+# Knowledge Synthesizer write descriptive runbooks into (that dir is gitignored).
 _SHIPPED_DIR = Path(__file__).resolve().parent / "runbooks"
 
 # `---\n <yaml> \n---\n <body>` — DOTALL so yaml/body groups span lines.
@@ -77,15 +81,20 @@ def _runbook_from_file(path: Path) -> ExecutableRunbook:
 
 
 def load_runbooks(directory: str | Path | None = None) -> list[ExecutableRunbook]:
-    """All runbooks in the library, sorted by id. Unparseable files are skipped
-    with a warning rather than breaking the whole listing (defensive parsing,
-    same as the platform store)."""
+    """All *executable* runbooks in the library, sorted by id. Files with no
+    ``steps:`` block (the descriptive-only runbooks served by the platform
+    store / dashboard viewer) are skipped — there's nothing for the executor to
+    run. Unparseable files are skipped with a warning rather than breaking the
+    whole listing (defensive parsing, same as the platform store)."""
     out: list[ExecutableRunbook] = []
     for p in sorted(_library_dir(directory).glob("*.md")):
         try:
-            out.append(_runbook_from_file(p))
+            rb = _runbook_from_file(p)
         except Exception as exc:  # one bad file shouldn't sink the library
             logger.warning("skipping unparseable runbook %s: %s", p.name, exc)
+            continue
+        if rb.steps:  # executable only — ignore descriptive-only runbooks
+            out.append(rb)
     return out
 
 

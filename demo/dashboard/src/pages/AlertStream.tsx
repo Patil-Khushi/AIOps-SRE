@@ -228,7 +228,17 @@ function VerdictView({ v }: { v: TriageVerdict }) {
           confidence {(v.confidence_score * 100).toFixed(0)}%
         </span>
       </Row>
-      <Row k="Service"><span className="font-mono text-ink-900 dark:text-ink-50">{v.affected_service}</span></Row>
+      <Row k="Service">
+        <span className="font-mono text-ink-900 dark:text-ink-50">{v.affected_service}</span>
+        {v.customer_facing != null && (
+          <span className={clsx(
+            'chip ml-2',
+            v.customer_facing ? '!border-bad/40 !text-bad' : '!border-ink-300/40 !text-ink-500',
+          )}>
+            {v.customer_facing ? 'Customer-facing' : 'Internal'}
+          </span>
+        )}
+      </Row>
       <Row k="Status">
         <span className={clsx(
           'chip',
@@ -241,7 +251,12 @@ function VerdictView({ v }: { v: TriageVerdict }) {
       )}
       {v.recommended_runbook && (
         <Row k="Runbook">
-          <a href={v.recommended_runbook} target="_blank" rel="noreferrer" className="break-all font-mono text-xs text-accent hover:underline">
+          <a
+            href={`/api/runbooks/by-service/${encodeURIComponent(v.affected_service)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all font-mono text-xs text-accent hover:underline"
+          >
             {v.recommended_runbook}
           </a>
         </Row>

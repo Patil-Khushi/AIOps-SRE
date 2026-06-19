@@ -358,6 +358,18 @@ class Verifier:
                 proof_written,
                 closure.get("status"),
             )
+            # Closed → synthesize the postmortem/runbook draft right now so the
+            # publish (3rd HITL) approval is available immediately, instead of
+            # waiting on the SNOW watcher's poll (which can miss a closure to a
+            # checkpoint race). Fire-and-forget + lazily imported so it can never
+            # affect closure; the watcher remains the backstop. (Demo wiring.)
+            if isinstance(closure, dict) and closure.get("status") == "closed":
+                with contextlib.suppress(Exception):
+                    from agents.knowledge_synthesizer.snow_watcher import (
+                        synthesize_incident_now,
+                    )
+
+                    synthesize_incident_now(ctx.incident_id)
         else:
             self._failed_total += 1
             # FAIL → notify (NOT a closure card) and stop.

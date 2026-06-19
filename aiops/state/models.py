@@ -34,6 +34,11 @@ class VerdictRow(SQLModel, table=True):
     # column existed.
     alert_id: str | None = Field(default=None, index=True)
     affected_service: str = Field(index=True)
+    # True when the affected service is on the customer-facing path. Derived by
+    # RA-001 from the service name (see agents.alert_triage.agent._is_customer_facing)
+    # and persisted so the dashboard's verdict feed can render it without
+    # recomputing. Defaults False for rows written before this column existed.
+    customer_facing: bool = Field(default=False)
     severity: str = Field(index=True)
     confidence_score: float
     alert_summary: str

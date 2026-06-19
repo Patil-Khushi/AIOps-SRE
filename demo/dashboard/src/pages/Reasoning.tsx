@@ -132,7 +132,13 @@ export default function Reasoning() {
                   <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                     <KV k="assigned_team" v={selected.assigned_team} />
                     {selected.assigned_engineer && <KV k="engineer" v={selected.assigned_engineer} />}
-                    {selected.recommended_runbook && <KV k="runbook" v={selected.recommended_runbook} />}
+                    {selected.recommended_runbook && (
+                      <KV
+                        k="runbook"
+                        v={selected.recommended_runbook}
+                        href={`/api/runbooks/by-service/${encodeURIComponent(selected.affected_service)}`}
+                      />
+                    )}
                     <KV k="status" v={selected.status} />
                   </div>
                 </div>
@@ -181,11 +187,22 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
   );
 }
 
-function KV({ k, v }: { k: string; v: string }) {
+function KV({ k, v, href }: { k: string; v: string; href?: string }) {
   return (
     <div className="flex gap-2">
       <span className="font-mono text-ink-500 dark:text-ink-400">{k}:</span>
-      <span className="min-w-0 break-all font-mono text-ink-900 dark:text-ink-50">{v}</span>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="min-w-0 break-all font-mono text-accent hover:underline"
+        >
+          {v}
+        </a>
+      ) : (
+        <span className="min-w-0 break-all font-mono text-ink-900 dark:text-ink-50">{v}</span>
+      )}
     </div>
   );
 }

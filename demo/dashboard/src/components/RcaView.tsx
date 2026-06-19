@@ -156,16 +156,17 @@ export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string |
     setApplyStatus('pending');
     setApplyError(null);
     try {
-      // Forward the incident number (+ service + RCA verdict) so the backend
-      // persists the verdict and fires the resolution verifier after the flag
-      // flip — that's what raises the 2nd (ticket-close) HITL approval. With no
-      // incident_id the verifier is skipped and only the fix approval appears.
-      const context: Record<string, unknown> = {};
-      if (incidentId) {
-        context.incident_id = incidentId;
-        context.service = v.affected_service;
-        context.rca_verdict = v;
-      }
+      // Always forward the service + RCA verdict so the backend fires the
+      // resolution verifier after the flag flip — that's what raises the 2nd
+      // (ticket-close) HITL approval. Include the incident number when we have
+      // it; when the analyzed verdict was a Suppressed duplicate with no ticket,
+      // the backend recovers the open incident for this service so the close
+      // approval still appears.
+      const context: Record<string, unknown> = {
+        service: v.affected_service,
+        rca_verdict: v,
+      };
+      if (incidentId) context.incident_id = incidentId;
       const res = await api.applyRcaFix(flag, fixVariant, 'set_flag', undefined, context);
       setApprovalId(res.approval_id);
     } catch (e) {

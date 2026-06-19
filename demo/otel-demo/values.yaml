@@ -221,7 +221,11 @@ prometheus:
           # latency on the demo's fast-path alert.
           for: 0s
           labels:
-            severity: high
+            # Per-scenario severity carried on the aiops_scenario_active gauge
+            # (demo/ui/server.py) and sourced from demo/scenarios/*.yaml. RA-001
+            # maps it generically (critical->Sev-1, high->Sev-2, warning->Sev-3)
+            # via severity_hint — no flag-name lookup in the agent.
+            severity: '{{ $labels.severity }}'
             alert_type: scenario_active
           annotations:
             summary: 'Scenario {{ $labels.scenario_id }} active on {{ $labels.service }}'

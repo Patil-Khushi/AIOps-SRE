@@ -34,6 +34,31 @@ const SEV_OPTIONS: { value: ChatSeverity | 'all'; label: string }[] = [
 
 const KNOWN_SEVERITIES: ReadonlySet<string> = new Set(['p0', 'p1', 'p2', 'p3', 'info']);
 
+// Notification kind, derived from the routing channel so operators can show
+// just the streams they care about (alerts vs war-room vs HITL approvals).
+// RA-005 routes alerts to incidents/ops-daytime/alerts-noise/team-*; RA-006
+// war rooms go to war-room-<id>; the HITL gate posts to hitl-approvals.
+type NotifKind = 'alert' | 'war-room' | 'hitl';
+
+function kindOf(channel: string): NotifKind {
+  const c = (channel ?? '').toLowerCase();
+  if (c.startsWith('war-room')) return 'war-room';
+  if (c.startsWith('hitl') || c.includes('approval')) return 'hitl';
+  return 'alert';
+}
+
+const KIND_ORDER: NotifKind[] = ['alert', 'war-room', 'hitl'];
+const KIND_LABEL: Record<NotifKind, string> = {
+  alert: 'Alerts',
+  'war-room': 'War Room',
+  hitl: 'HITL',
+};
+const KIND_STYLE: Record<NotifKind, string> = {
+  alert: '!border-accent/50 !text-accent',
+  'war-room': '!border-bad/50 !text-bad',
+  hitl: '!border-warn/50 !text-warn',
+};
+
 // Response mode shown as a badge so an operator sees at a glance whether a
 // human is being woken (PAGE) or it's an async heads-up (NOTIFY) or just
 // recorded (LOG).
@@ -97,6 +122,15 @@ export default function Notifications() {
   const history = useFetch(() => api.notifications(200), { intervalMs: 5_000 });
   const [q, setQ] = useState('');
   const [sevFilter, setSevFilter] = useState<ChatSeverity | 'all'>('all');
+  // Which notification kinds to show. All on by default; toggle chips below.
+  const [kinds, setKinds] = useState<Set<NotifKind>>(() => new Set(KIND_ORDER));
+  const toggleKind = (k: NotifKind) =>
+    setKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
 
   // Live WS frames + persisted history, deduped. The WS replay ring is
   // in-memory and empties on every server restart; the DB backfill keeps
@@ -116,9 +150,18 @@ export default function Notifications() {
     return out.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   }, [notes, history.data]);
 
+  // Per-kind counts for the toggle chips (computed before kind filtering so the
+  // chip counts stay stable regardless of which kinds are currently selected).
+  const kindCounts = useMemo(() => {
+    const c: Record<NotifKind, number> = { alert: 0, 'war-room': 0, hitl: 0 };
+    for (const n of merged) c[kindOf(n.channel)] += 1;
+    return c;
+  }, [merged]);
+
   const filtered = useMemo(() => {
     const lc = q.toLowerCase();
     return merged.filter((n) => {
+      if (!kinds.has(kindOf(n.channel))) return false;
       if (sevFilter !== 'all' && n.severity !== sevFilter) return false;
       if (!lc) return true;
       return (
@@ -129,7 +172,7 @@ export default function Notifications() {
         (n.incident_id ?? '').toLowerCase().includes(lc)
       );
     });
-  }, [merged, q, sevFilter]);
+  }, [merged, q, sevFilter, kinds]);
 
   return (
     <div className="space-y-6">
@@ -167,6 +210,26 @@ export default function Notifications() {
               ))}
             </select>
           </div>
+          <div className="flex items-center gap-1.5">
+            {KIND_ORDER.map((k) => {
+              const active = kinds.has(k);
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => toggleKind(k)}
+                  aria-pressed={active}
+                  className={clsx(
+                    'chip !text-xs transition',
+                    active ? KIND_STYLE[k] : '!border-ink-300/40 !text-ink-400 opacity-50',
+                  )}
+                  title={active ? `Hide ${KIND_LABEL[k]}` : `Show ${KIND_LABEL[k]}`}
+                >
+                  {KIND_LABEL[k]} ({kindCounts[k]})
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -196,6 +259,7 @@ export default function Notifications() {
 function NotificationRow({ n }: { n: ChatNotification }) {
   const displaySev = CHAT_TO_DISPLAY[n.severity];
   const response = responseFor(n);
+  const kind = kindOf(n.channel);
   return (
     <li className="card">
       <div className="card-body !py-3">
@@ -203,6 +267,9 @@ function NotificationRow({ n }: { n: ChatNotification }) {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               {displaySev && <SeverityBadge severity={displaySev} />}
+              <span className={clsx('chip !text-[10px]', KIND_STYLE[kind])}>
+                {KIND_LABEL[kind]}
+              </span>
               <span
                 className={clsx('chip font-mono !text-[10px]', RESPONSE_STYLE[response])}
                 title={RESPONSE_HINT[response]}

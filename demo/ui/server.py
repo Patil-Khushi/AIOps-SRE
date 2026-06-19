@@ -58,6 +58,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +72,7 @@ from fastapi import (
     Request,
     Response,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from pydantic import BaseModel, Field
@@ -379,6 +380,86 @@ class TriageRequest(BaseModel):
     alert: dict[str, Any] = Field(..., description="Canonical Alert payload")
 
 
+# DEMO closure bridge (UI flow): the dashboard analyzes the live-triage verdict,
+# which can be a Suppressed duplicate carrying no ServiceNow ticket (dedup → no
+# ticket on that triage). The real incident for the service was opened by an
+# earlier triage (e.g. the Inject button's background chain). Record
+# service → newest incident number here so apply-fix can recover it when the UI
+# has none, and the resolution verifier / close gate (the 2nd HITL approval)
+# still fires. In-process + best-effort by design (a restart just falls back to
+# the UI-supplied incident_id).
+_LATEST_INCIDENT_BY_SERVICE: dict[str, str] = {}
+
+
+def _norm_service(service: str | None) -> str:
+    """Collapse service-name spellings to a stable key: lower-case, strip
+    separators, drop a trailing ``service`` suffix — so ``product-catalog``,
+    ``productcatalog`` and ``productcatalogservice`` all match."""
+    s = (service or "").lower().strip()
+    for sep in ("-", "_", " "):
+        s = s.replace(sep, "")
+    if s.endswith("service") and len(s) > len("service"):
+        s = s[: -len("service")]
+    return s
+
+
+def _record_incident_for_service(flow: Any) -> None:
+    """Best-effort: remember the incident number RA-003 just opened, keyed by
+    the normalised affected service, for the apply-fix closure fallback."""
+    try:
+        number = getattr(flow.ticket, "ticket_id", None)
+        service = getattr(flow.verdict, "affected_service", None)
+        if number and service:
+            _LATEST_INCIDENT_BY_SERVICE[_norm_service(service)] = str(number)
+    except Exception:
+        logger.debug("could not record incident-for-service mapping", exc_info=True)
+
+
+def _incident_is_open(number: str) -> bool:
+    """True when a ServiceNow incident exists and isn't Resolved(6)/Closed(7).
+    Used to reject a stale in-process hint pointing at an already-closed ticket
+    (which the verifier would skip as already-verified → no close card)."""
+    if not number:
+        return False
+    try:
+        res = get_registry().call("itsm.incident.get", number=number, fields="number,state")
+        if not getattr(res, "ok", False):
+            return False
+        rec = (getattr(res, "data", None) or {}).get("incident") or {}
+        return str(rec.get("state") or "") not in {"6", "7"}
+    except Exception:
+        return False
+
+
+def _latest_incident_for_service(service: str | None) -> str:
+    """Resolve the OPEN ServiceNow incident for a service, for the apply-fix
+    closure fallback when the UI analyzed a Suppressed verdict with no ticket.
+
+    Prefer the in-process hint (the exact incident RA-003 last opened) but only
+    if it's still open; otherwise query ServiceNow for the newest *active*
+    incident whose short description names the service (RA-003 writes
+    ``[Sev-X] {service}: …``). The ``active=true`` filter guarantees we never
+    return a ticket the verifier already closed."""
+    hint = _LATEST_INCIDENT_BY_SERVICE.get(_norm_service(service), "")
+    if hint and _incident_is_open(hint):
+        return hint
+    raw = (service or "").strip()
+    if not raw:
+        return ""
+    try:
+        q = f"active=true^short_descriptionLIKE{raw}^ORDERBYDESCopened_at"
+        res = get_registry().call(
+            "itsm.incident.query", query=q, fields="number,short_description,state", limit=1
+        )
+        if getattr(res, "ok", False):
+            rows = (getattr(res, "data", None) or {}).get("incidents", []) or []
+            if rows:
+                return str(rows[0].get("number") or "")
+    except Exception:
+        logger.debug("incident-for-service query failed for %r", service, exc_info=True)
+    return ""
+
+
 @app.post("/api/triage", response_model=None)
 def triage_alert(req: TriageRequest) -> dict[str, Any]:
     """Triage + classify + auto-ticket + notify chatops for a single alert.
@@ -410,6 +491,10 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     # response shape verbatim. Alert construction + the 400 mapping stay here as
     # HTTP concerns, not pipeline logic.
     result = run_reactive_flow(alert_obj)
+    # Remember the incident this triage opened (if any), keyed by service, so the
+    # apply-fix closure path can recover it when the UI analyzed a Suppressed
+    # verdict that carried no ticket (see _record_incident_for_service).
+    _record_incident_for_service(result)
 
     # RA-006 War-Room Assembler: on Sev-1/Sev-2 stand up the incident war room
     # (channel + on-call SME + context pack + seed timeline). ``assemble`` makes
@@ -788,6 +873,55 @@ def list_verdicts_endpoint(
         raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
     verdicts = state_repo.list_verdicts(limit=limit, service=service, severity=severity)
     return {"count": len(verdicts), "verdicts": verdicts}
+
+
+def _runbook_html(title: str, body: str) -> str:
+    """Render a runbook as a standalone, readable HTML page. Kept dependency-free
+    (no markdown lib): the body is HTML-escaped and shown in a styled <pre> so the
+    procedure's formatting, links text, and step numbering survive intact."""
+    safe_title = html_escape(title)
+    safe_body = html_escape(body)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{safe_title}</title>"
+        "<style>"
+        "body{font:15px/1.6 system-ui,Segoe UI,sans-serif;max-width:820px;"
+        "margin:2.5rem auto;padding:0 1.25rem;color:#1c2230;background:#fafafa}"
+        "h1{font-size:1.4rem;border-bottom:1px solid #e2e5ea;padding-bottom:.5rem}"
+        "pre{white-space:pre-wrap;word-wrap:break-word;background:#fff;border:1px solid #e2e5ea;"
+        "border-radius:8px;padding:1.25rem;font:13px/1.55 ui-monospace,Consolas,monospace}"
+        "</style></head><body>"
+        f"<h1>{safe_title}</h1><pre>{safe_body}</pre></body></html>"
+    )
+
+
+@app.get("/api/runbooks/by-service/{service}", response_class=HTMLResponse)
+def get_runbook_by_service(service: str) -> HTMLResponse:
+    """Open the runbook for ``service`` from the executor's version-controlled
+    library (``agents/runbook_executor/runbooks``), rendered as a readable HTML
+    page. This is what the dashboard's verdict "Runbook" link points at —
+    replacing the placeholder ``runbooks.example.com`` CMDB URL with the real,
+    on-disk procedure (the recommended/auto-selected runbook for the service)."""
+    from agents.runbook_executor import Incident, load_runbooks, select
+
+    chosen = select(Incident(incident_id="viewer", service=service))
+    if chosen is None:
+        # Fall back to any service match so the link still opens something useful.
+        svc = _normalize_runbook_service(service)
+        chosen = next(
+            (rb for rb in load_runbooks() if _normalize_runbook_service(rb.service) == svc), None
+        )
+    if chosen is None:
+        return HTMLResponse(
+            _runbook_html(
+                f"No runbook for “{service}”",
+                f"No executable runbook is published for service '{service}'. Add one "
+                "under agents/runbook_executor/runbooks/ (a markdown file with a "
+                "steps: block).",
+            ),
+            status_code=404,
+        )
+    return HTMLResponse(_runbook_html(chosen.title, chosen.body))
 
 
 # ─── Prescriptive chain HTTP surface (PRS-001 + PRS-002) ───────────────────
@@ -1268,6 +1402,10 @@ class HitlDemoRunbookRequest(BaseModel):
     # live triaged incident (which carries no explicit tags) still scores
     # against the runbook library.
     summary: str = Field("")
+    # Explicit runbook id to run instead of the auto-selected match. Lets the
+    # operator override the recommendation from the dashboard's runbook picker.
+    # When None, the agent selects by service + tags + severity as before.
+    runbook_id: str | None = None
     timeout_seconds: int = Field(120, ge=5, le=900)
 
 
@@ -1317,6 +1455,62 @@ def _derive_runbook_tags(summary: str, provided: list[str]) -> list[str]:
     return out
 
 
+def _verify_flag_resolution(runbook: Any, status: str) -> dict[str, Any]:
+    """Real verification for the Runbook Executor's ⑤ Verify stage: re-read the
+    feature flags the runbook reset and confirm they are now ``off`` — i.e. the
+    injected scenario actually cleared. Flag-state based (mirrors the
+    resolution-verifier's "re-check the signal" idea) so it works without
+    Prometheus. A flag whose seam is unreachable is reported as skipped, not
+    failed, so an off-cluster run degrades gracefully."""
+    if runbook is None or status != "resolved":
+        return {"status": "skipped", "reason": "no resolved runbook to verify", "checks": []}
+    flags = [
+        s.target.split("/", 1)[1].strip()
+        for s in runbook.steps
+        if s.action == "reset_feature_flag" and (s.target or "").startswith("flag/")
+    ]
+    flags = [f for f in flags if f]
+    if not flags:
+        return {"status": "skipped", "reason": "runbook resets no feature flag", "checks": []}
+
+    reg = get_registry()
+    checks: list[dict[str, Any]] = []
+    failures = skips = 0
+    for flag in flags:
+        variant: Any = None
+        available = True
+        try:
+            r = reg.call("feature_flags.get_variant", flag=flag)
+            if r.ok:
+                variant = (r.data or {}).get("variant")
+            else:
+                available = False
+        except Exception:
+            available = False
+        ok = available and variant == "off"
+        if not available:
+            skips += 1
+        elif not ok:
+            failures += 1
+        checks.append(
+            {
+                "name": f"flag {flag} is off",
+                "flag": flag,
+                "variant": variant,
+                "ok": ok,
+                "available": available,
+            }
+        )
+
+    if failures:
+        st = "unverified"
+    elif skips and skips == len(checks):
+        st = "skipped"  # seam unreachable (off-cluster) — couldn't confirm
+    else:
+        st = "verified"
+    return {"status": st, "checks": checks}
+
+
 @app.post("/api/demo/runbook-executor/run")
 async def trigger_runbook_executor(req: HitlDemoRunbookRequest) -> dict[str, Any]:
     """Kick off the Runbook Executor and return the approval id immediately.
@@ -1329,7 +1523,8 @@ async def trigger_runbook_executor(req: HitlDemoRunbookRequest) -> dict[str, Any
     human resolves the approval in /hitl. Poll
     ``/api/demo/auto-heal/outcome/{approval_id}`` for the final RunbookExecution.
     """
-    from agents.runbook_executor import Incident, execute_runbook, select
+    from agents.runbook_executor import Incident, execute_runbook, run_plan, select
+    from agents.runbook_executor.library import get_runbook
 
     tags = _derive_runbook_tags(req.summary, req.tags)
     incident = Incident(
@@ -1338,7 +1533,11 @@ async def trigger_runbook_executor(req: HitlDemoRunbookRequest) -> dict[str, Any
         severity=req.severity,
         tags=tags,
     )
-    runbook = select(incident)
+    # Operator override: run the explicitly chosen runbook (from the picker)
+    # instead of the auto-selected match. Falls back to selection when the id
+    # is unknown so a stale picker can't wedge the run.
+    overridden = bool(req.runbook_id) and get_runbook(req.runbook_id) is not None
+    runbook = get_runbook(req.runbook_id) if overridden else select(incident)
 
     # Read-only dry-run preview per step (NONE-level simulate capability — never
     # gated, makes no changes). Surfaces stage-2 results before the gated run.
@@ -1364,12 +1563,21 @@ async def trigger_runbook_executor(req: HitlDemoRunbookRequest) -> dict[str, Any
     ctx = {"approval_id": approval_id, "approval_timeout_seconds": req.timeout_seconds}
 
     def _run_agent() -> None:
-        execution = execute_runbook(incident, hitl_context=ctx)
+        # When the operator picked a specific runbook, run it directly so the
+        # executor doesn't re-select a different match; otherwise use the normal
+        # select-then-run entry point.
+        if overridden and runbook is not None:
+            execution = run_plan(incident, runbook, hitl_context=ctx)
+        else:
+            execution = execute_runbook(incident, hitl_context=ctx)
         out = execution.model_dump(mode="json")
         # Computed properties don't serialize — flatten them for the UI.
         out["steps_total"] = execution.steps_total
         out["steps_executed"] = execution.steps_executed
         out["destructive_steps"] = execution.destructive_steps
+        # Real post-run verification: re-read the flags the runbook reset and
+        # confirm the injected scenario actually cleared (⑤ Verify stage).
+        out["verification"] = _verify_flag_resolution(runbook, execution.status)
         _HITL_OUTCOMES[approval_id] = out
 
     _HITL_AGENT_POOL.submit(_run_agent)
@@ -1382,9 +1590,72 @@ async def trigger_runbook_executor(req: HitlDemoRunbookRequest) -> dict[str, Any
         "selected_runbook": runbook.id if runbook else None,
         "runbook_title": runbook.title if runbook else None,
         "matched_on": {"service": req.service, "severity": req.severity, "tags": tags},
+        "overridden": overridden,
         "planned_steps": planned_steps,
         "timeout_seconds": req.timeout_seconds,
     }
+
+
+@app.get("/api/runbook-executor/runbooks")
+def list_runbook_executor_runbooks(
+    service: str | None = None,
+    severity: str | None = None,
+    summary: str = "",
+) -> dict[str, Any]:
+    """Available runbooks for the picker. Returns every runbook in the library
+    with its steps (so the operator can review them) plus, when ``service`` is
+    given, which one the agent would auto-select — so the UI can mark the
+    recommendation and let the operator choose a different one. Runbooks whose
+    service matches are listed first."""
+    from agents.runbook_executor import Incident, load_runbooks, select
+
+    recommended_id: str | None = None
+    if service:
+        tags = _derive_runbook_tags(summary, [])
+        chosen = select(
+            Incident(incident_id="picker", service=service, severity=severity, tags=tags)
+        )
+        recommended_id = chosen.id if chosen else None
+
+    svc = (service or "").lower()
+    items = []
+    for rb in load_runbooks():
+        matches_service = bool(svc) and _normalize_runbook_service(
+            rb.service
+        ) == _normalize_runbook_service(svc)
+        # Relevance: when a service is given, only surface runbooks for THAT
+        # service (the recommendation + same-service alternatives). Without a
+        # service filter (general library view) show everything.
+        if svc and not matches_service:
+            continue
+        items.append(
+            {
+                "id": rb.id,
+                "title": rb.title,
+                "service": rb.service,
+                "severity": rb.severity,
+                "tags": rb.tags,
+                "matches_service": matches_service,
+                "recommended": rb.id == recommended_id,
+                "steps": [
+                    {"name": s.name, "action": s.action, "destructive": s.destructive}
+                    for s in rb.steps
+                ],
+            }
+        )
+    # Recommended first within the relevant set.
+    items.sort(key=lambda r: (not r["recommended"], r["id"]))
+    return {"count": len(items), "recommended": recommended_id, "runbooks": items}
+
+
+def _normalize_runbook_service(service: str) -> str:
+    """Normalize a service name for runbook matching — mirrors the executor's
+    selector so 'product-catalog' / 'productcatalogservice' compare equal."""
+    s = (service or "").lower().strip()
+    for suffix in ("service",):
+        if s.endswith(suffix) and len(s) > len(suffix):
+            s = s[: -len(suffix)]
+    return s.replace("-", "").replace("_", "")
 
 
 # ─── RCA fix-step remediation (RCA → approve → apply) ──────────────────────
@@ -1484,6 +1755,19 @@ def _post_fix_verify(req: RcaApplyFixRequest) -> None:
     do anything, and the caller already wraps this so it can't affect the
     fix-apply outcome."""
     incident_id = (req.incident_id or "").strip()
+    if not incident_id and req.service:
+        # The UI may have no incident number when the analyzed verdict was a
+        # Suppressed duplicate (dedup → no ticket on that triage). Fall back to
+        # the most recent incident RA-003 opened for this service — e.g. the one
+        # the Inject button's background triage created — so the close gate (2nd
+        # HITL approval) still fires.
+        incident_id = _latest_incident_for_service(req.service)
+        if incident_id:
+            logger.info(
+                "post-fix verify: UI sent no incident_id; recovered %s for service=%r",
+                incident_id,
+                req.service,
+            )
     if not incident_id:
         return  # no ServiceNow ticket to verify/close against
     service = req.service or (req.rca_verdict or {}).get("affected_service") or "unknown"
@@ -2217,7 +2501,7 @@ SCENARIOS: dict[str, dict[str, Any]] = _load_scenarios()
 _SCENARIO_ACTIVE = Gauge(
     "aiops_scenario_active",
     "1 when the scenario's flag is in a non-off variant per flagd; 0 otherwise.",
-    ["scenario_id", "flag", "service"],
+    ["scenario_id", "flag", "service", "severity"],
 )
 
 
@@ -2237,10 +2521,15 @@ def _refresh_scenario_gauge() -> None:
     current: dict[str, str] = (res.data or {}).get("variants", {})
     for sid, s in SCENARIOS.items():
         variant = current.get(s["flag"], "off")
+        # severity travels on the gauge so the ScenarioActive Prometheus rule
+        # can template it ({{ $labels.severity }}) instead of hard-coding one
+        # value for every scenario. Same source-of-truth as the UI synthetic
+        # alert (_synthetic_alert_for_scenario) — demo/scenarios/*.yaml.
         _SCENARIO_ACTIVE.labels(
             scenario_id=sid,
             flag=s["flag"],
             service=s.get("service", "unknown"),
+            severity=str(s.get("severity") or "high"),
         ).set(1 if variant != "off" else 0)
 
 
