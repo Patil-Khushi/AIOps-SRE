@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Moon, Sun, Activity, AlertCircle } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { ArrowLeft, Moon, Sun, Activity, AlertCircle, LayoutGrid } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
 import { api } from '@/lib/api';
 import type { HealthResponse } from '@/types/api';
@@ -24,14 +24,21 @@ function ChipDot({
 export default function Header() {
   const { theme, toggle } = useTheme();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [h, setH] = useState<HealthResponse | null>(null);
   const [err, setErr] = useState(false);
 
-  // Back goes to the agent this console was opened for (not home). The agent
-  // detail page is the step before the console, so this is a true "up one level".
-  const agentId = getConsoleAgentId();
-  const agent = getAgentById(agentId);
-  const goBack = () => navigate(agent ? `/agents/${agent.id}` : '/agents');
+  // On a per-agent live surface (/agents/<id>) that IS the open agent; else
+  // fall back to the console scope the launcher set. (Matches Sidebar.)
+  const routeAgentId =
+    pathname.startsWith('/agents/') && pathname.split('/').length > 2
+      ? pathname.split('/')[2]
+      : null;
+  const agent = getAgentById(routeAgentId ?? getConsoleAgentId());
+  // Back = one real step back in history (browser-style), not a jump to a
+  // fixed page. All-Agents = jump straight to the catalog from anywhere.
+  const goBack = () => navigate(-1);
+  const goAllAgents = () => navigate('/agents');
 
   useEffect(() => {
     let alive = true;
@@ -50,10 +57,18 @@ export default function Header() {
         <button
           onClick={goBack}
           className="btn !p-1.5"
-          title={agent ? `Back to ${agent.name}` : 'Back to agents'}
+          title="Back (one step)"
           aria-label="Back"
         >
           <ArrowLeft className="h-4 w-4" />
+        </button>
+        <button
+          onClick={goAllAgents}
+          className="btn !py-1.5 !pl-2 !pr-2.5 !text-xs"
+          title="Go to all agents"
+          aria-label="All agents"
+        >
+          <LayoutGrid className="h-4 w-4" /> All Agents
         </button>
         <Activity className="h-4 w-4 text-accent" />
         <h1 className="text-sm font-semibold text-ink-900 dark:text-ink-50">

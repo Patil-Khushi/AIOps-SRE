@@ -10,7 +10,6 @@ import ParticleField from '@/portal/ParticleField';
 import PortalNav from '@/portal/PortalNav';
 import PortalProgressBar from '@/portal/PortalProgressBar';
 import { usePortalProgress } from '@/portal/usePortalProgress';
-import { hasEntered } from '@/lib/consoleScope';
 
 // The Adaptive AIOps Platform Portal — landing route, v2 "Cinematic".
 //
@@ -26,9 +25,12 @@ import { hasEntered } from '@/lib/consoleScope';
 const AUTO_TRIGGER = 0.30;
 
 export default function Landing() {
-  // Returning visitors (already entered the app once) skip the cinematic boot:
-  // start fully booted with the hero already revealed — no animation replay.
-  const skipIntro = hasEntered();
+  // Render the hero immediately — start fully booted with the hero revealed.
+  // The scroll-gated cinematic boot was prone to "sticking" on the ADAPTIVE
+  // curtain (so the full "Adaptive AIOps + SRE Ops" identity never showed and
+  // it felt like a hang). Skipping the gate surfaces the branding at once and
+  // removes the heavy boot transition. (Re-enable via the boot hook if wanted.)
+  const skipIntro = true;
   const { progress, setProgress, onWheel } = usePortalProgress(skipIntro ? 1 : 0);
   const navigate = useNavigate();
   const booted = progress >= 0.999;

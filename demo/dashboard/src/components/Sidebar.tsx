@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
   BellRing,
@@ -13,6 +13,8 @@ import {
   ShieldCheck,
   BookOpen,
   Users,
+  ListChecks,
+  FileText,
 } from 'lucide-react';
 import { clsx } from '@/lib/format';
 import { api } from '@/lib/api';
@@ -42,6 +44,11 @@ const ITEMS: Record<string, NavItem> = {
   '/console/approvals':     { to: '/console/approvals',     label: 'Approvals',     icon: Gavel,           end: false },
   '/console/topology':      { to: '/console/topology',      label: 'Topology',      icon: Network,         end: false },
   '/console/health':        { to: '/console/health',        label: 'System Health', icon: HeartPulse,      end: false },
+  // Per-agent live surfaces (their own pages, not /console). Listed here so an
+  // agent's focused sidebar can link back to its own console.
+  '/agents/runbook-executor':       { to: '/agents/runbook-executor',       label: 'Runbook Executor', icon: FileText,   end: false },
+  '/agents/remediation-recommender':{ to: '/agents/remediation-recommender',label: 'Remediation',      icon: ListChecks, end: false },
+  '/agents/auto-healer':            { to: '/agents/auto-healer',            label: 'Auto-Healer',      icon: HeartPulse, end: false },
 };
 
 // Shared infra surfaces every agent's console carries.
@@ -63,11 +70,13 @@ const AGENT_SURFACES: Record<string, string[]> = {
   'notification-router': ['/console', '/console/notifications', ...SHARED_TAIL],
   // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
   'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],
-  // Remediation Recommender consumes the RCA verdict and ranks options; the
-  // approvals it hands to Auto-Healer are the surface that matters.
-  'remediation-recommender': ['/console/rca', '/console/approvals', '/console/health'],
-  // Auto-Healer executes a chosen option through the gate — approvals + health.
-  'auto-healer': ['/console/approvals', '/console/health'],
+  // Remediation Recommender's own page, the Auto-Healer it hands off to, plus
+  // the approval gate + health. (No Alert-Triage / RCA surfaces — keep it focused.)
+  'remediation-recommender': ['/agents/remediation-recommender', '/agents/auto-healer', '/console/approvals', '/console/health'],
+  // Auto-Healer: its own page + the approval gate it blocks on + health.
+  'auto-healer': ['/agents/auto-healer', '/console/approvals', '/console/health'],
+  // Runbook Executor: its own page + the approval gate + health.
+  'runbook-executor': ['/agents/runbook-executor', '/console/approvals', '/console/health'],
   // Topology Discovery's live surface IS the topology map (existing page).
   'topology-discovery':  ['/console/topology', '/console/health'],
 };
@@ -77,8 +86,16 @@ const DEFAULT_SURFACES = [
 ];
 
 export default function Sidebar() {
-  // The agent this console session was opened for (see consoleScope).
-  const agent = getAgentById(getConsoleAgentId());
+  // When we're on a per-agent live surface (/agents/<id>), THAT is the open
+  // agent — derive it from the route so the nav title + scoped surfaces are
+  // always correct (deterministic), regardless of what consoleScope last held.
+  // Otherwise fall back to the console-scope the launcher set.
+  const { pathname } = useLocation();
+  const routeAgentId =
+    pathname.startsWith('/agents/') && pathname.split('/').length > 2
+      ? pathname.split('/')[2]
+      : null;
+  const agent = getAgentById(routeAgentId ?? getConsoleAgentId());
   const requiresApproval = agent?.hitl === 'Required';
 
   const routes = [...(agent && AGENT_SURFACES[agent.id] ? AGENT_SURFACES[agent.id] : DEFAULT_SURFACES)];

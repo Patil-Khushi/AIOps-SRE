@@ -43,6 +43,10 @@ export default function RemediationRecommender() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Scope the console to this agent so the sidebar shows its focused surfaces
+  // (and its name) — including after navigating to a shared /console link.
+  useEffect(() => { setConsoleAgent('remediation-recommender'); }, []);
+
   const results = incidents.data?.results ?? [];
   const list: TriageVerdict[] = results.map((r) => r.verdict);
   const selectedResult = results[selectedIdx] ?? null;
