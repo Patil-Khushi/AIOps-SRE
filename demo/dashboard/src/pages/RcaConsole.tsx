@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Sparkles, RefreshCw, Inbox, Brain } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -6,8 +6,19 @@ import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, LoadingState, ErrorState } from '@/components/states';
 import { SeverityBadge, StatusChip } from '@/components/SeverityBadge';
 import { RcaView } from '@/components/RcaView';
-import type { TriageVerdict, RCAVerdict } from '@/types/api';
+import type { TriageVerdict, RCAVerdict, TriageResult } from '@/types/api';
 import { clsx, timeAgo } from '@/lib/format';
+
+// Module-level: survives navigation so re-selecting a verdict shows its RCA instantly.
+const rcaCache = new Map<string, RCAVerdict>();
+
+// idx is a position tiebreaker for the null-created_at case (persistence is
+// best-effort — a DB blip returns verdict_id=None which cascades to no created_at).
+// Two verdicts for the same service in the same list position is impossible,
+// so idx prevents collisions when created_at is missing.
+function rcaKey(v: TriageVerdict, idx: number): string {
+  return `${v.affected_service}:${v.severity}:${v.audit_metadata.created_at || idx}`;
+}
 
 // ─── RCA Agent console (PRS-008 ★) ──────────────────────────────────────────
 //
@@ -18,7 +29,7 @@ import { clsx, timeAgo } from '@/lib/format';
 // verdict; everything below the verdict belongs here.
 
 export default function RcaConsole() {
-  const verdicts = useFetch(api.triageLive, { intervalMs: 0 });
+  const verdicts = useFetch(api.triageLive, { intervalMs: 0, cacheKey: 'triage-live' });
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [rca, setRca] = useState<RCAVerdict | null>(null);
   // ServiceNow incident number for the verdict the current RCA was run on.
@@ -34,22 +45,40 @@ export default function RcaConsole() {
   const handedOff = useRef(false);
   const handoffAttempts = useRef(0);
 
-  const results = verdicts.data?.results ?? [];
+  const results = useMemo<TriageResult[]>(() => verdicts.data?.results ?? [], [verdicts.data]);
   const list: TriageVerdict[] = results.map((r) => r.verdict);
   const selectedResult = results[selectedIdx] ?? null;
   const selected: TriageVerdict | null = selectedResult?.verdict ?? null;
 
-  // Clear any RCA when the selected verdict changes so we never show a stale
-  // analysis for a different incident.
+  // Keep a stable ref so the effect below can read results without declaring
+  // it as a dependency (avoids re-firing on every poll revalidation).
+  const resultsRef = useRef(results);
+  resultsRef.current = results;
+
+  // When the selected verdict changes, restore a cached RCA if one exists —
+  // so switching back to a previously-analysed incident is instant.
   useEffect(() => {
-    setRca(null);
     setRcaError(null);
-    setRcaIncidentId(null);
+    const v = resultsRef.current[selectedIdx]?.verdict;
+    if (!v) {
+      setRca(null);
+      setRcaIncidentId(null);
+      return;
+    }
+    const cached = rcaCache.get(rcaKey(v, selectedIdx));
+    if (cached) {
+      setRca(cached);
+      setRcaIncidentId(resultsRef.current[selectedIdx]?.ticket?.ticket_id ?? null);
+    } else {
+      setRca(null);
+      setRcaIncidentId(null);
+    }
   }, [selectedIdx]);
 
-  const runRca = async (target?: TriageVerdict, incidentId?: string | null) => {
+  const runRca = async (target?: TriageVerdict, incidentId?: string | null, listIdx?: number) => {
     const v = target ?? selected;
     if (!v) return;
+    const keyIdx = listIdx ?? selectedIdx;
     // Pin the ServiceNow incident number for this verdict (from RA-003's ticket
     // on the triage result). apply-fix forwards it so the verifier runs and the
     // ticket-close approval appears; without it only the fix approval shows.
@@ -60,7 +89,9 @@ export default function RcaConsole() {
     setRcaBusy(true);
     setRcaIncidentId(inc);
     try {
-      setRca(await api.rca(v));
+      const result = await api.rca(v);
+      rcaCache.set(rcaKey(v, keyIdx), result);
+      setRca(result);
     } catch (e) {
       setRcaError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -76,7 +107,7 @@ export default function RcaConsole() {
     if (idx >= 0) {
       handedOff.current = true;
       setSelectedIdx(idx);
-      runRca(results[idx].verdict, results[idx]?.ticket?.ticket_id ?? null);
+      runRca(results[idx].verdict, results[idx]?.ticket?.ticket_id ?? null, idx);
       return;
     }
     // The just-triaged verdict may not be in this snapshot yet (intervalMs: 0,

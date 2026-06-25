@@ -203,7 +203,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function LiveFeed() {
-  const feed = useFetch(() => api.warRoomRecent(50), { intervalMs: 5000 });
+  const feed = useFetch(() => api.warRoomRecent(50), { intervalMs: 5000, cacheKey: 'war-room-recent' });
   const [open, setOpen] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const rows: WarRoomFeedRow[] = feed.data?.war_rooms ?? [];
@@ -308,7 +308,7 @@ function MetricChip({ label, value }: { label: string; value: string | number })
 }
 
 export default function WarRoom() {
-  const metrics = useFetch(api.warRoomMetrics, { intervalMs: 5000 });
+  const metrics = useFetch(api.warRoomMetrics, { intervalMs: 5000, cacheKey: 'war-room-metrics' });
   const m = metrics.data;
 
   return (

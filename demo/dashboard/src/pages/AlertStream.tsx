@@ -9,6 +9,10 @@ import { setConsoleAgent } from '@/lib/consoleScope';
 import type { Severity, PrometheusAlert, TriageVerdict } from '@/types/api';
 import { timeAgo, clsx } from '@/lib/format';
 
+// Module-level cache: persists across navigation so clicking the same alert
+// again shows the verdict instantly without re-running the LLM pipeline.
+const triageCache = new Map<string, TriageVerdict>();
+
 function inferSeverity(hint: string | null | undefined): Severity {
   const s = (hint || '').toLowerCase();
   if (s.includes('critical') || s === 'p1') return 'Sev-1';
@@ -52,19 +56,35 @@ export default function AlertStream() {
     return out;
   }, [alerts, q, sevFilter, sortKey]);
 
-  const runTriage = async (alert: PrometheusAlert) => {
+  const runTriage = async (alert: PrometheusAlert, force = false) => {
     setPicked(alert);
-    setVerdict(null);
     setError(null);
+
+    if (!force) {
+      const cached = triageCache.get(alert.alert_id);
+      if (cached) {
+        setVerdict(cached);
+        return;
+      }
+    }
+
+    setVerdict(null);
     setTriageBusy(true);
     try {
       const result = await api.triage(alert);
+      triageCache.set(alert.alert_id, result.verdict);
       setVerdict(result.verdict);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setTriageBusy(false);
     }
+  };
+
+  const reRunTriage = () => {
+    if (!picked) return;
+    triageCache.delete(picked.alert_id);
+    runTriage(picked, true);
   };
 
   // Hand the triaged incident off to the RCA Agent: scope the console to RCA,
@@ -178,7 +198,13 @@ export default function AlertStream() {
           <div className="card sticky top-20">
             <div className="card-header">
               <h2 className="card-title">Triage verdict</h2>
-              {triageBusy && <RefreshCw className="h-4 w-4 animate-spin text-accent" />}
+              {triageBusy ? (
+                <RefreshCw className="h-4 w-4 animate-spin text-accent" />
+              ) : verdict ? (
+                <button onClick={reRunTriage} className="btn !py-1 !text-xs" title="Re-run RA-001 for this alert">
+                  <RefreshCw className="h-3.5 w-3.5" /> Re-run
+                </button>
+              ) : null}
             </div>
             <div className="card-body">
               {!picked && (

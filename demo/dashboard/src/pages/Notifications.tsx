@@ -119,7 +119,7 @@ export default function Notifications() {
   // Poll the persisted history every 5s so injected alerts surface even when
   // the live WebSocket frame is missed (e.g. page opened after the alert
   // fired, or the WS reconnecting).
-  const history = useFetch(() => api.notifications(200), { intervalMs: 5_000 });
+  const history = useFetch(() => api.notifications(200), { intervalMs: 5_000, cacheKey: 'notifications' });
   const [q, setQ] = useState('');
   const [sevFilter, setSevFilter] = useState<ChatSeverity | 'all'>('all');
   // Which notification kinds to show. All on by default; toggle chips below.

@@ -51,7 +51,7 @@ const STAGE_ICON: Record<string, ComponentType<{ className?: string }>> = {
 };
 
 export default function IncidentCommander() {
-  const alerts = useFetch(api.liveAlerts, { intervalMs: 0 });
+  const alerts = useFetch(api.liveAlerts, { intervalMs: 0, cacheKey: 'live-alerts' });
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [result, setResult] = useState<IncidentCommandResult | null>(null);
   const [busy, setBusy] = useState(false);
