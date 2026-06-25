@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
   BellRing,
@@ -19,8 +19,7 @@ import {
 import { clsx } from '@/lib/format';
 import { api } from '@/lib/api';
 import { useFetch } from '@/hooks/useFetch';
-import { getConsoleAgentId } from '@/lib/consoleScope';
-import { getAgentById } from '@/data/agentCatalog';
+import { useConsoleAgent } from '@/hooks/useConsoleAgent';
 
 interface NavItem {
   to: string;
@@ -86,16 +85,8 @@ const DEFAULT_SURFACES = [
 ];
 
 export default function Sidebar() {
-  // When we're on a per-agent live surface (/agents/<id>), THAT is the open
-  // agent — derive it from the route so the nav title + scoped surfaces are
-  // always correct (deterministic), regardless of what consoleScope last held.
-  // Otherwise fall back to the console-scope the launcher set.
-  const { pathname } = useLocation();
-  const routeAgentId =
-    pathname.startsWith('/agents/') && pathname.split('/').length > 2
-      ? pathname.split('/')[2]
-      : null;
-  const agent = getAgentById(routeAgentId ?? getConsoleAgentId());
+  // Open agent — derived from the route (shared with Header via the hook).
+  const agent = useConsoleAgent();
   const requiresApproval = agent?.hitl === 'Required';
 
   const routes = [...(agent && AGENT_SURFACES[agent.id] ? AGENT_SURFACES[agent.id] : DEFAULT_SURFACES)];

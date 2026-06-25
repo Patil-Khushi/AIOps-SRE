@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Moon, Sun, Activity, AlertCircle, LayoutGrid } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
 import { api } from '@/lib/api';
 import type { HealthResponse } from '@/types/api';
 import { clsx } from '@/lib/format';
-import { getConsoleAgentId } from '@/lib/consoleScope';
-import { getAgentById } from '@/data/agentCatalog';
+import { useConsoleAgent } from '@/hooks/useConsoleAgent';
 
 function ChipDot({
   ok,
@@ -24,17 +23,11 @@ function ChipDot({
 export default function Header() {
   const { theme, toggle } = useTheme();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
   const [h, setH] = useState<HealthResponse | null>(null);
   const [err, setErr] = useState(false);
 
-  // On a per-agent live surface (/agents/<id>) that IS the open agent; else
-  // fall back to the console scope the launcher set. (Matches Sidebar.)
-  const routeAgentId =
-    pathname.startsWith('/agents/') && pathname.split('/').length > 2
-      ? pathname.split('/')[2]
-      : null;
-  const agent = getAgentById(routeAgentId ?? getConsoleAgentId());
+  // Open agent — derived from the route (shared with Sidebar via the hook).
+  const agent = useConsoleAgent();
   // Back = one real step back in history (browser-style), not a jump to a
   // fixed page. All-Agents = jump straight to the catalog from anywhere.
   const goBack = () => navigate(-1);

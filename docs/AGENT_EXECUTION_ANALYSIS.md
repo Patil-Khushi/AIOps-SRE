@@ -126,7 +126,7 @@ flowchart TD
   |---|---|---|
   | CMDB | SNOW row → team | **demo CMDB fallback** → "Payments Team" |
   | on-call | sticky (≤2 h)? → same engineer; else primary on shift, least-loaded | global wildcard (never drop) |
-- **This run:** team = **Payments Team**; on-call = **Khushi Patil <khushi.patil@zensar.com>** (DB provider, auto-seeded; sticky empty on first inject → primary).
+- **This run:** team = **Payments Team**; on-call = **Khushi Patil <khushi.patil@example.com>** (DB provider, auto-seeded; sticky empty on first inject → primary).
 - **Effect on next:** `assigned_engineer` is the page target for RA-005 and the SME invite for RA-006.
 - **Assumptions/issues:** real emails require `AIOPS_ONCALL_ROSTER_JSON`; without it, named placeholders. If the engineers table were empty, the mock would emit `oncall@payments.example.com` (the bug we fixed via startup auto-seed).
 
@@ -156,7 +156,7 @@ flowchart TD
 | severity | Sev-1 (conf 0.95) |
 | alert_summary | "Payment service error rate elevated…" |
 | assigned_team | Payments Team |
-| assigned_engineer | Khushi Patil \<khushi.patil@zensar.com\> |
+| assigned_engineer | Khushi Patil \<khushi.patil@example.com\> |
 | duplicate_alert_count | 1 |
 | status | Active |
 
