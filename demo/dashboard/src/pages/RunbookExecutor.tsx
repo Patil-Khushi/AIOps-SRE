@@ -473,7 +473,7 @@ function RunbookPicker({
   onRun: (runbookId: string) => void;
   onCancel: () => void;
 }) {
-  // Mounted fresh per incident (keyed render), so it fetches on mount.
+  // Keyed per incident; fetches once and restores from cache on re-selection.
   const lib = useFetch(
     () =>
       api.runbookExecutorRunbooks({

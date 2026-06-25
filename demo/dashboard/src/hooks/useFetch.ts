@@ -11,6 +11,11 @@ interface State<T> {
 // and revalidates quietly in the background.
 const fetchCache = new Map<string, unknown>();
 
+// Call after a scenario reset so pages don't show pre-reset data from cache.
+export function clearFetchCache(): void {
+  fetchCache.clear();
+}
+
 export function useFetch<T>(
   fetcher: () => Promise<T>,
   { intervalMs, cacheKey }: { intervalMs?: number; cacheKey?: string } = {},

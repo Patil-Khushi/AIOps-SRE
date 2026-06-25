@@ -7,14 +7,18 @@ import { EmptyState, LoadingState, ErrorState } from '@/components/states';
 import { SeverityBadge, StatusChip } from '@/components/SeverityBadge';
 import { RcaView } from '@/components/RcaView';
 import type { TriageVerdict, RCAVerdict, TriageResult } from '@/types/api';
+import { clsx, timeAgo } from '@/lib/format';
 
 // Module-level: survives navigation so re-selecting a verdict shows its RCA instantly.
 const rcaCache = new Map<string, RCAVerdict>();
 
-function rcaKey(v: TriageVerdict): string {
-  return `${v.affected_service}:${v.audit_metadata.created_at}`;
+// idx is a position tiebreaker for the null-created_at case (persistence is
+// best-effort — a DB blip returns verdict_id=None which cascades to no created_at).
+// Two verdicts for the same service in the same list position is impossible,
+// so idx prevents collisions when created_at is missing.
+function rcaKey(v: TriageVerdict, idx: number): string {
+  return `${v.affected_service}:${v.severity}:${v.audit_metadata.created_at || idx}`;
 }
-import { clsx, timeAgo } from '@/lib/format';
 
 // ─── RCA Agent console (PRS-008 ★) ──────────────────────────────────────────
 //
@@ -61,7 +65,7 @@ export default function RcaConsole() {
       setRcaIncidentId(null);
       return;
     }
-    const cached = rcaCache.get(rcaKey(v));
+    const cached = rcaCache.get(rcaKey(v, selectedIdx));
     if (cached) {
       setRca(cached);
       setRcaIncidentId(resultsRef.current[selectedIdx]?.ticket?.ticket_id ?? null);
@@ -71,9 +75,10 @@ export default function RcaConsole() {
     }
   }, [selectedIdx]);
 
-  const runRca = async (target?: TriageVerdict, incidentId?: string | null) => {
+  const runRca = async (target?: TriageVerdict, incidentId?: string | null, listIdx?: number) => {
     const v = target ?? selected;
     if (!v) return;
+    const keyIdx = listIdx ?? selectedIdx;
     // Pin the ServiceNow incident number for this verdict (from RA-003's ticket
     // on the triage result). apply-fix forwards it so the verifier runs and the
     // ticket-close approval appears; without it only the fix approval shows.
@@ -85,7 +90,7 @@ export default function RcaConsole() {
     setRcaIncidentId(inc);
     try {
       const result = await api.rca(v);
-      rcaCache.set(rcaKey(v), result);
+      rcaCache.set(rcaKey(v, keyIdx), result);
       setRca(result);
     } catch (e) {
       setRcaError(e instanceof Error ? e.message : String(e));
@@ -102,7 +107,7 @@ export default function RcaConsole() {
     if (idx >= 0) {
       handedOff.current = true;
       setSelectedIdx(idx);
-      runRca(results[idx].verdict, results[idx]?.ticket?.ticket_id ?? null);
+      runRca(results[idx].verdict, results[idx]?.ticket?.ticket_id ?? null, idx);
       return;
     }
     // The just-triaged verdict may not be in this snapshot yet (intervalMs: 0,
