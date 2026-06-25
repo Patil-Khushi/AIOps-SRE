@@ -42,7 +42,7 @@ export default function Approvals() {
   const [optimistic, setOptimistic] = useState<Record<string, ApprovalStatus>>({});
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const { data, loading, error, refetch } = useFetch(() => api.approvals(showResolved), { intervalMs: 3000 });
+  const { data, loading, error, refetch } = useFetch(() => api.approvals(showResolved), { intervalMs: 3000, cacheKey: `approvals-${showResolved}` });
 
   const rows = useMemo(() => {
     const list = data?.approvals ?? [];

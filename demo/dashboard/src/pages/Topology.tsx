@@ -21,7 +21,7 @@ function layoutCircular(ids: string[]): Record<string, { x: number; y: number }>
 }
 
 export default function Topology() {
-  const { data, loading, error } = useFetch(api.topology, { intervalMs: 30_000 });
+  const { data, loading, error } = useFetch(api.topology, { intervalMs: 30_000, cacheKey: 'topology' });
   const { theme } = useTheme();
 
   const { nodes, edges } = useMemo(() => {

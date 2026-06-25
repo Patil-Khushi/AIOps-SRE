@@ -6,8 +6,8 @@ import { clsx, timeAgo } from '@/lib/format';
 import StatCard from '@/components/StatCard';
 
 export default function SystemHealth() {
-  const health = useFetch(api.health, { intervalMs: 10_000 });
-  const pods = useFetch(api.pods, { intervalMs: 10_000 });
+  const health = useFetch(api.health, { intervalMs: 10_000, cacheKey: 'health' });
+  const pods = useFetch(api.pods, { intervalMs: 10_000, cacheKey: 'pods' });
 
   return (
     <div className="space-y-6">

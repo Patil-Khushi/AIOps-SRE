@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Sparkles, RefreshCw, Inbox, Brain } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -6,7 +6,14 @@ import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, LoadingState, ErrorState } from '@/components/states';
 import { SeverityBadge, StatusChip } from '@/components/SeverityBadge';
 import { RcaView } from '@/components/RcaView';
-import type { TriageVerdict, RCAVerdict } from '@/types/api';
+import type { TriageVerdict, RCAVerdict, TriageResult } from '@/types/api';
+
+// Module-level: survives navigation so re-selecting a verdict shows its RCA instantly.
+const rcaCache = new Map<string, RCAVerdict>();
+
+function rcaKey(v: TriageVerdict): string {
+  return `${v.affected_service}:${v.audit_metadata.created_at}`;
+}
 import { clsx, timeAgo } from '@/lib/format';
 
 // ─── RCA Agent console (PRS-008 ★) ──────────────────────────────────────────
@@ -18,7 +25,7 @@ import { clsx, timeAgo } from '@/lib/format';
 // verdict; everything below the verdict belongs here.
 
 export default function RcaConsole() {
-  const verdicts = useFetch(api.triageLive, { intervalMs: 0 });
+  const verdicts = useFetch(api.triageLive, { intervalMs: 0, cacheKey: 'triage-live' });
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [rca, setRca] = useState<RCAVerdict | null>(null);
   // ServiceNow incident number for the verdict the current RCA was run on.
@@ -34,17 +41,34 @@ export default function RcaConsole() {
   const handedOff = useRef(false);
   const handoffAttempts = useRef(0);
 
-  const results = verdicts.data?.results ?? [];
+  const results = useMemo<TriageResult[]>(() => verdicts.data?.results ?? [], [verdicts.data]);
   const list: TriageVerdict[] = results.map((r) => r.verdict);
   const selectedResult = results[selectedIdx] ?? null;
   const selected: TriageVerdict | null = selectedResult?.verdict ?? null;
 
-  // Clear any RCA when the selected verdict changes so we never show a stale
-  // analysis for a different incident.
+  // Keep a stable ref so the effect below can read results without declaring
+  // it as a dependency (avoids re-firing on every poll revalidation).
+  const resultsRef = useRef(results);
+  resultsRef.current = results;
+
+  // When the selected verdict changes, restore a cached RCA if one exists —
+  // so switching back to a previously-analysed incident is instant.
   useEffect(() => {
-    setRca(null);
     setRcaError(null);
-    setRcaIncidentId(null);
+    const v = resultsRef.current[selectedIdx]?.verdict;
+    if (!v) {
+      setRca(null);
+      setRcaIncidentId(null);
+      return;
+    }
+    const cached = rcaCache.get(rcaKey(v));
+    if (cached) {
+      setRca(cached);
+      setRcaIncidentId(resultsRef.current[selectedIdx]?.ticket?.ticket_id ?? null);
+    } else {
+      setRca(null);
+      setRcaIncidentId(null);
+    }
   }, [selectedIdx]);
 
   const runRca = async (target?: TriageVerdict, incidentId?: string | null) => {
@@ -60,7 +84,9 @@ export default function RcaConsole() {
     setRcaBusy(true);
     setRcaIncidentId(inc);
     try {
-      setRca(await api.rca(v));
+      const result = await api.rca(v);
+      rcaCache.set(rcaKey(v), result);
+      setRca(result);
     } catch (e) {
       setRcaError(e instanceof Error ? e.message : String(e));
     } finally {

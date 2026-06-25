@@ -33,7 +33,7 @@ const BLAST_STYLE: Record<BlastRadius, string> = {
 
 export default function RemediationRecommender() {
   const catalog = getAgentById('remediation-recommender');
-  const incidents = useFetch(api.triageLive, { intervalMs: 0 });
+  const incidents = useFetch(api.triageLive, { intervalMs: 0, cacheKey: 'triage-live' });
   const navigate = useNavigate();
 
   const [selectedIdx, setSelectedIdx] = useState(0);

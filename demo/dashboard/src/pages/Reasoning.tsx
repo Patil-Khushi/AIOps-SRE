@@ -27,7 +27,7 @@ function tagStage(line: string): string {
 }
 
 export default function Reasoning() {
-  const verdicts = useFetch(api.triageLive, { intervalMs: 0 });
+  const verdicts = useFetch(api.triageLive, { intervalMs: 0, cacheKey: 'triage-live' });
   const [selectedIdx, setSelectedIdx] = useState(0);
 
   if (verdicts.loading) return <LoadingState label="Running RA-001 against every firing alert…" />;

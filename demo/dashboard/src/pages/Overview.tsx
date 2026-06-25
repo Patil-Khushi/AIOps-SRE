@@ -35,7 +35,7 @@ function inferSeverity(hint: string | null | undefined): Severity {
 
 export default function Overview() {
   const { alerts, status, lastUpdate } = useAlertsSocket();
-  const scenarios = useFetch(api.scenarios, { intervalMs: 8_000 });
+  const scenarios = useFetch(api.scenarios, { intervalMs: 8_000, cacheKey: 'scenarios' });
   const [busy, setBusy] = useState<string | null>(null);
   const [history, setHistory] = useState<{ t: number; count: number }[]>([]);
 

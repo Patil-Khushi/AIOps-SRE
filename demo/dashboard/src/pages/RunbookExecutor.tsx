@@ -82,7 +82,7 @@ function computeStages(
 
 export default function RunbookExecutor() {
   const catalog = getAgentById('runbook-executor');
-  const incidents = useFetch(() => api.verdicts({ limit: 20 }), { intervalMs: 5000 });
+  const incidents = useFetch(() => api.verdicts({ limit: 20 }), { intervalMs: 5000, cacheKey: 'verdicts-20' });
 
   const [activeIncident, setActiveIncident] = useState<VerdictRecord | null>(null);
   // Which incident's runbook picker is open (lets the operator review steps and
@@ -474,12 +474,14 @@ function RunbookPicker({
   onCancel: () => void;
 }) {
   // Mounted fresh per incident (keyed render), so it fetches on mount.
-  const lib = useFetch(() =>
-    api.runbookExecutorRunbooks({
-      service: incident.affected_service,
-      severity: sevToken(incident.severity),
-      summary: incident.alert_summary,
-    }),
+  const lib = useFetch(
+    () =>
+      api.runbookExecutorRunbooks({
+        service: incident.affected_service,
+        severity: sevToken(incident.severity),
+        summary: incident.alert_summary,
+      }),
+    { cacheKey: `runbooks-${incident.id}` },
   );
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
