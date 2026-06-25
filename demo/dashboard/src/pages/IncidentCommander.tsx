@@ -1,15 +1,18 @@
 import { useState, type ComponentType } from 'react';
 import {
   Siren, RefreshCw, Inbox, UserCheck, Search, Tags, GitMerge, Ticket, Bell,
-  Brain, MessageSquare, CircleDot, ClipboardList,
+  Brain, MessageSquare, CircleDot, ClipboardList, AlertTriangle, Timer,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, LoadingState, ErrorState } from '@/components/states';
 import { SeverityBadge } from '@/components/SeverityBadge';
 import { RcaView } from '@/components/RcaView';
-import type { Severity, PrometheusAlert, IncidentCommandResult, PostmortemSeed, IcTimelineEntry } from '@/types/api';
-import { clsx, timeAgo } from '@/lib/format';
+import type {
+  Severity, PrometheusAlert, IncidentCommandResult, PostmortemSeed,
+  IcTimelineEntry, IncidentMetrics,
+} from '@/types/api';
+import { clsx, timeAgo, formatClock, formatDuration } from '@/lib/format';
 
 // ─── Incident Commander console (RA-008, SRE) ───────────────────────────────
 //
@@ -40,6 +43,7 @@ const SEV_TINT: Record<Severity, string> = {
 // Stage → icon for the vertical timeline. Stage labels come from the backend
 // (agents/incident_commander/agent.py); unknown stages fall back to a dot.
 const STAGE_ICON: Record<string, ComponentType<{ className?: string }>> = {
+  detected: AlertTriangle,
   triage: Search,
   classify: Tags,
   correlate: GitMerge,
@@ -164,11 +168,14 @@ export default function IncidentCommander() {
                 <button
                   type="button"
                   onClick={run}
-                  disabled={busy || !picked}
+                  // No re-run: coordinating the same alert twice would re-triage
+                  // it and hit RA-001 dedup/idempotency. Pick another alert (which
+                  // clears the result) to coordinate again.
+                  disabled={busy || !picked || !!result}
                   className="btn btn-primary !py-1.5 !text-xs"
                 >
                   {busy ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Siren className="h-3.5 w-3.5" />}
-                  {result ? 'Re-run' : 'Run Incident Commander'}
+                  {result ? 'Coordinated' : 'Run Incident Commander'}
                 </button>
               </div>
               <div className="card-body">
@@ -251,6 +258,13 @@ function CommandResult({ result }: { result: IncidentCommandResult }) {
         </p>
       )}
 
+      {/* Response metrics (MTTA/MTTR-style, measured from detection) */}
+      {result.metrics && (
+        <Section icon={<Timer className="h-3.5 w-3.5" />} title="Response metrics">
+          <MetricsStrip metrics={result.metrics} />
+        </Section>
+      )}
+
       {/* Vertical timeline */}
       <Section icon={<ClipboardList className="h-3.5 w-3.5" />} title="Incident timeline" count={result.timeline.length}>
         <Timeline entries={result.timeline} />
@@ -290,11 +304,15 @@ function Section({
 }
 
 function Timeline({ entries }: { entries: IcTimelineEntry[] }) {
+  // Entries arrive chronologically sorted from the backend; the first is the
+  // "detected" T0 anchor, so every offset is measured from when the alert fired.
+  const t0 = entries.length ? new Date(entries[0].ts).getTime() : 0;
   return (
     <ol className="relative">
       {entries.map((e, i) => {
         const Icon = STAGE_ICON[e.stage] ?? CircleDot;
         const last = i === entries.length - 1;
+        const offsetSecs = (new Date(e.ts).getTime() - t0) / 1000;
         return (
           <li key={i} className="relative flex gap-3 pb-4 last:pb-0">
             {!last && (
@@ -304,8 +322,11 @@ function Timeline({ entries }: { entries: IcTimelineEntry[] }) {
               <Icon className="h-3.5 w-3.5" />
             </span>
             <div className="min-w-0 pt-0.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-800 dark:text-ink-100">
+              <p className="flex flex-wrap items-baseline gap-x-2 text-[11px] font-semibold uppercase tracking-wide text-ink-800 dark:text-ink-100">
                 {e.stage}
+                <span className="font-normal normal-case tabular-nums text-ink-400 dark:text-ink-500">
+                  {formatClock(e.ts)} · {i === 0 ? 'T+0s' : `T+${formatDuration(offsetSecs)}`}
+                </span>
               </p>
               <p className="mt-0.5 text-[11px] leading-snug text-ink-500 dark:text-ink-400">{e.detail}</p>
             </div>
@@ -313,6 +334,35 @@ function Timeline({ entries }: { entries: IcTimelineEntry[] }) {
         );
       })}
     </ol>
+  );
+}
+
+// Compact MTTA/MTTR-style chips. Only stages that ran are shown (a null metric
+// means the stage didn't happen on this incident — e.g. handoff when not engaged).
+function MetricsStrip({ metrics }: { metrics: IncidentMetrics }) {
+  const items: Array<[string, number | null | undefined]> = [
+    ['Detect → Triage', metrics.time_to_triage_seconds],
+    ['Detect → Ticket', metrics.time_to_ticket_seconds],
+    ['Detect → Page (MTTA)', metrics.time_to_notify_seconds],
+    ['Detect → Handoff', metrics.time_to_handoff_seconds],
+    ['Total', metrics.total_coordination_seconds],
+  ];
+  const shown = items.filter(([, v]) => v !== null && v !== undefined);
+  if (!shown.length) return null;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {shown.map(([label, v]) => (
+        <div
+          key={label}
+          className="rounded-md border border-ink-200 bg-ink-50 px-2.5 py-1.5 dark:border-ink-700 dark:bg-ink-800/40"
+        >
+          <p className="text-[10px] uppercase tracking-wide text-ink-400 dark:text-ink-500">{label}</p>
+          <p className="text-sm font-semibold tabular-nums text-ink-800 dark:text-ink-100">
+            {formatDuration(v as number)}
+          </p>
+        </div>
+      ))}
+    </div>
   );
 }
 

@@ -8,19 +8,23 @@ the INFRA-2 orchestrator seam (issue #74).
 
 Flow:
 
-    1. run_reactive_flow(alert)   — RA-001 → RA-002 → [Correlate] → RA-003 → RA-005
-    2. Correlate                  — RA-007 Log Correlation is NOT built yet, so
-                                    this step is a traced placeholder (no fake
-                                    evidence). Drop in the real call when RA-007
-                                    ships; the seam position is reserved here.
-    3. Severity gate              — coordination engages only for Sev-1/Sev-2
+    1. run_reactive_flow(alert)   — RA-001 → RA-002 → RA-003 → RA-005
+    2. Severity gate              — coordination engages only for Sev-1/Sev-2
                                     (catalog: "coordinates Sev-1/2 incident
                                     response"). Lower severities return the
                                     reactive result with engaged=False.
-    4. RCA (read-only)            — analyze() produces a verdict with ranked,
-                                    HITL-gated fix steps. RA-008 never executes
-                                    a fix: fix-step execution stays on the
-                                    separately gated path (CLAUDE.md #3).
+    3. Correlate (RA-007)         — Log Correlation pulls logs/traces/metrics for
+                                    the incident window and emits a correlated
+                                    evidence pack + suspect components. Read-only;
+                                    a failure is non-fatal (RCA still runs without
+                                    it). Engaged path only — RCA is its sole
+                                    consumer here (catalog chain RA-003 → RA-007 →
+                                    RCA).
+    4. RCA (read-only)            — analyze() folds in RA-007's evidence and
+                                    produces a verdict with ranked, HITL-gated fix
+                                    steps. RA-008 never executes a fix: fix-step
+                                    execution stays on the separately gated path
+                                    (CLAUDE.md #3).
     5. Coordinate                 — scribe the timeline, post an IC context pack
                                     + human-IC handoff through the chatops seam,
                                     and assemble a facts-only postmortem seed.
@@ -38,19 +42,21 @@ logic itself.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agents.alert_triage import Alert
 from agents.incident_commander.models import (
     ICAuditMetadata,
     IncidentCommandResult,
+    IncidentMetrics,
     PostmortemSeed,
     TimelineEntry,
 )
+from agents.log_correlation import CorrelationInput, TimeWindow, correlate
 from agents.rca_agent.agent import analyze as rca_analyze
 from aiops.runtime.orchestrator import ReactiveFlowResult, run_reactive_flow
-from aiops.tools.chatops import ChatMessage, Severity, get_client
+from aiops.tools.chatops import ChatMessage, DeliveryResult, Severity, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +71,49 @@ _INCIDENTS_CHANNEL = "incidents"
 # Triage severity → chatops loudness for the IC's own messages.
 _SEV_TO_CHAT: dict[str, Severity] = {"Sev-1": Severity.P1, "Sev-2": Severity.P2}
 
+# RA-007 scopes its log/trace/metric pull to the window ending at the alert
+# time; 15 min captures the incident lead-up without dragging in unrelated
+# history. Tune per environment if incidents typically build up over longer.
+_CORRELATION_LOOKBACK = timedelta(minutes=15)
 
-def _entry(stage: str, detail: str) -> TimelineEntry:
-    return TimelineEntry(ts=datetime.now(UTC), stage=stage, detail=detail)
+
+def _entry(stage: str, detail: str, ts: datetime) -> TimelineEntry:
+    """One timeline line stamped with the *real* time the stage happened.
+
+    Callers pass the event's own timestamp (e.g. the triage verdict's
+    ``created_at``, RA-005's ``decided_at``, or ``now()`` for a step the IC runs
+    itself) rather than letting every entry collapse to the reconstruction time.
+    """
+    return TimelineEntry(ts=ts, stage=stage, detail=detail)
+
+
+def _elapsed(start: datetime, end: datetime) -> float:
+    """Seconds from ``start`` to ``end``, clamped at 0. Agents stamp their own
+    events off independent clocks, so a tiny backwards skew is possible; a
+    postmortem must never show a negative duration."""
+    return max(0.0, (end - start).total_seconds())
+
+
+def _compute_metrics(detected_at: datetime, timeline: list[TimelineEntry]) -> IncidentMetrics:
+    """Derive MTTA/MTTR-style durations from the scribed timeline, all measured
+    from detection (``detected_at`` = T0). Reads each stage's real ``ts`` so the
+    numbers match what the timeline shows. A stage that did not run is ``None``;
+    ``total`` spans detection to the last recorded beat."""
+    by_stage = {e.stage: e for e in timeline}
+
+    def since(stage: str) -> float | None:
+        entry = by_stage.get(stage)
+        return _elapsed(detected_at, entry.ts) if entry else None
+
+    total = _elapsed(detected_at, max(e.ts for e in timeline)) if timeline else None
+    return IncidentMetrics(
+        detected_at=detected_at,
+        time_to_triage_seconds=since("triage"),
+        time_to_ticket_seconds=since("ticket"),
+        time_to_notify_seconds=since("notify"),
+        time_to_handoff_seconds=since("handoff"),
+        total_coordination_seconds=total,
+    )
 
 
 def _context_pack_body(
@@ -100,13 +146,15 @@ def _emit_coordination(
     flow: ReactiveFlowResult,
     rca: Any,
     chat_sev: Severity,
-) -> bool:
+) -> dict[str, DeliveryResult]:
     """Post the IC context pack + human-IC handoff through the chatops seam.
 
-    Returns ``True`` once the handoff request has been emitted. The chatops
-    client fans out to whatever adapters are registered (JSONL audit log,
-    WebSocket dashboard, Slack); with no adapters registered (tests/evals via
-    ``emit_comms=False`` skip this entirely) ``send`` is a no-op.
+    Returns the per-adapter delivery results so the caller can record what
+    actually shipped (and surface failures) instead of assuming success. The
+    chatops client fans out to whatever adapters are registered (JSONL audit
+    log, WebSocket dashboard, Slack) and never raises — a failing adapter is
+    captured as ``ok=False`` in its ``DeliveryResult``. With no adapters
+    registered the returned dict is empty.
 
     ``actions`` carries both intents so adapters can distinguish the IC beat
     from RA-005's routing: ``incident_command`` (this is the IC speaking) and
@@ -117,23 +165,27 @@ def _emit_coordination(
         severity=chat_sev,
         title=f"Incident Commander engaged — {flow.verdict.affected_service} ({flow.verdict.severity})",
         body=_context_pack_body(flow, rca),
-        incident_id=flow.verdict.incident_id,
+        # The incident handle is the filed ticket id (e.g. INC-42). The verdict's
+        # own incident_id is never back-populated upstream, so use it only as a
+        # defensive fallback; adapters render this as the structured incident ref.
+        incident_id=flow.ticket.ticket_id or flow.verdict.incident_id,
         service=flow.verdict.affected_service,
         mentions=[flow.verdict.assigned_engineer] if flow.verdict.assigned_engineer else [],
         actions=["incident_command", "handoff_human_ic", "post_to_chat"],
     )
-    get_client().send(msg)
-    return True
+    return get_client().send(msg)
 
 
 def _postmortem_seed(
     flow: ReactiveFlowResult,
     rca: Any,
     timeline: list[TimelineEntry],
+    metrics: IncidentMetrics,
 ) -> PostmortemSeed:
     """Pre-fill a postmortem skeleton with the facts already gathered. The
     contributing-signals list is RA-001's decision trace — the evidence the
-    severity + ownership calls were based on."""
+    severity + ownership calls were based on. ``metrics`` carries the derived
+    MTTA/MTTR durations so the seed is self-contained."""
     v = flow.verdict
     return PostmortemSeed(
         affected_service=v.affected_service,
@@ -146,6 +198,7 @@ def _postmortem_seed(
         ranked_fix_steps=[s.model_dump(mode="json") for s in rca.ranked_fix_steps],
         contributing_signals=list(v.audit_metadata.decision_trace),
         timeline=list(timeline),
+        metrics=metrics,
     )
 
 
@@ -157,10 +210,11 @@ def command(
 ) -> IncidentCommandResult:
     """Coordinate incident response for one alert.
 
-    Runs the full Reactive-Active flow, then — only for Sev-1/Sev-2 — runs RCA
-    (read-only), posts IC comms, seeds the postmortem, and requests a human-IC
-    handoff. ``emit_comms=False`` suppresses the chatops emit so the eval
-    harness and pure tests don't write to the audit log.
+    Runs the full Reactive-Active flow, then — only for Sev-1/Sev-2 — runs RA-007
+    Log Correlation, feeds its evidence pack into RCA (read-only), posts IC
+    comms, seeds the postmortem, and requests a human-IC handoff.
+    ``emit_comms=False`` suppresses the chatops emit so the eval harness and pure
+    tests don't write to the audit log.
     """
     trace: list[str] = []
     timeline: list[TimelineEntry] = []
@@ -168,33 +222,58 @@ def command(
 
     # Step 1 — reactive flow (the #74 seam).
     flow = run_reactive_flow(alert)
+    flow_done_at = datetime.now(UTC)
     verdict = flow.verdict
     severity = verdict.severity
-    timeline.append(
-        _entry("triage", f"RA-001 severity={severity}, service={verdict.affected_service}")
-    )
-    timeline.append(_entry("classify", f"RA-002 type={flow.classification.incident_type}"))
 
-    # Step 2 — correlate placeholder (RA-007 not built).
-    timeline.append(
-        _entry("correlate", "RA-007 Log Correlation not yet implemented; correlation step skipped")
-    )
-    trace.append("correlation pending — RA-007 Log Correlation agent not yet built")
+    # Real event times, not the moment we reconstruct the timeline. Triage and
+    # classify record their own ``created_at``; RA-005 records ``decided_at``.
+    # RA-003 records no timestamp of its own, so the ticket entry inherits the
+    # nearest real upstream time (classify) to stay ordered.
+    triage_ts = getattr(verdict.audit_metadata, "created_at", None) or flow_done_at
+    classify_ts = getattr(flow.classification.audit_metadata, "created_at", None) or flow_done_at
+    notify_ts = flow.routing.decided_at if flow.routing else flow_done_at
 
+    # T0 — the incident began when the alert fired, not when the IC acted. This
+    # anchors the timeline and is the baseline every derived metric measures from
+    # (cheat-sheet MTTD). alert.timestamp is the source's own fire time.
+    timeline.append(
+        _entry(
+            "detected",
+            f"alert {alert.metric}={alert.value} on {alert.service} fired",
+            alert.timestamp,
+        )
+    )
+    timeline.append(
+        _entry(
+            "triage",
+            f"RA-001 severity={severity}, service={verdict.affected_service}",
+            triage_ts,
+        )
+    )
+    timeline.append(
+        _entry("classify", f"RA-002 type={flow.classification.incident_type}", classify_ts)
+    )
     timeline.append(
         _entry(
             "ticket",
             f"RA-003 ticket={flow.ticket.ticket_id or 'none'}, created={flow.ticket.created}",
+            classify_ts,
         )
     )
     timeline.append(
-        _entry("notify", f"RA-005 channel={flow.routing.channel if flow.routing else 'none'}")
+        _entry(
+            "notify",
+            f"RA-005 channel={flow.routing.channel if flow.routing else 'none'}",
+            notify_ts,
+        )
     )
 
-    # Step 3 — severity gate.
+    # Step 2 — severity gate.
     if severity not in _COORDINATED_SEVERITIES:
         trace.append(f"severity {severity} below Sev-2 threshold — IC not engaged")
         logger.info("RA-008: not engaging for %s on %s", severity, verdict.affected_service)
+        timeline.sort(key=lambda e: e.ts)
         return IncidentCommandResult(
             engaged=False,
             severity=severity,
@@ -202,6 +281,7 @@ def command(
             reactive=flow.to_api_dict(),
             rca=None,
             timeline=timeline,
+            metrics=_compute_metrics(alert.timestamp, timeline),
             postmortem_seed=None,
             handoff_requested=False,
             audit_metadata=ICAuditMetadata(created_at=started_at, decision_trace=trace),
@@ -209,30 +289,126 @@ def command(
 
     trace.append(f"severity {severity} — IC engaged for Sev-1/2 coordination")
 
+    # Step 3 — correlate (RA-007): pull the evidence pack that feeds RCA. Engaged
+    # path only, since RCA is its sole consumer here. Read-only; a failure is
+    # non-fatal — RCA's correlation arg is additive, so it simply runs without
+    # the evidence. RA-007 owns its own synthetic fallback when the observability
+    # backends are unreachable (CI / offline demo), so this stays meaningful.
+    correlation: Any = None
+    try:
+        correlation = correlate(
+            CorrelationInput(
+                service=verdict.affected_service,
+                window=TimeWindow(
+                    start=alert.timestamp - _CORRELATION_LOOKBACK,
+                    end=alert.timestamp,
+                ),
+                triage_verdict=verdict.model_dump(mode="json"),
+                classification=flow.classification.model_dump(mode="json"),
+            )
+        )
+    except Exception:
+        logger.exception(
+            "RA-008: RA-007 correlation failed for %s; RCA will run without evidence",
+            verdict.affected_service,
+        )
+    correlate_ts = datetime.now(UTC)
+    correlation_dict = correlation.model_dump(mode="json") if correlation is not None else None
+    if correlation is not None:
+        timeline.append(
+            _entry(
+                "correlate",
+                f"RA-007 {len(correlation.timeline)} signal(s), "
+                f"suspects={correlation.suspected_dependencies or 'none'}, "
+                f"confidence={correlation.confidence:.2f}",
+                correlate_ts,
+            )
+        )
+        trace.append(
+            f"RA-007 correlated {len(correlation.timeline)} signal(s); "
+            f"suspects={correlation.suspected_dependencies or 'none'}, "
+            f"provenance={correlation.audit_metadata.signal_source}"
+        )
+    else:
+        timeline.append(
+            _entry(
+                "correlate",
+                "RA-007 correlation unavailable; RCA proceeding without it",
+                correlate_ts,
+            )
+        )
+        trace.append("RA-007 correlation failed; RCA proceeds without correlation evidence")
+
     # Step 4 — RCA (read-only; fix-step execution stays separately HITL-gated).
-    rca = rca_analyze(verdict.model_dump(mode="json"), scenario_id=scenario_id)
+    rca = rca_analyze(
+        verdict.model_dump(mode="json"),
+        scenario_id=scenario_id,
+        correlation=correlation_dict,
+    )
+    rca_ts = datetime.now(UTC)
     timeline.append(
         _entry(
             "rca",
             f"PRS-008 confidence={rca.confidence_score:.2f}, "
             f"{len(rca.ranked_fix_steps)} ranked fix step(s)",
+            rca_ts,
         )
     )
 
     # Step 5 — coordinate: comms + handoff + postmortem seed.
     handoff_requested = False
     if emit_comms:
-        handoff_requested = _emit_coordination(flow, rca, _SEV_TO_CHAT[severity])
-        timeline.append(_entry("comms", f"posted IC context pack to #{_INCIDENTS_CHANNEL}"))
-        timeline.append(_entry("handoff", "requested human-IC handoff via chatops"))
-        trace.append("posted IC context pack + human-IC handoff through chatops seam")
+        deliveries = _emit_coordination(flow, rca, _SEV_TO_CHAT[severity])
+        emit_ts = datetime.now(UTC)
+        delivered = [name for name, r in deliveries.items() if r.ok]
+        failed = [f"{name}: {r.error}" for name, r in deliveries.items() if not r.ok]
+        total = len(deliveries)
+        if delivered:
+            # At least one sink accepted the handoff — it reached a human surface.
+            handoff_requested = True
+            timeline.append(
+                _entry(
+                    "comms",
+                    f"posted IC context pack to #{_INCIDENTS_CHANNEL} "
+                    f"({len(delivered)}/{total} sink(s))",
+                    emit_ts,
+                )
+            )
+            timeline.append(_entry("handoff", "requested human-IC handoff via chatops", emit_ts))
+            trace.append(
+                f"posted IC context pack + human-IC handoff through chatops seam "
+                f"({len(delivered)}/{total} adapter(s) delivered)"
+            )
+            if failed:
+                trace.append("WARNING: some chatops adapters failed — " + "; ".join(failed))
+        else:
+            # Nothing shipped — every adapter failed, or none were registered.
+            # Don't claim a handoff we could not deliver to anyone.
+            handoff_requested = False
+            detail = (
+                f"chatops delivery failed on all {total} sink(s); handoff not delivered"
+                if total
+                else "no chatops sinks registered; IC context pack not delivered"
+            )
+            timeline.append(_entry("comms", detail, emit_ts))
+            trace.append(
+                "WARNING: human-IC handoff NOT delivered — "
+                + ("; ".join(failed) if failed else "no chatops adapters registered")
+            )
     else:
         # Coordination decided but comms suppressed (eval / pure-call path).
         handoff_requested = True
-        timeline.append(_entry("handoff", "human-IC handoff requested (comms suppressed)"))
+        timeline.append(
+            _entry("handoff", "human-IC handoff requested (comms suppressed)", datetime.now(UTC))
+        )
         trace.append("comms suppressed (emit_comms=False); handoff recorded without chatops emit")
 
-    seed = _postmortem_seed(flow, rca, timeline)
+    # Chronological order regardless of which clock stamped each beat, then
+    # derive the response metrics off the finalized timeline so they match it.
+    timeline.sort(key=lambda e: e.ts)
+    metrics = _compute_metrics(alert.timestamp, timeline)
+
+    seed = _postmortem_seed(flow, rca, timeline, metrics)
     trace.append("assembled facts-only postmortem seed")
 
     return IncidentCommandResult(
@@ -242,6 +418,7 @@ def command(
         reactive=flow.to_api_dict(),
         rca=rca.model_dump(mode="json"),
         timeline=timeline,
+        metrics=metrics,
         postmortem_seed=seed,
         handoff_requested=handoff_requested,
         audit_metadata=ICAuditMetadata(created_at=started_at, decision_trace=trace),

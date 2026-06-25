@@ -94,8 +94,19 @@ export interface RCAVerdict {
 // Chains the reactive flow + RCA into one coordinated Sev-1/Sev-2 response.
 export interface IcTimelineEntry {
   ts: string;
-  stage: string;   // triage | classify | correlate | ticket | notify | rca | comms | handoff
+  stage: string;   // detected | triage | classify | correlate | ticket | notify | rca | comms | handoff
   detail: string;
+}
+
+// Derived MTTA/MTTR-style durations, all measured from detection (T0). A field
+// is null when that stage did not run (e.g. handoff on a non-engaged incident).
+export interface IncidentMetrics {
+  detected_at: string;
+  time_to_triage_seconds?: number | null;
+  time_to_ticket_seconds?: number | null;
+  time_to_notify_seconds?: number | null;  // detect → on-call paged (MTTA)
+  time_to_handoff_seconds?: number | null;
+  total_coordination_seconds?: number | null;
 }
 
 export interface PostmortemSeed {
@@ -109,6 +120,7 @@ export interface PostmortemSeed {
   ranked_fix_steps: RankedFixStep[];
   contributing_signals: string[];
   timeline: IcTimelineEntry[];
+  metrics?: IncidentMetrics | null;
 }
 
 export interface IncidentCommandResult {
@@ -118,6 +130,7 @@ export interface IncidentCommandResult {
   reactive: TriageResult;                 // the /api/triage bundle (verdict + ticket + …)
   rca: RCAVerdict | null;                 // null below Sev-2
   timeline: IcTimelineEntry[];
+  metrics: IncidentMetrics | null;
   postmortem_seed: PostmortemSeed | null; // null below Sev-2
   handoff_requested: boolean;
   audit_metadata: RCAAuditMetadata;
