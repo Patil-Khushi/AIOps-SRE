@@ -9,7 +9,7 @@ Phase 1 is in flight. Shipped agents under `agents/`:
 | `auto_ticketing/` | RA-003 | Reactive-Active | Turns a `TriageVerdict` into a ServiceNow PDI ticket via the `aiops.tools.itsm` seam. |
 | `notification_router/` | RA-005 | Reactive-Active | Routes verdicts to chatops (page / team channel / noise bucket) by severity + time-of-day. |
 | `knowledge_synthesizer/` | PRS-007 | Prescriptive-Adaptive | On a resolved incident, drafts a postmortem + runbook suggestion + KB article (`pending_review`); publication is HITL-gated (`knowledge.publish`). |
-| `incident_commander/` | RA-008 (SRE) | Reactive-Active | Coordinates Sev-1/Sev-2 response: chains the reactive flow + RCA via the orchestrator seam, scribes a timeline, posts an IC context pack + human-IC handoff, seeds a postmortem. Takes no destructive action. |
+| `incident_commander/` | RA-008 (SRE) | Reactive-Active | Coordinates Sev-1/Sev-2 response: chains the reactive flow + RA-007 Log Correlation + RCA via the orchestrator seam, scribes a timeline, posts an IC context pack + human-IC handoff, seeds a postmortem. Takes no destructive action. |
 
 > RA-008 runs on the **orchestrator seam** (`aiops/runtime/orchestrator.py`, INFRA-2 / #74): `run_reactive_flow(alert)` is the single entry point for the RA-001 → RA-002 → RA-003 → RA-005 chain that the `/api/triage` route and the auto-triage loop also use. Call it instead of re-wiring the chain.
 

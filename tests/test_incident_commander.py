@@ -17,7 +17,6 @@ runs for real against the stub LLM, hitting its deterministic fallback.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
 import pytest
 
@@ -31,7 +30,7 @@ from agents.incident_commander import command
 from agents.notification_router.models import RoutingDecision
 from aiops import state as state_pkg
 from aiops.runtime.orchestrator import ReactiveFlowResult
-from aiops.tools.chatops import ChatMessage
+from aiops.tools.chatops import ChatMessage, DeliveryResult
 from aiops.tools.chatops import Severity as ChatSeverity
 
 
@@ -108,14 +107,18 @@ def _flow_result(severity: Severity) -> ReactiveFlowResult:
 
 
 class _CapturingClient:
-    """Fake chatops client capturing what RA-008 sends."""
+    """Fake chatops client capturing what RA-008 sends.
+
+    Stands in for a working sink: ``send`` reports one successful delivery so
+    the agent's delivery-derived ``handoff_requested`` resolves to True (an
+    empty dict would mean "no sinks reached" — see _FailingClient)."""
 
     def __init__(self) -> None:
         self.sent: list[ChatMessage] = []
 
-    def send(self, msg: ChatMessage) -> dict[str, Any]:
+    def send(self, msg: ChatMessage) -> dict[str, DeliveryResult]:
         self.sent.append(msg)
-        return {}
+        return {"capturing": DeliveryResult(adapter="capturing", ok=True, latency_ms=0)}
 
 
 def _stub_flow(monkeypatch, severity: Severity):
@@ -149,7 +152,7 @@ def test_sev1_engages_runs_rca_and_emits_comms(monkeypatch):
     assert seed.root_cause and "productCatalogFailure" in seed.root_cause
     assert seed.contributing_signals  # RA-001 trace carried over
 
-    # Timeline scribed across stages, including the correlate placeholder.
+    # Timeline scribed across stages, including the RA-007 correlate step.
     stages = {e.stage for e in result.timeline}
     assert {"triage", "classify", "correlate", "rca", "handoff"} <= stages
 
@@ -159,6 +162,41 @@ def test_sev1_engages_runs_rca_and_emits_comms(monkeypatch):
     assert msg.channel == "incidents"
     assert "handoff_human_ic" in msg.actions
     assert "incident_command" in msg.actions
+    # incident_id carries the filed ticket id (not the never-populated
+    # verdict.incident_id) so adapters render the real incident reference.
+    assert msg.incident_id == "INC-42"
+
+
+def test_engaged_path_runs_ra007_and_feeds_rca(monkeypatch):
+    """On the engaged path RA-008 runs RA-007 Log Correlation and feeds its
+    evidence pack into RCA (the catalog chain RA-003 → RA-007 → RCA)."""
+    _stub_flow(monkeypatch, "Sev-1")
+    client = _CapturingClient()
+    monkeypatch.setattr(ic, "get_client", lambda: client)
+
+    # Spy on the RCA call to capture the correlation evidence RA-008 passes in.
+    captured = {}
+    real_analyze = ic.rca_analyze
+
+    def _spy(triage_verdict, **kwargs):
+        captured["correlation"] = kwargs.get("correlation")
+        return real_analyze(triage_verdict, **kwargs)
+
+    monkeypatch.setattr(ic, "rca_analyze", _spy)
+
+    result = command(_alert(), scenario_id="slow-product-catalog", emit_comms=False)
+
+    # RCA received a correlation evidence pack (dict), not None.
+    assert isinstance(captured["correlation"], dict)
+    assert "suspected_dependencies" in captured["correlation"]
+    assert "timeline" in captured["correlation"]
+    # The correlate timeline beat reflects real RA-007 output, not a placeholder.
+    correlate_entries = [e for e in result.timeline if e.stage == "correlate"]
+    assert correlate_entries
+    assert "RA-007" in correlate_entries[0].detail
+    assert "skipped" not in correlate_entries[0].detail.lower()
+    # RCA still produced its verdict via the locked-scenario fallback.
+    assert result.rca and "productCatalogFailure" in result.rca["root_cause"]
 
 
 def test_sev4_does_not_engage(monkeypatch):
@@ -175,8 +213,14 @@ def test_sev4_does_not_engage(monkeypatch):
     assert result.handoff_requested is False
     # No coordination comms for a non-engaged incident.
     assert client.sent == []
+    # RA-007 correlation runs on the engaged path only — not for Sev-4.
+    assert "correlate" not in {e.stage for e in result.timeline}
     # Reactive pipeline still ran and is surfaced.
     assert result.reactive["verdict"]["affected_service"] == "product-catalog"
+    # Metrics still derived for the reactive stages, but no handoff happened.
+    assert result.metrics is not None
+    assert result.metrics.time_to_triage_seconds is not None
+    assert result.metrics.time_to_handoff_seconds is None
 
 
 def test_emit_comms_false_suppresses_send(monkeypatch):
@@ -217,6 +261,109 @@ def test_run_eval_contract(monkeypatch):
     assert out["severity"] == "Sev-1"
     assert out["handoff_requested"] is True
     assert client.sent == []  # run() forces emit_comms=False
+
+
+def test_all_adapters_failing_marks_handoff_not_delivered(monkeypatch):
+    """If every chatops sink fails, the IC must not claim a delivered handoff."""
+    _stub_flow(monkeypatch, "Sev-1")
+
+    # Pin RA-007's behaviour explicitly so the assertion can't pass for the
+    # wrong reason: without this the test would lean on the observability URLs
+    # being unreachable to make correlate() fail. We don't care which way it
+    # goes here — only that delivery fails — so make it unavailable cleanly.
+    def _correlate_unavailable(_ci):
+        raise RuntimeError("RA-007 unavailable (test)")
+
+    monkeypatch.setattr(ic, "correlate", _correlate_unavailable)
+
+    class _FailingClient:
+        def send(self, msg: ChatMessage) -> dict[str, DeliveryResult]:
+            return {"jsonfile": DeliveryResult(adapter="jsonfile", ok=False, error="boom")}
+
+    monkeypatch.setattr(ic, "get_client", lambda: _FailingClient())
+
+    result = command(_alert(), scenario_id="slow-product-catalog")
+
+    assert result.engaged is True
+    # Delivery failed on every sink → don't claim a handoff we couldn't deliver.
+    assert result.handoff_requested is False
+    # The failure is surfaced in the decision trace, not swallowed.
+    assert any("NOT delivered" in t for t in result.audit_metadata.decision_trace)
+    # No "handoff" timeline beat when nothing reached a human surface.
+    assert "handoff" not in {e.stage for e in result.timeline}
+
+
+def test_timeline_uses_real_event_timestamps(monkeypatch):
+    """Timeline reactive stages carry their own recorded event times (triage
+    created_at, RA-005 decided_at), not one collapsed reconstruction time."""
+    flow = _flow_result("Sev-1")
+    # Pin distinct, ordered event times so the assertion doesn't depend on the
+    # platform clock resolution (Windows now() can collapse sub-16ms calls).
+    t_triage = datetime(2026, 5, 21, 10, 0, 0, tzinfo=UTC)
+    t_notify = datetime(2026, 5, 21, 10, 0, 30, tzinfo=UTC)
+    flow.verdict.audit_metadata.created_at = t_triage
+    flow.routing.decided_at = t_notify
+    monkeypatch.setattr(ic, "run_reactive_flow", lambda _alert: flow)
+    client = _CapturingClient()
+    monkeypatch.setattr(ic, "get_client", lambda: client)
+
+    result = command(_alert(), scenario_id="slow-product-catalog")
+
+    by_stage = {e.stage: e for e in result.timeline}
+    # Reactive stages reflect their own recorded times, read off the flow...
+    assert by_stage["triage"].ts == t_triage
+    assert by_stage["notify"].ts == t_notify
+    # ...and the IC-driven RCA stage is stamped after the reactive events.
+    assert by_stage["rca"].ts >= t_notify
+    # The reconstruction does not collapse triage onto the notify time.
+    assert by_stage["triage"].ts != by_stage["notify"].ts
+
+
+def test_timeline_has_detected_anchor_sorted_and_metrics(monkeypatch):
+    """The timeline opens with a 'detected' T0 entry at the alert's own fire
+    time, stays chronologically sorted, and the result carries derived
+    MTTA/MTTR-style metrics anchored at detection — mirrored on the seed."""
+    _stub_flow(monkeypatch, "Sev-1")
+    client = _CapturingClient()
+    monkeypatch.setattr(ic, "get_client", lambda: client)
+
+    result = command(_alert(), scenario_id="slow-product-catalog")
+
+    # T0 anchor: first beat is detection, stamped at the alert's timestamp.
+    assert result.timeline[0].stage == "detected"
+    assert result.timeline[0].ts == datetime(2026, 5, 21, 10, 0, tzinfo=UTC)
+
+    # Entries are non-decreasing by ts regardless of which clock stamped each.
+    stamps = [e.ts for e in result.timeline]
+    assert stamps == sorted(stamps)
+
+    # Derived metrics present, anchored at detection, with a handoff time on the
+    # engaged path — and the seed carries the same metrics for self-containment.
+    m = result.metrics
+    assert m is not None
+    assert m.detected_at == datetime(2026, 5, 21, 10, 0, tzinfo=UTC)
+    assert m.time_to_triage_seconds is not None
+    assert m.time_to_notify_seconds is not None  # MTTA (on-call paged)
+    assert m.time_to_handoff_seconds is not None
+    assert m.total_coordination_seconds is not None
+    assert result.postmortem_seed is not None
+    assert result.postmortem_seed.metrics == m
+
+
+def test_correlation_lookback_env_override(monkeypatch):
+    """RA-007's evidence window is tunable via env; bad/empty/non-positive
+    values fall back to the 15-minute default rather than breaking the pull."""
+    from datetime import timedelta
+
+    monkeypatch.delenv("AIOPS_IC_CORRELATION_LOOKBACK_MINUTES", raising=False)
+    assert ic._correlation_lookback() == timedelta(minutes=15)
+
+    monkeypatch.setenv("AIOPS_IC_CORRELATION_LOOKBACK_MINUTES", "30")
+    assert ic._correlation_lookback() == timedelta(minutes=30)
+
+    for bad in ("garbage", "0", "-5", ""):
+        monkeypatch.setenv("AIOPS_IC_CORRELATION_LOOKBACK_MINUTES", bad)
+        assert ic._correlation_lookback() == timedelta(minutes=15)
 
 
 def test_reset_state_is_callable():
