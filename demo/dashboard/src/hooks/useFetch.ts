@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { makeCache, clearAllCaches } from '@/lib/persistentCache';
 
 interface State<T> {
   data: T | null;
@@ -6,14 +7,13 @@ interface State<T> {
   error: string | null;
 }
 
-// Module-level cache: persists across React Router unmount/remount cycles so
-// navigating back to a page shows the previous data immediately (no spinner)
-// and revalidates quietly in the background.
-const fetchCache = new Map<string, unknown>();
+// Backed by localStorage so cached data survives page reloads and new tabs.
+const fetchCache = makeCache<unknown>('fetch');
 
 // Call after a scenario reset so pages don't show pre-reset data from cache.
+// Clears every cache namespace (fetch, triage, rca) in one shot.
 export function clearFetchCache(): void {
-  fetchCache.clear();
+  clearAllCaches();
 }
 
 export function useFetch<T>(

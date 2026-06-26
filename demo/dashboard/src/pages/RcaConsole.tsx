@@ -8,9 +8,10 @@ import { SeverityBadge, StatusChip } from '@/components/SeverityBadge';
 import { RcaView } from '@/components/RcaView';
 import type { TriageVerdict, RCAVerdict, TriageResult } from '@/types/api';
 import { clsx, timeAgo } from '@/lib/format';
+import { makeCache } from '@/lib/persistentCache';
 
-// Module-level: survives navigation so re-selecting a verdict shows its RCA instantly.
-const rcaCache = new Map<string, RCAVerdict>();
+// localStorage-backed: RCA result survives page reloads and new tabs.
+const rcaCache = makeCache<RCAVerdict>('rca');
 
 // idx is a position tiebreaker for the null-created_at case (persistence is
 // best-effort — a DB blip returns verdict_id=None which cascades to no created_at).
