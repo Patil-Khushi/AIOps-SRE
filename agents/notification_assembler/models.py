@@ -164,3 +164,29 @@ class NotificationOutcome(BaseModel):
     decision: RoutingDecision
     war_room: WarRoomAssembly | None = None
     deliveries: dict[str, DeliveryResult] = Field(default_factory=dict)
+
+
+# ─── Standalone-unit outcomes ──────────────────────────────────────────────
+# Kept so the individually-sellable wrapper agents (``notification_router`` /
+# ``war_room_assembler``) can be deployed alone with their original contracts,
+# while the integrated flow uses ``NotificationOutcome`` (one message).
+
+
+class RoutingOutcome(BaseModel):
+    """``route`` result (standalone Notification Router): the routing decision
+    plus per-adapter deliveries for the routing-only message."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: RoutingDecision
+    deliveries: dict[str, DeliveryResult] = Field(default_factory=dict)
+
+
+class WarRoomOutcome(BaseModel):
+    """``assemble`` result (standalone War-Room Assembler): the assembly plus
+    per-adapter deliveries for the war-room opening message."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assembly: WarRoomAssembly
+    deliveries: dict[str, DeliveryResult] = Field(default_factory=dict)

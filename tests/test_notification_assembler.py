@@ -107,6 +107,40 @@ def test_body_includes_dup_count_when_grouped():
     assert "Duplicate alerts grouped: 7" in d.body
 
 
+def test_body_omits_dup_count_when_singleton():
+    d = decide(
+        _verdict(severity="Sev-3", dup=1), now=datetime(2026, 5, 13, 11, 0, tzinfo=UTC)
+    ).decision
+    assert "Duplicate" not in d.body
+
+
+def test_audit_trace_records_rule_applied():
+    d = decide(_verdict(severity="Sev-1"), now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC)).decision
+
+    trace = " | ".join(d.audit_trace)
+    assert "Sev-1" in trace
+    assert "page" in trace
+    assert "business_hours=no" in trace
+
+
+def test_team_slug_strips_team_suffix_and_lowercases():
+    # The slug → channel conversion drives RA-005 channel routing; pin it so a
+    # slug regression can't silently degrade channel selection.
+    d = decide(
+        _verdict(severity="Sev-2", team="Order Experience"),
+        now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC),
+    ).decision
+    assert d.channel == "team-order-experience"
+
+
+def test_missing_engineer_yields_empty_mentions():
+    d = decide(
+        _verdict(severity="Sev-1", engineer=None),
+        now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC),
+    ).decision
+    assert d.mentions == []
+
+
 # ─── decide() — war-room half (former RA-006) ──────────────────────────────
 
 

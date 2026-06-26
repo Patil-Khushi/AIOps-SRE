@@ -1,0 +1,187 @@
+{
+  "agent": "notification_router",
+  "version": "0.1.0",
+  "description": "Routing decisions for representative TriageVerdicts at fixed times-of-day (standalone RA-005 contract).",
+  "cases": [
+    {
+      "id": "sev1-payment-always-pages",
+      "description": "Sev-1 at 02:00 UTC must page the on-call regardless of business hours.",
+      "input": {
+        "verdict": {
+          "affected_service": "payment",
+          "severity": "Sev-1",
+          "confidence_score": 0.95,
+          "alert_summary": "Payment service down — 100% 5xx rate",
+          "assigned_team": "Payments Team",
+          "assigned_engineer": "oncall@payments.example.com",
+          "recommended_runbook": "https://runbooks.example.com/payment-cpu",
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T02:00:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["payment-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T02:00:00Z"
+      },
+      "expected": {
+        "chat_severity": "p1",
+        "channel": "incidents",
+        "actions": ["page_oncall", "post_to_chat"],
+        "mentions": ["@oncall@payments.example.com"]
+      }
+    },
+    {
+      "id": "sev2-cart-business-hours-chats-team",
+      "description": "Sev-2 at 14:00 UTC (business hours) should chat the owning team channel, no page.",
+      "input": {
+        "verdict": {
+          "affected_service": "cart",
+          "severity": "Sev-2",
+          "confidence_score": 0.8,
+          "alert_summary": "Cart service error rate spike",
+          "assigned_team": "Order Experience",
+          "assigned_engineer": "oncall@order-experience.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T14:00:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["cart-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T14:00:00Z"
+      },
+      "expected": {
+        "chat_severity": "p2",
+        "channel": "team-order-experience",
+        "actions": ["post_to_chat"],
+        "mentions": ["@oncall@order-experience.example.com"]
+      }
+    },
+    {
+      "id": "sev2-after-hours-pages-oncall",
+      "description": "Same Sev-2 cart issue at 23:30 UTC (after hours) should page the on-call.",
+      "input": {
+        "verdict": {
+          "affected_service": "cart",
+          "severity": "Sev-2",
+          "confidence_score": 0.8,
+          "alert_summary": "Cart service error rate spike",
+          "assigned_team": "Order Experience",
+          "assigned_engineer": "oncall@order-experience.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T23:30:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["cart-002"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T23:30:00Z"
+      },
+      "expected": {
+        "chat_severity": "p2",
+        "channel": "incidents",
+        "actions": ["page_oncall", "post_to_chat"],
+        "mentions": ["@oncall@order-experience.example.com"]
+      }
+    },
+    {
+      "id": "sev3-recommendation-no-mention",
+      "description": "Sev-3 routes to the daytime triage channel and never mentions the on-call.",
+      "input": {
+        "verdict": {
+          "affected_service": "recommendation",
+          "severity": "Sev-3",
+          "confidence_score": 0.7,
+          "alert_summary": "Recommendation latency p95 above target",
+          "assigned_team": "Personalization Team",
+          "assigned_engineer": "oncall@personalization.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 4,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T11:00:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["rec-001", "rec-002", "rec-003", "rec-004"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T11:00:00Z"
+      },
+      "expected": {
+        "chat_severity": "p3",
+        "channel": "ops-daytime",
+        "actions": ["post_to_chat"],
+        "mentions": []
+      }
+    },
+    {
+      "id": "sev4-noise-bucket",
+      "description": "Sev-4 informational alerts go to the noise bucket with INFO severity, no mentions.",
+      "input": {
+        "verdict": {
+          "affected_service": "frontend",
+          "severity": "Sev-4",
+          "confidence_score": 0.4,
+          "alert_summary": "Frontend image latency above informational threshold",
+          "assigned_team": "Web Experience",
+          "assigned_engineer": null,
+          "recommended_runbook": null,
+          "duplicate_alert_count": 1,
+          "status": "Active",
+          "audit_metadata": {
+            "created_at": "2026-05-13T11:00:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["fe-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T11:00:00Z"
+      },
+      "expected": {
+        "chat_severity": "info",
+        "channel": "alerts-noise",
+        "actions": ["post_to_chat"],
+        "mentions": []
+      }
+    },
+    {
+      "id": "suppressed-skips-chatops",
+      "description": "A Suppressed verdict (RA-001 marked it a duplicate) must not produce any actions, so route() short-circuits the chatops emit.",
+      "input": {
+        "verdict": {
+          "affected_service": "payment",
+          "severity": "Sev-2",
+          "confidence_score": 0.85,
+          "alert_summary": "Payment service error rate spike (duplicate cluster)",
+          "assigned_team": "Payments Team",
+          "assigned_engineer": "oncall@payments.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 3,
+          "status": "Suppressed",
+          "audit_metadata": {
+            "created_at": "2026-05-13T14:05:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["payment-dup-001"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T14:05:00Z"
+      },
+      "expected": {
+        "chat_severity": "info",
+        "channel": "suppressed",
+        "actions": [],
+        "mentions": []
+      }
+    }
+  ]
+}

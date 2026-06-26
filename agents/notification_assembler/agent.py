@@ -35,8 +35,10 @@ from .models import (
     NotificationAssembly,
     NotificationOutcome,
     RoutingDecision,
+    RoutingOutcome,
     TimelineEvent,
     WarRoomAssembly,
+    WarRoomOutcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -715,6 +717,62 @@ def assemble_war_room(verdict: TriageVerdict, *, now: datetime | None = None) ->
     if assembly.assembled:
         assembly = _create_bridge(assembly)
     return assembly
+
+
+# ─── standalone-unit entry points ──────────────────────────────────────────
+# These let the individually-sellable wrapper agents (``notification_router`` /
+# ``war_room_assembler``) be deployed alone with their original one-job-each
+# contract. The integrated product flow uses :func:`notify` instead (one
+# message). The implementation stays here so there is a single source of truth.
+
+
+def decide_routing(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingDecision:
+    """Routing-only pure decision (former RA-005 ``decide``). No war room."""
+    now = now or datetime.now(UTC)
+    return _decide_routing(verdict, now, _resolve_oncall(verdict))
+
+
+def route(verdict: TriageVerdict, *, now: datetime | None = None) -> RoutingOutcome:
+    """Routing-only emit (standalone Notification Router): decide and send ONE
+    routing notification through the chatops seam. No war room is stood up.
+    Suppressed verdicts short-circuit the emit (empty actions)."""
+    decision = decide_routing(verdict, now=now)
+    if not decision.actions:
+        return RoutingOutcome(decision=decision, deliveries={})
+    msg = _combined_chat_message(verdict, decision, None)
+    deliveries = get_client().send(msg)
+    return RoutingOutcome(decision=decision, deliveries=deliveries)
+
+
+def _war_room_opening_chat_message(
+    verdict: TriageVerdict, assembly: WarRoomAssembly
+) -> ChatMessage:
+    """The standalone war-room opening message (former RA-006 emit): posted to
+    the war-room channel with the context pack + join link, not the routing
+    channel."""
+    return ChatMessage(
+        channel=assembly.channel,
+        severity=assembly.chat_severity,
+        title=assembly.title,
+        body=_render_war_room_opening(assembly),
+        incident_id=verdict.incident_id,
+        service=verdict.affected_service,
+        mentions=[s.handle for s in assembly.invited],
+        actions=["open_war_room", "post_context_pack"],
+        timestamp=assembly.assembled_at,
+    )
+
+
+def assemble(verdict: TriageVerdict, *, now: datetime | None = None) -> WarRoomOutcome:
+    """War-room-only emit (standalone War-Room Assembler): create the bridge and
+    post the war-room opening through the chatops seam. No routing notification.
+    A no-op assembly (Sev-3/Sev-4/Suppressed) short-circuits the emit."""
+    assembly = assemble_war_room(verdict, now=now)
+    if not assembly.assembled:
+        return WarRoomOutcome(assembly=assembly, deliveries={})
+    msg = _war_room_opening_chat_message(verdict, assembly)
+    deliveries = get_client().send(msg)
+    return WarRoomOutcome(assembly=assembly, deliveries=deliveries)
 
 
 def run(input_payload: dict) -> dict[str, Any]:

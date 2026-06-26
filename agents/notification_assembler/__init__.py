@@ -14,10 +14,13 @@ Public surface::
 from __future__ import annotations
 
 from .agent import (
+    assemble,
     assemble_war_room,
     decide,
+    decide_routing,
     decide_war_room,
     notify,
+    route,
     run,
 )
 from .models import (
@@ -26,8 +29,10 @@ from .models import (
     NotificationAssembly,
     NotificationOutcome,
     RoutingDecision,
+    RoutingOutcome,
     TimelineEvent,
     WarRoomAssembly,
+    WarRoomOutcome,
 )
 
 __all__ = [
@@ -36,11 +41,16 @@ __all__ = [
     "NotificationAssembly",
     "NotificationOutcome",
     "RoutingDecision",
+    "RoutingOutcome",
     "TimelineEvent",
     "WarRoomAssembly",
+    "WarRoomOutcome",
+    "assemble",
     "assemble_war_room",
     "decide",
+    "decide_routing",
     "decide_war_room",
     "notify",
+    "route",
     "run",
 ]

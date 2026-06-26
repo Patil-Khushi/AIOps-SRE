@@ -36,11 +36,21 @@ function Chip({ children, className }: { children: React.ReactNode; className?: 
   return <span className={clsx('chip border', className)}>{children}</span>;
 }
 
-const ATT_STYLE: Record<string, string> = {
-  joined: 'border-ok/40 text-ok',
-  declined: 'border-bad/40 text-bad',
-  invited: 'border-ink-300/40 text-ink-400',
+// Slack invite outcome the agent records per SME (InvitedSME.invite_status):
+// invited / already_in / simulated / no_id / failed:<err> / pending. Colour by
+// outcome so an operator sees who actually got pulled in vs. who couldn't be.
+const INVITE_STYLE: Record<string, string> = {
+  invited: 'border-ok/40 text-ok',
+  already_in: 'border-ok/40 text-ok',
+  simulated: 'border-accent/40 text-accent',
+  no_id: 'border-warn/40 text-warn',
+  pending: 'border-ink-300/40 text-ink-400',
 };
+function inviteStyle(status?: string | null): string {
+  if (!status) return 'border-ink-300/40 text-ink-400';
+  if (status.startsWith('failed')) return 'border-bad/40 text-bad';
+  return INVITE_STYLE[status] ?? 'border-ink-300/40 text-ink-400';
+}
 
 // Response mode (PAGE / NOTIFY / LOG) the agent decided for the one message.
 type ResponseMode = 'PAGE' | 'NOTIFY' | 'LOG';
@@ -149,8 +159,8 @@ function AssemblyView({ a }: { a: WarRoomAssembly }) {
               <li key={i} className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span className="flex items-center gap-2">
                   <span className="font-mono">{s.name || s.handle}</span>
-                  <Chip className={ATT_STYLE[s.attendance ?? 'invited'] ?? ''}>
-                    {s.attendance ?? 'invited'}
+                  <Chip className={inviteStyle(s.invite_status)}>
+                    {s.invite_status ?? 'pending'}
                   </Chip>
                 </span>
                 <span className="text-xs text-ink-400">{s.team ?? s.reason}</span>
