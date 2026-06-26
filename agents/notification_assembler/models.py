@@ -28,7 +28,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aiops.tools.chatops import DeliveryResult, Severity
 
-
 # ─── Routing (was RA-005 Notification Router) ──────────────────────────────
 
 

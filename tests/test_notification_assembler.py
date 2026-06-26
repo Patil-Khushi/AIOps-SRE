@@ -101,7 +101,9 @@ def test_sev4_goes_to_noise_bucket():
 
 
 def test_body_includes_dup_count_when_grouped():
-    d = decide(_verdict(severity="Sev-3", dup=7), now=datetime(2026, 5, 13, 11, 0, tzinfo=UTC)).decision
+    d = decide(
+        _verdict(severity="Sev-3", dup=7), now=datetime(2026, 5, 13, 11, 0, tzinfo=UTC)
+    ).decision
     assert "Duplicate alerts grouped: 7" in d.body
 
 

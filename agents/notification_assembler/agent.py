@@ -437,9 +437,7 @@ def _seed_timeline(
     return events
 
 
-def _decide_war_room(
-    verdict: TriageVerdict, now: datetime, oncall: dict | None
-) -> WarRoomAssembly:
+def _decide_war_room(verdict: TriageVerdict, now: datetime, oncall: dict | None) -> WarRoomAssembly:
     """Pure war-room decision (former RA-006 ``decide``). Returns
     ``assembled=False`` for Sev-3/Sev-4 or Suppressed verdicts."""
     sev = verdict.severity
