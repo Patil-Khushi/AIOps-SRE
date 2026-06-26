@@ -289,9 +289,10 @@ def test_severity_hint_drives_classifier_via_pure_function():
         annotations={},
     )
 
-    sev, conf = _classify_severity_rule_based(alert)
+    sev, conf, rule_label = _classify_severity_rule_based(alert)
     assert sev == "Sev-1"
     assert conf >= 0.9
+    assert rule_label and "critical_hint" in rule_label
 
 
 def test_no_flag_name_special_casing_in_classifier():
@@ -315,6 +316,7 @@ def test_no_flag_name_special_casing_in_classifier():
         },
         annotations={},
     )
-    sev, _conf = _classify_severity_rule_based(alert)
+    sev, _conf, rule_label = _classify_severity_rule_based(alert)
     # No hint, no threshold → defers to LLM. Crucially NOT a forged Sev-1.
     assert sev is None
+    assert rule_label is None
