@@ -42,6 +42,7 @@ logic itself.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -73,8 +74,24 @@ _SEV_TO_CHAT: dict[str, Severity] = {"Sev-1": Severity.P1, "Sev-2": Severity.P2}
 
 # RA-007 scopes its log/trace/metric pull to the window ending at the alert
 # time; 15 min captures the incident lead-up without dragging in unrelated
-# history. Tune per environment if incidents typically build up over longer.
-_CORRELATION_LOOKBACK = timedelta(minutes=15)
+# history. Incidents that build up over longer (e.g. a slow payment leak) would
+# have evidence cut off, so the window is tunable per environment via
+# AIOPS_IC_CORRELATION_LOOKBACK_MINUTES without a code change.
+_DEFAULT_CORRELATION_LOOKBACK_MINUTES = 15.0
+
+
+def _correlation_lookback() -> timedelta:
+    """Evidence-window lookback for RA-007, from
+    ``AIOPS_IC_CORRELATION_LOOKBACK_MINUTES`` (minutes). Falls back to the
+    default on an unset, non-numeric, or non-positive value."""
+    raw = os.environ.get("AIOPS_IC_CORRELATION_LOOKBACK_MINUTES", "").strip()
+    try:
+        minutes = float(raw)
+    except ValueError:
+        minutes = _DEFAULT_CORRELATION_LOOKBACK_MINUTES
+    if minutes <= 0:
+        minutes = _DEFAULT_CORRELATION_LOOKBACK_MINUTES
+    return timedelta(minutes=minutes)
 
 
 def _entry(stage: str, detail: str, ts: datetime) -> TimelineEntry:
@@ -98,7 +115,13 @@ def _compute_metrics(detected_at: datetime, timeline: list[TimelineEntry]) -> In
     """Derive MTTA/MTTR-style durations from the scribed timeline, all measured
     from detection (``detected_at`` = T0). Reads each stage's real ``ts`` so the
     numbers match what the timeline shows. A stage that did not run is ``None``;
-    ``total`` spans detection to the last recorded beat."""
+    ``total`` spans detection to the last recorded beat.
+
+    Only stages with a timestamp of their *own* are surfaced. Ticket creation
+    (RA-003) records no timestamp — its timeline beat borrows the classify time —
+    so there is deliberately no ``time_to_ticket`` metric: it would measure
+    classify completion under a ticket label.
+    """
     by_stage = {e.stage: e for e in timeline}
 
     def since(stage: str) -> float | None:
@@ -109,7 +132,6 @@ def _compute_metrics(detected_at: datetime, timeline: list[TimelineEntry]) -> In
     return IncidentMetrics(
         detected_at=detected_at,
         time_to_triage_seconds=since("triage"),
-        time_to_ticket_seconds=since("ticket"),
         time_to_notify_seconds=since("notify"),
         time_to_handoff_seconds=since("handoff"),
         total_coordination_seconds=total,
@@ -257,7 +279,8 @@ def command(
     timeline.append(
         _entry(
             "ticket",
-            f"RA-003 ticket={flow.ticket.ticket_id or 'none'}, created={flow.ticket.created}",
+            f"RA-003 ticket={flow.ticket.ticket_id or 'none'} "
+            f"({'opened' if flow.ticket.created else 'updated'})",
             classify_ts,
         )
     )
@@ -300,7 +323,7 @@ def command(
             CorrelationInput(
                 service=verdict.affected_service,
                 window=TimeWindow(
-                    start=alert.timestamp - _CORRELATION_LOOKBACK,
+                    start=alert.timestamp - _correlation_lookback(),
                     end=alert.timestamp,
                 ),
                 triage_verdict=verdict.model_dump(mode="json"),

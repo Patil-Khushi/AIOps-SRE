@@ -53,7 +53,6 @@ class IncidentMetrics(BaseModel):
 
     detected_at: datetime
     time_to_triage_seconds: float | None = None
-    time_to_ticket_seconds: float | None = None
     time_to_notify_seconds: float | None = None  # detect → on-call paged (MTTA)
     time_to_handoff_seconds: float | None = None
     total_coordination_seconds: float | None = None

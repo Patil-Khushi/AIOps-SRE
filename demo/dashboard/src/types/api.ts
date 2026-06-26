@@ -103,7 +103,6 @@ export interface IcTimelineEntry {
 export interface IncidentMetrics {
   detected_at: string;
   time_to_triage_seconds?: number | null;
-  time_to_ticket_seconds?: number | null;
   time_to_notify_seconds?: number | null;  // detect → on-call paged (MTTA)
   time_to_handoff_seconds?: number | null;
   total_coordination_seconds?: number | null;

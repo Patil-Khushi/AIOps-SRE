@@ -267,6 +267,15 @@ def test_all_adapters_failing_marks_handoff_not_delivered(monkeypatch):
     """If every chatops sink fails, the IC must not claim a delivered handoff."""
     _stub_flow(monkeypatch, "Sev-1")
 
+    # Pin RA-007's behaviour explicitly so the assertion can't pass for the
+    # wrong reason: without this the test would lean on the observability URLs
+    # being unreachable to make correlate() fail. We don't care which way it
+    # goes here — only that delivery fails — so make it unavailable cleanly.
+    def _correlate_unavailable(_ci):
+        raise RuntimeError("RA-007 unavailable (test)")
+
+    monkeypatch.setattr(ic, "correlate", _correlate_unavailable)
+
     class _FailingClient:
         def send(self, msg: ChatMessage) -> dict[str, DeliveryResult]:
             return {"jsonfile": DeliveryResult(adapter="jsonfile", ok=False, error="boom")}
@@ -339,6 +348,22 @@ def test_timeline_has_detected_anchor_sorted_and_metrics(monkeypatch):
     assert m.total_coordination_seconds is not None
     assert result.postmortem_seed is not None
     assert result.postmortem_seed.metrics == m
+
+
+def test_correlation_lookback_env_override(monkeypatch):
+    """RA-007's evidence window is tunable via env; bad/empty/non-positive
+    values fall back to the 15-minute default rather than breaking the pull."""
+    from datetime import timedelta
+
+    monkeypatch.delenv("AIOPS_IC_CORRELATION_LOOKBACK_MINUTES", raising=False)
+    assert ic._correlation_lookback() == timedelta(minutes=15)
+
+    monkeypatch.setenv("AIOPS_IC_CORRELATION_LOOKBACK_MINUTES", "30")
+    assert ic._correlation_lookback() == timedelta(minutes=30)
+
+    for bad in ("garbage", "0", "-5", ""):
+        monkeypatch.setenv("AIOPS_IC_CORRELATION_LOOKBACK_MINUTES", bad)
+        assert ic._correlation_lookback() == timedelta(minutes=15)
 
 
 def test_reset_state_is_callable():

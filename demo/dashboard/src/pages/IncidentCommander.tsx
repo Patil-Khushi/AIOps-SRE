@@ -304,9 +304,12 @@ function Section({
 }
 
 function Timeline({ entries }: { entries: IcTimelineEntry[] }) {
-  // Entries arrive chronologically sorted from the backend; the first is the
-  // "detected" T0 anchor, so every offset is measured from when the alert fired.
-  const t0 = entries.length ? new Date(entries[0].ts).getTime() : 0;
+  // T0 is detection (when the alert fired) so every offset reads from there.
+  // The backend stamps a "detected" beat at the alert time and sorts the
+  // timeline, so it's normally entries[0]; find it explicitly rather than
+  // assume position, falling back to the first entry if it's ever absent.
+  const anchor = entries.find((e) => e.stage === 'detected') ?? entries[0];
+  const t0 = anchor ? new Date(anchor.ts).getTime() : 0;
   return (
     <ol className="relative">
       {entries.map((e, i) => {
@@ -325,7 +328,7 @@ function Timeline({ entries }: { entries: IcTimelineEntry[] }) {
               <p className="flex flex-wrap items-baseline gap-x-2 text-[11px] font-semibold uppercase tracking-wide text-ink-800 dark:text-ink-100">
                 {e.stage}
                 <span className="font-normal normal-case tabular-nums text-ink-400 dark:text-ink-500">
-                  {formatClock(e.ts)} · {i === 0 ? 'T+0s' : `T+${formatDuration(offsetSecs)}`}
+                  {formatClock(e.ts)} · T+{formatDuration(offsetSecs)}
                 </span>
               </p>
               <p className="mt-0.5 text-[11px] leading-snug text-ink-500 dark:text-ink-400">{e.detail}</p>
@@ -342,7 +345,6 @@ function Timeline({ entries }: { entries: IcTimelineEntry[] }) {
 function MetricsStrip({ metrics }: { metrics: IncidentMetrics }) {
   const items: Array<[string, number | null | undefined]> = [
     ['Detect → Triage', metrics.time_to_triage_seconds],
-    ['Detect → Ticket', metrics.time_to_ticket_seconds],
     ['Detect → Page (MTTA)', metrics.time_to_notify_seconds],
     ['Detect → Handoff', metrics.time_to_handoff_seconds],
     ['Total', metrics.total_coordination_seconds],
