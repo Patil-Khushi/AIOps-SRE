@@ -10,7 +10,7 @@ import {
 import StatCard from '@/components/StatCard';
 import { LoadingState, ErrorState, EmptyState } from '@/components/states';
 import { useAlertsSocket } from '@/lib/ws';
-import { useFetch, clearFetchCache } from '@/hooks/useFetch';
+import { useFetch, clearAllDashboardCaches } from '@/hooks/useFetch';
 import { api } from '@/lib/api';
 import type { Severity } from '@/types/api';
 import { timeAgo, clsx } from '@/lib/format';
@@ -85,12 +85,12 @@ export default function Overview() {
   };
   const reset = async (id: string) => {
     setBusy(id);
-    try { await api.resetScenario(id); clearFetchCache(); await scenarios.refetch(); }
+    try { await api.resetScenario(id); clearAllDashboardCaches(); await scenarios.refetch(); }
     finally { setBusy(null); }
   };
   const resetAll = async () => {
     setBusy('__all__');
-    try { await api.resetAllScenarios(); clearFetchCache(); await scenarios.refetch(); }
+    try { await api.resetAllScenarios(); clearAllDashboardCaches(); await scenarios.refetch(); }
     finally { setBusy(null); }
   };
 

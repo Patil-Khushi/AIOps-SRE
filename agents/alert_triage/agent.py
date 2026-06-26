@@ -130,6 +130,10 @@ class _DedupHit:
     method: str  # "exact" | "embedding" | "new"
     alert_count: int
     source_alerts: list[str]
+    # Cosine similarity against the matched cluster centroid — populated only
+    # on the embedding path so the decision trace can show *why* it matched
+    # ("similarity 0.91"). None for exact/new matches.
+    similarity: float | None = None
 
 
 # cluster_key -> L2-normalized centroid (numpy float32 array). Bounded by the
@@ -235,6 +239,7 @@ def _dedup(alert: Alert) -> _DedupHit:
                         method="embedding",
                         alert_count=updated["alert_count"],
                         source_alerts=updated["source_alerts"],
+                        similarity=sim,
                     )
         except Exception as exc:
             logger.warning("embedding similarity skipped: %s", exc)
@@ -340,9 +345,14 @@ def _is_customer_facing(service: str) -> bool:
     return s in _CUSTOMER_FACING or any(cf in s for cf in _CUSTOMER_FACING)
 
 
-def _classify_severity_rule_based(alert: Alert) -> tuple[Severity | None, float]:
-    """Rule-based classifier. Returns (severity, confidence) or (None, 0.5)
-    when the rules don't apply and the LLM should consult.
+def _classify_severity_rule_based(alert: Alert) -> tuple[Severity | None, float, str | None]:
+    """Rule-based classifier. Returns (severity, confidence, rule_label) or
+    (None, 0.5, None) when the rules don't apply and the LLM should consult.
+
+    ``rule_label`` is a short, human-readable description of *which* rule
+    fired (e.g. ``"critical_hint (severity_hint=critical)"``,
+    ``"ratio_customer_facing (ratio=2.30, customer_facing=true)"``) so the
+    decision trace can explain the verdict instead of just stating it.
 
     Severity is derived generically — never by flag name. The precedence is:
     (1) explicit severity carried on the signal (``severity_hint``, populated
@@ -355,36 +365,38 @@ def _classify_severity_rule_based(alert: Alert) -> tuple[Severity | None, float]
     s_hint = (alert.severity_hint or "").lower()
     if s_hint:
         if "critical" in s_hint or "p1" in s_hint or "sev-1" in s_hint:
-            return "Sev-1", 0.95
+            return "Sev-1", 0.95, f"critical_hint (severity_hint={s_hint})"
         if "high" in s_hint or "p2" in s_hint or "sev-2" in s_hint:
-            return "Sev-2", 0.90
+            return "Sev-2", 0.90, f"high_hint (severity_hint={s_hint})"
         if "warning" in s_hint or "p3" in s_hint or "sev-3" in s_hint:
-            return "Sev-3", 0.85
+            return "Sev-3", 0.85, f"warning_hint (severity_hint={s_hint})"
         if "info" in s_hint or "low" in s_hint or "p4" in s_hint or "sev-4" in s_hint:
-            return "Sev-4", 0.85
+            return "Sev-4", 0.85, f"info_hint (severity_hint={s_hint})"
 
     cust = _is_customer_facing(alert.service)
 
     if alert.threshold is not None and alert.threshold > 0:
         ratio = alert.value / alert.threshold
+        cf = "true" if cust else "false"
         if ratio >= 2.0 and cust:
-            return "Sev-1", 0.90
+            return "Sev-1", 0.90, f"ratio_customer_facing (ratio={ratio:.2f}, customer_facing={cf})"
         if ratio >= 1.5 and cust:
-            return "Sev-2", 0.85
+            return "Sev-2", 0.85, f"ratio_customer_facing (ratio={ratio:.2f}, customer_facing={cf})"
         if ratio >= 1.0 and cust:
-            return "Sev-2", 0.75
+            return "Sev-2", 0.75, f"ratio_customer_facing (ratio={ratio:.2f}, customer_facing={cf})"
         if ratio >= 1.0:
-            return "Sev-3", 0.80
-        return "Sev-4", 0.75
+            return "Sev-3", 0.80, f"ratio_threshold (ratio={ratio:.2f}, customer_facing={cf})"
+        return "Sev-4", 0.75, f"ratio_below_threshold (ratio={ratio:.2f}, customer_facing={cf})"
 
     metric_lower = alert.metric.lower()
     if "cpu" in metric_lower or "memory" in metric_lower:
+        label = f"saturation_metric ({alert.metric}={alert.value})"
         if alert.value >= 95:
-            return ("Sev-1", 0.85) if cust else ("Sev-2", 0.80)
+            return ("Sev-1", 0.85, label) if cust else ("Sev-2", 0.80, label)
         if alert.value >= 80:
-            return ("Sev-2", 0.75) if cust else ("Sev-3", 0.75)
+            return ("Sev-2", 0.75, label) if cust else ("Sev-3", 0.75, label)
 
-    return None, 0.5
+    return None, 0.5, None
 
 
 # Severity-response parser. Tolerant of case + label variations the model may
@@ -636,7 +648,11 @@ def _generate_summary(
     alert: Alert,
     metrics_ctx: dict[str, Any] | None,
     traces_ctx: dict[str, Any] | None,
-) -> str:
+) -> tuple[str, str]:
+    """Stage-7 summary generation. Returns ``(summary, trace_line)`` where
+    ``trace_line`` explains how the summary was produced — the actual LLM
+    sentence on success, or the specific reason a fallback template was used
+    (rejected / stub / exception) so the decision trace is self-explaining."""
     metric_results = (metrics_ctx or {}).get("results", {}) if metrics_ctx else {}
     # Render the metric bundle as `key=value` pairs. Numeric values pass
     # through as-is; the string fallback in _fetch_metric_context (when a
@@ -673,7 +689,10 @@ def _generate_summary(
         text = (resp.text or "").strip()
         # Detect stub-provider echo (it prefixes "[stub] echoing user message:")
         if not text or text.startswith("[stub]"):
-            return _template_summary(alert)
+            return (
+                _template_summary(alert),
+                "LLM summary unavailable (empty/stub response) → using fallback template",
+            )
         # Take first non-empty line, cap length
         first = next((ln for ln in text.split("\n") if ln.strip()), "")
         # Guard: occasionally a reasoning model returns the severity-classifier
@@ -682,11 +701,18 @@ def _generate_summary(
         # fall back to the deterministic template when the "summary" is just a
         # bare Sev-N verdict.
         if _SUMMARY_LOOKS_LIKE_SEVERITY_RE.match(first):
-            return _template_summary(alert)
-        return first[:200]
+            return (
+                _template_summary(alert),
+                "LLM response rejected (looks like a severity verdict) → using fallback template",
+            )
+        summary = first[:200]
+        return summary, f'LLM summary: "{summary}"'
     except Exception as exc:
         logger.warning("LLM summary failed: %s", exc)
-        return _template_summary(alert)
+        return (
+            _template_summary(alert),
+            f"LLM call failed ({type(exc).__name__}) → using fallback template",
+        )
 
 
 # ─── entry point ────────────────────────────────────────────────────────────
@@ -696,6 +722,19 @@ def run(input: dict[str, Any]) -> dict[str, Any]:
     """Eval-harness contract: dict-in, dict-out shim around ``triage``."""
     verdict, _verdict_id = triage(Alert(**input))
     return verdict.model_dump(mode="json")
+
+
+def _stage8_persist_line(verdict_id: int | None, cluster_key: str | None) -> str:
+    """The Stage-8 persistence trace line. Shared by the fresh-triage path and
+    the idempotency reconstruction so a cached return is byte-identical to the
+    verdict it caches (the ``persisted`` line is appended *after* the row write
+    on the fresh path, so it never lands in the persisted trace itself — the
+    reconstruction re-derives it here from the row's own id + cluster_key).
+
+    A ``None`` verdict_id renders as ``<not persisted>`` rather than ``None`` so
+    a failed DB write is unambiguous in the trace (vs. an intentionally-null id)."""
+    id_str = str(verdict_id) if verdict_id is not None else "<not persisted>"
+    return f"persisted verdict (verdict_id={id_str}) to cluster_key={(cluster_key or '')[:8]}"
 
 
 def _verdict_from_row(row: dict[str, Any]) -> TriageVerdict:
@@ -711,11 +750,17 @@ def _verdict_from_row(row: dict[str, Any]) -> TriageVerdict:
         created_at_dt = created_at
     else:
         created_at_dt = datetime.now(UTC)
+    trace = list(audit_dict.get("decision_trace", []))
+    # Re-derive the Stage-8 persist line (never stored in the row — see
+    # _stage8_persist_line) so the cached verdict matches the fresh one.
+    persist_line = _stage8_persist_line(row.get("id"), row.get("cluster_key"))
+    if not any(line.startswith("persisted verdict (verdict_id=") for line in trace):
+        trace.append(persist_line)
     audit = AuditMetadata(
         created_at=created_at_dt,
         created_by=audit_dict.get("created_by", "RA-001"),
         source_alerts=list(audit_dict.get("source_alerts", [])),
-        decision_trace=list(audit_dict.get("decision_trace", [])),
+        decision_trace=trace,
     )
     return TriageVerdict(
         incident_id=row.get("incident_id"),
@@ -761,20 +806,32 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
         return _verdict_from_row(cached), cached.get("id")
 
     decision_trace: list[str] = []
-    # Stage 1+2: validate + normalize — done by Pydantic on Alert construction.
+    # Stage 1: validate — Pydantic enforced the Alert shape on construction.
     decision_trace.append(
         f"received alert_id={alert.alert_id} service={alert.service} source={alert.source}"
     )
+    # Stage 2: normalize — the canonical Alert is built by the caller in v1, so
+    # by this point the shape is guaranteed; record the checkpoint explicitly.
+    decision_trace.append("normalized alert shape verified")
 
     # Stage 3: deduplicate (persisted via aiops.state)
     hit = _dedup(alert)
     duplicate_count = hit.alert_count
     if hit.is_new:
-        decision_trace.append("new alert cluster")
+        decision_trace.append(
+            f"new alert cluster — no active match found (cluster_key={hit.cluster_key[:8]})"
+        )
         status: Status = "Active"
+    elif hit.method == "embedding" and hit.similarity is not None:
+        decision_trace.append(
+            f"matched duplicate alert cluster via embedding match "
+            f"(similarity {hit.similarity:.2f}, size={duplicate_count}) → suppressed"
+        )
+        status = "Suppressed"
     else:
         decision_trace.append(
-            f"matched duplicate alert cluster via {hit.method} match (size={duplicate_count})"
+            f"matched duplicate alert cluster via {hit.method} match "
+            f"(size={duplicate_count}) → suppressed"
         )
         status = "Suppressed"
 
@@ -791,13 +848,21 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
             decision_trace.append(f"queried {len(results)} metric series but all returned empty")
     traces_ctx = _fetch_trace_context(alert, decision_trace)
     if traces_ctx is not None:
-        decision_trace.append(
-            f"fetched {traces_ctx.get('trace_count', 0)} trace summaries from Jaeger"
-        )
+        tcount = traces_ctx.get("trace_count", 0)
+        sample = (traces_ctx.get("traces") or [{}])[0]
+        sample_id = sample.get("trace_id")
+        if sample_id:
+            decision_trace.append(
+                f"fetched {tcount} trace summaries from Jaeger "
+                f"(sample trace_id={sample_id}, spans={sample.get('span_count')})"
+            )
+        else:
+            decision_trace.append(f"fetched {tcount} trace summaries from Jaeger")
 
     # Stage 5: severity
-    sev, conf = _classify_severity_rule_based(alert)
+    sev, conf, rule_label = _classify_severity_rule_based(alert)
     if sev is None:
+        decision_trace.append("no rule matched → consulting LLM for severity")
         sev, conf, llm_ok = _classify_severity_llm(alert)
         if llm_ok:
             decision_trace.append(
@@ -809,7 +874,10 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
                 f"defaulted to {sev} ({conf:.2f}) — treat as low-confidence, review original alert"
             )
     else:
-        decision_trace.append(f"severity from rule-based mapping ({sev}, confidence={conf:.2f})")
+        decision_trace.append(
+            f"severity from rule-based mapping: matched rule {rule_label} "
+            f"→ {sev}, confidence {conf:.2f}"
+        )
 
     # Stage 6: ownership
     registry = get_registry()
@@ -828,11 +896,14 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
             cmdb_runbook = cmdb.data.get("runbook")
             if isinstance(cmdb_runbook, str) and cmdb_runbook.strip():
                 runbook = cmdb_runbook.strip()
-            decision_trace.append(f"assigned to {team} via CMDB lookup")
+            decision_trace.append(f"assigned to {team} via CMDB lookup (service={alert.service})")
         else:
-            decision_trace.append("CMDB lookup returned no match; defaulted to Platform On-Call")
+            decision_trace.append(
+                f"CMDB lookup returned no match for service={alert.service} "
+                f"→ fallback to Platform On-Call"
+            )
     except KeyError:
-        decision_trace.append("itsm.cmdb.lookup not registered; defaulted to Platform On-Call")
+        decision_trace.append("itsm.cmdb.lookup not registered → fallback to Platform On-Call")
 
     engineer: str | None = None
     try:
@@ -840,22 +911,28 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
         # incident → same engineer); the mock provider's signature doesn't
         # declare it, so the registry's kwargs filter drops it there.
         oc = registry.call("oncall.schedule.lookup", team=team, service=alert.service)
-        if oc.ok and oc.data:
-            oc_engineer = oc.data.get("engineer_email")
-            # Same shape as the CMDB block: refuse to set a verdict field
-            # to an empty string or a non-string just because the provider
-            # returned a falsy value.
-            if isinstance(oc_engineer, str) and oc_engineer.strip():
-                engineer = oc_engineer.strip()
-                decision_trace.append(f"on-call engineer resolved ({engineer})")
+        oc_engineer = oc.data.get("engineer_email") if (oc.ok and oc.data) else None
+        # Same shape as the CMDB block: refuse to set a verdict field
+        # to an empty string or a non-string just because the provider
+        # returned a falsy value.
+        if isinstance(oc_engineer, str) and oc_engineer.strip():
+            engineer = oc_engineer.strip()
+            decision_trace.append(f"on-call engineer resolved ({engineer}) for team {team}")
+        else:
+            decision_trace.append(
+                f"on-call lookup returned no engineer for team {team} → team channel only"
+            )
     except KeyError:
         decision_trace.append("oncall.schedule.lookup not registered; no engineer assigned")
 
     # Stage 7: summary
-    summary = _generate_summary(alert, metrics_ctx, traces_ctx)
-    decision_trace.append("generated incident summary")
+    summary, summary_trace = _generate_summary(alert, metrics_ctx, traces_ctx)
+    decision_trace.append(summary_trace)
 
     # Stage 8: assemble + persist
+    decision_trace.append(
+        f'assembled verdict: sev={sev}, status={status}, team="{team}"'
+    )
     audit = AuditMetadata(
         created_at=datetime.now(UTC),
         created_by="RA-001",
@@ -880,6 +957,16 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
         verdict_id = state_repo.save_verdict(
             verdict, cluster_key=hit.cluster_key, alert_id=alert.alert_id
         )
+        # Append to the verdict's own (validated) trace list so the persist
+        # outcome — which can only be known *after* the write — is visible in
+        # the live response. The persisted row itself was written above, so it
+        # legitimately doesn't carry this line; that's fine, it's a meta event.
+        verdict.audit_metadata.decision_trace.append(
+            _stage8_persist_line(verdict_id, hit.cluster_key)
+        )
     except Exception as exc:
         logger.warning("verdict persistence failed: %s", exc)
+        verdict.audit_metadata.decision_trace.append(
+            f"verdict persistence failed ({type(exc).__name__}) — verdict returned but not saved"
+        )
     return verdict, verdict_id

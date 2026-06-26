@@ -7,16 +7,36 @@ import { SeverityBadge, StatusChip } from '@/components/SeverityBadge';
 import type { TriageVerdict } from '@/types/api';
 import { clsx, timeAgo } from '@/lib/format';
 
-// Tag the decision-trace lines into pipeline stages so we can visualize the
-// 8-stage workflow. Tag heuristics mirror the strings emitted by
-// agents/alert_triage/agent.py — keep in lockstep.
+// Tag the decision-trace lines into the 8 pipeline stages so we can visualize
+// the workflow. Tag heuristics mirror the strings emitted by
+// agents/alert_triage/agent.py::triage — keep in lockstep. ORDER MATTERS:
+// first match wins, so stages whose markers are unique sentinels are checked
+// before the broad keyword stages. In particular Persist precedes Severity /
+// Correlate / Ownership because its "assembled verdict" line embeds the team
+// name (which can be "Platform On-Call", an Ownership keyword); and Severity
+// precedes Correlate because a "saturation_metric" rule label contains
+// "metric" (a Correlate keyword).
 const STAGE_TAGS: { stage: string; match: RegExp }[] = [
-  { stage: 'Validate',      match: /^received alert_id/ },
-  { stage: 'Deduplicate',   match: /(new alert cluster|matched duplicate)/ },
-  { stage: 'Correlate',     match: /(metric|trace|metrics_ctx|trace_ctx|fetched)/ },
-  { stage: 'Severity',      match: /severity (from|inferred)/ },
-  { stage: 'Ownership',     match: /(CMDB|on-call|Platform On-Call|assigned to)/ },
-  { stage: 'Summary',       match: /(summary|generated incident)/i },
+  { stage: 'Validate',    match: /^received alert_id/ },
+  { stage: 'Normalize',   match: /^normalized alert/ },
+  { stage: 'Deduplicate', match: /(new alert cluster|matched duplicate alert cluster)/ },
+  { stage: 'Persist',     match: /(assembled verdict|persisted verdict|persistence failed)/i },
+  { stage: 'Severity',    match: /(^severity|no rule matched|consulting LLM for severity)/i },
+  { stage: 'Correlate',   match: /(metric|trace|fetched|prometheus|jaeger|metrics_ctx|trace_ctx)/i },
+  { stage: 'Ownership',   match: /(CMDB|on-call|oncall|Platform On-Call|assigned to|team channel)/i },
+  { stage: 'Summary',     match: /(LLM summary|response rejected|fallback template|incident summary)/i },
+];
+
+// The 8 stages, in pipeline order. ``key`` matches the tag emitted above.
+const STAGES: { idx: number; key: string; title: string }[] = [
+  { idx: 1, key: 'Validate',    title: 'Validate' },
+  { idx: 2, key: 'Normalize',   title: 'Normalize' },
+  { idx: 3, key: 'Deduplicate', title: 'Deduplicate' },
+  { idx: 4, key: 'Correlate',   title: 'Correlate (Prometheus + Jaeger)' },
+  { idx: 5, key: 'Severity',    title: 'Classify severity' },
+  { idx: 6, key: 'Ownership',   title: 'Resolve ownership' },
+  { idx: 7, key: 'Summary',     title: 'Generate summary' },
+  { idx: 8, key: 'Persist',     title: 'Assemble & persist verdict' },
 ];
 
 function tagStage(line: string): string {
@@ -111,12 +131,12 @@ export default function Reasoning() {
                   <span className="chip">{selected.audit_metadata.created_by}</span>
                 </div>
                 <div className="card-body space-y-3">
-                  <Stage idx={1} title="Validate / Normalize" lines={filterLines(selected, 'Validate')} />
-                  <Stage idx={2} title="Deduplicate" lines={filterLines(selected, 'Deduplicate')} />
-                  <Stage idx={3} title="Correlate (Prom + Jaeger)" lines={filterLines(selected, 'Correlate')} />
-                  <Stage idx={4} title="Classify severity" lines={filterLines(selected, 'Severity')} />
-                  <Stage idx={5} title="Resolve ownership" lines={filterLines(selected, 'Ownership')} />
-                  <Stage idx={6} title="Generate summary" lines={filterLines(selected, 'Summary')} />
+                  {STAGES.map((s) => (
+                    <Stage key={s.key} idx={s.idx} title={s.title} lines={filterLines(selected, s.key)} />
+                  ))}
+                  {filterLines(selected, 'Other').length > 0 && (
+                    <Stage idx={0} title="Other / uncategorized" lines={filterLines(selected, 'Other')} />
+                  )}
                 </div>
               </div>
 

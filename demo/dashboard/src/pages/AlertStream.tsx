@@ -8,10 +8,11 @@ import { api } from '@/lib/api';
 import { setConsoleAgent } from '@/lib/consoleScope';
 import type { Severity, PrometheusAlert, TriageVerdict } from '@/types/api';
 import { timeAgo, clsx } from '@/lib/format';
+import { makeCache } from '@/lib/persistentCache';
 
-// Module-level cache: persists across navigation so clicking the same alert
-// again shows the verdict instantly without re-running the LLM pipeline.
-const triageCache = new Map<string, TriageVerdict>();
+// localStorage-backed: verdict survives page reloads and new tabs so the LLM
+// pipeline isn't re-run when the same alert is clicked again.
+const triageCache = makeCache<TriageVerdict>('triage');
 
 function inferSeverity(hint: string | null | undefined): Severity {
   const s = (hint || '').toLowerCase();
