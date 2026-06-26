@@ -729,8 +729,12 @@ def _stage8_persist_line(verdict_id: int | None, cluster_key: str | None) -> str
     the idempotency reconstruction so a cached return is byte-identical to the
     verdict it caches (the ``persisted`` line is appended *after* the row write
     on the fresh path, so it never lands in the persisted trace itself — the
-    reconstruction re-derives it here from the row's own id + cluster_key)."""
-    return f"persisted verdict (verdict_id={verdict_id}) to cluster_key={(cluster_key or '')[:8]}"
+    reconstruction re-derives it here from the row's own id + cluster_key).
+
+    A ``None`` verdict_id renders as ``<not persisted>`` rather than ``None`` so
+    a failed DB write is unambiguous in the trace (vs. an intentionally-null id)."""
+    id_str = str(verdict_id) if verdict_id is not None else "<not persisted>"
+    return f"persisted verdict (verdict_id={id_str}) to cluster_key={(cluster_key or '')[:8]}"
 
 
 def _verdict_from_row(row: dict[str, Any]) -> TriageVerdict:

@@ -11,8 +11,9 @@ interface State<T> {
 const fetchCache = makeCache<unknown>('fetch');
 
 // Call after a scenario reset so pages don't show pre-reset data from cache.
-// Clears every cache namespace (fetch, triage, rca) in one shot.
-export function clearFetchCache(): void {
+// Clears EVERY dashboard cache namespace (fetch, triage, rca) in one shot —
+// not just the fetch cache — which is the intended scenario-reset behaviour.
+export function clearAllDashboardCaches(): void {
   clearAllCaches();
 }
 
