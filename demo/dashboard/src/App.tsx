@@ -9,11 +9,10 @@ import SreOps from '@/pages/SreOps';
 import Integrations from '@/pages/Integrations';
 import AlertStream from '@/pages/AlertStream';
 import Approvals from '@/pages/Approvals';
-import Notifications from '@/pages/Notifications';
+import NotificationAssembler from '@/pages/NotificationAssembler';
 import Reasoning from '@/pages/Reasoning';
 import RcaConsole from '@/pages/RcaConsole';
 import IncidentCommander from '@/pages/IncidentCommander';
-import WarRoom from '@/pages/WarRoom';
 import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
 import Knowledge from '@/pages/Knowledge';
@@ -42,9 +41,10 @@ export default function App() {
         <Route path="alerts" element={<AlertStream />} />
         <Route path="rca" element={<RcaConsole />} />
         <Route path="incident-commander" element={<IncidentCommander />} />
-        <Route path="war-room" element={<WarRoom />} />
         <Route path="approvals" element={<Approvals />} />
-        <Route path="notifications" element={<Notifications />} />
+        <Route path="notifications" element={<NotificationAssembler />} />
+        {/* Legacy war-room path → folded into the combined notifications surface. */}
+        <Route path="war-room" element={<Navigate to="/console/notifications" replace />} />
         <Route path="reasoning" element={<Reasoning />} />
         <Route path="knowledge" element={<Knowledge />} />
         <Route path="topology" element={<Topology />} />

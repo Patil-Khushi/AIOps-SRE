@@ -1,13 +1,14 @@
 {
-  "agent": "notification_router",
+  "agent": "notification_assembler",
   "version": "0.1.0",
-  "description": "Routing decisions for representative TriageVerdicts at fixed times-of-day.",
+  "description": "Combined routing + war-room decisions for representative TriageVerdicts at fixed times-of-day. Routing fields (chat_severity / channel / actions / mentions) assert the notification route; war_room_* fields assert whether the Sev-1/Sev-2 war room is stood up. War-room scalar fields are deterministic with or without a live cluster (the context pack degrades to 'unavailable' off-cluster but does not change these outcomes).",
   "cases": [
     {
-      "id": "sev1-payment-always-pages",
-      "description": "Sev-1 at 02:00 UTC must page the on-call regardless of business hours.",
+      "id": "sev1-payment-always-pages-and-assembles",
+      "description": "Sev-1 at 02:00 UTC pages the on-call regardless of hours AND stands up the war room.",
       "input": {
         "verdict": {
+          "incident_id": "INC0012345",
           "affected_service": "payment",
           "severity": "Sev-1",
           "confidence_score": 0.95,
@@ -30,12 +31,15 @@
         "chat_severity": "p1",
         "channel": "incidents",
         "actions": ["page_oncall", "post_to_chat"],
-        "mentions": ["@oncall@payments.example.com"]
+        "mentions": ["@oncall@payments.example.com"],
+        "war_room_assembled": true,
+        "war_room_channel": "war-room-inc0012345",
+        "war_room_chat_severity": "p1"
       }
     },
     {
-      "id": "sev2-cart-business-hours-chats-team",
-      "description": "Sev-2 at 14:00 UTC (business hours) should chat the owning team channel, no page.",
+      "id": "sev2-cart-business-hours-chats-team-and-assembles",
+      "description": "Sev-2 at 14:00 UTC chats the owning team (no page) and still assembles a P2 war room.",
       "input": {
         "verdict": {
           "affected_service": "cart",
@@ -60,12 +64,15 @@
         "chat_severity": "p2",
         "channel": "team-order-experience",
         "actions": ["post_to_chat"],
-        "mentions": ["@oncall@order-experience.example.com"]
+        "mentions": ["@oncall@order-experience.example.com"],
+        "war_room_assembled": true,
+        "war_room_channel": "war-room-cart",
+        "war_room_chat_severity": "p2"
       }
     },
     {
-      "id": "sev2-after-hours-pages-oncall",
-      "description": "Same Sev-2 cart issue at 23:30 UTC (after hours) should page the on-call.",
+      "id": "sev2-after-hours-pages-oncall-and-assembles",
+      "description": "Same Sev-2 cart issue at 23:30 UTC (after hours) pages the on-call and assembles the room.",
       "input": {
         "verdict": {
           "affected_service": "cart",
@@ -90,12 +97,13 @@
         "chat_severity": "p2",
         "channel": "incidents",
         "actions": ["page_oncall", "post_to_chat"],
-        "mentions": ["@oncall@order-experience.example.com"]
+        "mentions": ["@oncall@order-experience.example.com"],
+        "war_room_assembled": true
       }
     },
     {
-      "id": "sev3-recommendation-no-mention",
-      "description": "Sev-3 routes to the daytime triage channel and never mentions the on-call.",
+      "id": "sev3-recommendation-no-mention-no-room",
+      "description": "Sev-3 routes to the daytime triage channel, never mentions the on-call, and warrants no war room.",
       "input": {
         "verdict": {
           "affected_service": "recommendation",
@@ -120,12 +128,14 @@
         "chat_severity": "p3",
         "channel": "ops-daytime",
         "actions": ["post_to_chat"],
-        "mentions": []
+        "mentions": [],
+        "war_room_assembled": false,
+        "war_room_reason_contains": "below Sev-2"
       }
     },
     {
-      "id": "sev4-noise-bucket",
-      "description": "Sev-4 informational alerts go to the noise bucket with INFO severity, no mentions.",
+      "id": "sev4-noise-bucket-no-room",
+      "description": "Sev-4 informational alerts go to the noise bucket with INFO severity, no mentions, no room.",
       "input": {
         "verdict": {
           "affected_service": "frontend",
@@ -150,12 +160,13 @@
         "chat_severity": "info",
         "channel": "alerts-noise",
         "actions": ["post_to_chat"],
-        "mentions": []
+        "mentions": [],
+        "war_room_assembled": false
       }
     },
     {
-      "id": "suppressed-skips-chatops",
-      "description": "A Suppressed verdict (RA-001 marked it a duplicate) must not produce any actions, so route() short-circuits the chatops emit.",
+      "id": "suppressed-skips-chatops-and-room",
+      "description": "A Suppressed verdict (RA-001 marked it a duplicate) produces no actions, so notify() short-circuits the emit and no war room is stood up.",
       "input": {
         "verdict": {
           "affected_service": "payment",
@@ -180,7 +191,38 @@
         "chat_severity": "info",
         "channel": "suppressed",
         "actions": [],
-        "mentions": []
+        "mentions": [],
+        "war_room_assembled": false
+      }
+    },
+    {
+      "id": "sev1-suppressed-no-room",
+      "description": "A Sev-1 already suppressed by RA-001 must not open a room despite the high severity.",
+      "input": {
+        "verdict": {
+          "affected_service": "payment",
+          "severity": "Sev-1",
+          "confidence_score": 0.95,
+          "alert_summary": "Payment service down — duplicate of active cluster",
+          "assigned_team": "Payments Team",
+          "assigned_engineer": "oncall@payments.example.com",
+          "recommended_runbook": null,
+          "duplicate_alert_count": 7,
+          "status": "Suppressed",
+          "audit_metadata": {
+            "created_at": "2026-05-13T02:05:00Z",
+            "created_by": "RA-001",
+            "source_alerts": ["payment-002"],
+            "decision_trace": []
+          }
+        },
+        "now": "2026-05-13T02:05:00Z"
+      },
+      "expected": {
+        "channel": "suppressed",
+        "actions": [],
+        "war_room_assembled": false,
+        "war_room_reason_contains": "suppressed"
       }
     }
   ]

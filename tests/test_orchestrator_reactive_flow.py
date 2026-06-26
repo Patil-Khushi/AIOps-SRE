@@ -31,7 +31,7 @@ from agents.alert_triage.models import AuditMetadata as TriageAudit
 from agents.auto_ticketing.models import TicketRecord
 from agents.incident_classifier.models import AuditMetadata as ClassAudit
 from agents.incident_classifier.models import Classification
-from agents.notification_router.models import RoutingDecision, RoutingOutcome
+from agents.notification_assembler.models import NotificationOutcome, RoutingDecision
 from aiops import state as state_pkg
 from aiops.runtime import orchestrator as orch
 from aiops.tools.chatops import DeliveryResult, Severity
@@ -109,7 +109,7 @@ def _decision(**overrides: Any) -> RoutingDecision:
 def _stub_agents(
     monkeypatch,
     *,
-    outcome: RoutingOutcome,
+    outcome: NotificationOutcome,
     verdict_id: int | None = 1,
 ) -> dict[str, Any]:
     """Stub the four agents at the orchestrator boundary with real models and
@@ -123,7 +123,7 @@ def _stub_agents(
         "auto_ticket",
         lambda _verdict, classification=None, **_kw: _ticket(),
     )
-    monkeypatch.setattr(orch, "route_notification", lambda _verdict: outcome)
+    monkeypatch.setattr(orch, "notify_incident", lambda _verdict: outcome)
 
     sc_calls: list[Any] = []
 
@@ -148,7 +148,7 @@ def _stub_agents(
 def test_unwraps_routing_outcome_for_persistence_and_response(monkeypatch):
     """#84: save_notification gets the flat RoutingDecision; to_api_dict keeps
     notifications flat and surfaces per-adapter deliveries as a sibling key."""
-    outcome = RoutingOutcome(
+    outcome = NotificationOutcome(
         decision=_decision(),
         deliveries={
             "jsonfile": DeliveryResult(adapter="jsonfile", ok=True, latency_ms=2),
@@ -184,7 +184,7 @@ def test_unwraps_routing_outcome_for_persistence_and_response(monkeypatch):
 def test_suppressed_outcome_exposes_empty_deliveries(monkeypatch):
     """Suppressed verdict → route returns empty deliveries; the decision is
     still surfaced and deliveries is ``{}`` (not ``None``)."""
-    outcome = RoutingOutcome(
+    outcome = NotificationOutcome(
         decision=_decision(channel="suppressed", reason="status=Suppressed → no emit"),
         deliveries={},
     )
@@ -199,12 +199,12 @@ def test_suppressed_outcome_exposes_empty_deliveries(monkeypatch):
 def test_routing_exception_is_contained(monkeypatch):
     """A routing failure must not break the pipeline: routing/deliveries come
     back ``None`` and the rest of the result is still populated."""
-    _stub_agents(monkeypatch, outcome=RoutingOutcome(decision=_decision(), deliveries={}))
+    _stub_agents(monkeypatch, outcome=NotificationOutcome(decision=_decision(), deliveries={}))
 
     def _boom(_verdict):
         raise RuntimeError("router exploded")
 
-    monkeypatch.setattr(orch, "route_notification", _boom)
+    monkeypatch.setattr(orch, "notify_incident", _boom)
 
     result = orch.run_reactive_flow(_alert())
     api = result.to_api_dict()
@@ -223,7 +223,7 @@ def test_routing_exception_is_contained(monkeypatch):
 def test_fk_guard_skips_persistence_when_verdict_unpersisted(monkeypatch):
     """When triage could not persist (verdict_id is None), classification and
     notification persistence are skipped rather than crashing on the FK."""
-    outcome = RoutingOutcome(decision=_decision(), deliveries={})
+    outcome = NotificationOutcome(decision=_decision(), deliveries={})
     captured = _stub_agents(monkeypatch, outcome=outcome, verdict_id=None)
 
     result = orch.run_reactive_flow(_alert())

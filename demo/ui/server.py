@@ -97,8 +97,8 @@ from agents.incident_commander import command as incident_command  # noqa: E402
 from agents.rca_agent.agent import analyze as rca_analyze  # noqa: E402
 from agents.remediation_recommender import RemediationInput  # noqa: E402
 from agents.remediation_recommender import recommend as remediate  # noqa: E402
-from agents.war_room_assembler import assemble as assemble_war_room  # noqa: E402
-from agents.war_room_assembler import decide as decide_war_room  # noqa: E402
+from agents.notification_assembler import assemble_war_room  # noqa: E402
+from agents.notification_assembler import decide_war_room  # noqa: E402
 from aiops import llm as aiops_llm  # noqa: E402
 from aiops.policy import (  # noqa: E402
     ApprovalError,
@@ -381,14 +381,23 @@ def triage_alert(req: TriageRequest) -> dict[str, Any]:
     # HTTP concerns, not pipeline logic.
     result = run_reactive_flow(alert_obj)
 
-    # RA-006 War-Room Assembler: on Sev-1/Sev-2 stand up the incident war room
-    # (channel + on-call SME + context pack + seed timeline). ``assemble`` makes
-    # several sequential Slack calls (~5s each) and must not sit on the triage
-    # hot path (review #5) — offload to the background pool so /api/triage
-    # returns promptly. The assembly is recorded for the /api/war-room/recent
-    # feed + /metrics; the HTTP response keeps its legacy shape (war-room
-    # surfaces via its own endpoints, not inline).
-    _HITL_AGENT_POOL.submit(_assemble_war_room_bg, result.verdict)
+    # RA-005+006 Notification Assembler already routed the single notification
+    # and (on Sev-1/Sev-2) stood up the war room inside the flow, folding the
+    # join link into that one message. Record the assembly + its notification
+    # for the incident feed (/api/war-room/recent + /metrics). Best-effort —
+    # never break the triage response.
+    try:
+        if result.war_room is not None:
+            _record_war_room(
+                result.war_room.model_dump(mode="json"),
+                result.verdict,
+                notification=result.routing.model_dump(mode="json") if result.routing else None,
+            )
+    except Exception:
+        logger.exception(
+            "RA-005+006: recording incident feed row failed for %s",
+            result.verdict.affected_service,
+        )
 
     return result.to_api_dict()
 
@@ -1787,13 +1796,23 @@ _WAR_ROOM_SEQ = 0
 WAR_ROOM_STATUSES = ("open", "in_call", "call_ended", "resolved", "no_room")
 
 
-def _record_war_room(assembly: dict[str, Any], verdict: TriageVerdict) -> str:
-    """Append a compact feed row for an assembly and return its feed id.
+def _record_war_room(
+    assembly: dict[str, Any],
+    verdict: TriageVerdict,
+    notification: dict[str, Any] | None = None,
+) -> str:
+    """Append a compact feed row for one incident and return its feed id.
 
     Each row carries a lifecycle ``status`` the board can advance:
     ``open`` (room created, responders gathering) → ``in_call`` (live huddle)
     → ``resolved``. Non-assembled verdicts land terminal as ``no_room``.
-    Best-effort — never raises into the triage pipeline."""
+
+    ``notification`` is the RA-005+006 ``RoutingDecision`` dict for this
+    incident: now that notification + war room are one agent, the feed row
+    carries the routed notification (channel, response mode, body) alongside
+    the war-room assembly so the combined dashboard renders the whole incident
+    — the one message *and* the room — from a single row. Best-effort — never
+    raises into the triage pipeline."""
     global _WAR_ROOM_SEQ
     _WAR_ROOM_SEQ += 1
     wid = str(_WAR_ROOM_SEQ)
@@ -1818,26 +1837,12 @@ def _record_war_room(assembly: dict[str, Any], verdict: TriageVerdict) -> str:
             "bridge_status": assembly.get("bridge_status"),
             "assembled_at": assembly.get("assembled_at"),
             "assembly": assembly,
+            # The single notification this incident produced (None for the
+            # try-it inspector, which previews the war room in isolation).
+            "notification": notification,
         }
     )
     return wid
-
-
-def _assemble_war_room_bg(verdict: TriageVerdict) -> None:
-    """Background worker for the triage hot path (review #5).
-
-    RA-006 assembly makes several sequential Slack calls (~5s each), so it runs
-    off-thread on the demo agent pool instead of inline in ``/api/triage``.
-    Records the assembly for the ``/api/war-room/recent`` feed + ``/metrics``; a
-    Slack hiccup is caught and logged and never touches the triage response that
-    has already returned."""
-    try:
-        wr = assemble_war_room(verdict).model_dump(mode="json")
-        _record_war_room(wr["assembly"], verdict)
-    except Exception:
-        logger.exception(
-            "RA-006: war-room assembly failed for verdict on %s", verdict.affected_service
-        )
 
 
 class WarRoomTryRequest(BaseModel):
@@ -1887,7 +1892,7 @@ def war_room_assemble_endpoint(req: WarRoomTryRequest) -> dict[str, Any]:
     )
     if not req.create_bridge:
         return decide_war_room(verdict).model_dump(mode="json")
-    assembly = assemble_war_room(verdict).assembly
+    assembly = assemble_war_room(verdict)
     # Surface it in the live feed too, so the try-it and pipeline share one view.
     _record_war_room(assembly.model_dump(mode="json"), verdict)
     return assembly.model_dump(mode="json")

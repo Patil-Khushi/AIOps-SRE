@@ -39,16 +39,17 @@ def _alert_payload() -> dict[str, Any]:
 
 class _FakeFlowResult:
     """Stand-in for ``ReactiveFlowResult``: the endpoint calls ``to_api_dict()``
-    for the response and reads ``.verdict`` to hand the RA-006 war-room assembly
-    off to the background pool (review #5)."""
+    for the response and reads ``.war_room`` / ``.routing`` / ``.verdict`` to
+    record the incident feed row. With ``war_room=None`` that recording is a
+    clean no-op, so this test pins only the delegation contract."""
 
     SENTINEL: ClassVar[dict[str, Any]] = {
         "verdict": {"affected_service": "payment"},
         "persisted": {"verdict_id": 7},
     }
 
-    # A low-severity Active verdict so the background war-room assembly the
-    # endpoint fires is a clean no-op — RA-006 only assembles on Sev-1/Sev-2.
+    # The combined Notification Assembler runs inside the flow now; the endpoint
+    # only records what it returns. war_room=None → nothing to record.
     verdict: ClassVar = srv.TriageVerdict(
         affected_service="payment",
         severity="Sev-4",
@@ -60,6 +61,8 @@ class _FakeFlowResult:
             created_at=datetime(2026, 1, 1, tzinfo=UTC), created_by="test"
         ),
     )
+    war_room: ClassVar = None
+    routing: ClassVar = None
 
     def to_api_dict(self) -> dict[str, Any]:
         return self.SENTINEL

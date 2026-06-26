@@ -147,14 +147,14 @@ def test_run_truth_file_lists_deferred_agents(tmp_path: Path) -> None:
             "exercises": {
                 "alert_triage": {"affected_service": "payment"},
                 "incident_classifier": {"incident_type": "outage"},  # deferred
-                "notification_router": {"channel": "incidents"},  # deferred
+                "notification_assembler": {"channel": "incidents"},  # deferred
             },
         },
     )
     result = run_truth_file(p)
     assert len(result.results) == 1  # only alert_triage ran
     assert result.results[0].case_id.endswith("::alert_triage")
-    assert sorted(result.deferred) == ["incident_classifier", "notification_router"]
+    assert sorted(result.deferred) == ["incident_classifier", "notification_assembler"]
 
 
 def test_run_truth_file_handles_missing_agent_gracefully(tmp_path: Path) -> None:

@@ -218,37 +218,29 @@ export const AGENTS: AgentCatalogItem[] = [
       'Verifies the outcome and keeps a tested rollback ready.',
     ],
   }),
-  agent('Notification Router', 'Reactive-Active', 5, 'Route notifications to humans and chatops sinks.', 'Chooses the right channel and formats the message for it.', {
-    status: 'Shipped', hitl: 'Optional',
-    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open notifications stream',
-    plainSummary:
-      'Decides who needs to hear about an incident and on which channel, then writes a clear, readable message and sends it — so the right people get a useful notification instead of a raw alert dump.',
-    benefits: [
-      'Right person, right channel, right wording — automatically.',
-      'Reduces alert fatigue by routing instead of broadcasting to everyone.',
-      'Every notification is logged so you can see what was sent and when.',
-    ],
-    howItWorks: [
-      'Receives the incident and its context.',
-      'Chooses the channel and the people to notify.',
-      'Formats a clear message for that channel.',
-      'Sends it and records the result for audit.',
-    ],
-    setup: [
-      { tool: 'Chat workspace (Slack / Teams)', detail: 'Connect a workspace and app token so the agent can post messages.' },
-      { tool: 'Routing rules', detail: 'Define which teams or channels receive which kinds of incident.' },
-    ],
-  }),
-  agent('War-Room Assembler', 'Reactive-Active', 6, 'Create a shared collaboration space for the incident.', 'Brings together the right people, links, and status for the response.', {
+  agent('Notification Assembler', 'Reactive-Active', 5, 'Send one notification per incident — and stand up the war room for major ones.', 'Routes the message to the right people and channel and, on Sev-1/Sev-2, opens the war room and folds its join link into that same message.', {
     status: 'Shipped', hitl: 'Optional',
     inputs: ['triage verdict', 'CMDB / on-call', 'live telemetry'],
-    outputs: ['bridge channel', 'invited SMEs', 'context pack', 'timeline'],
-    liveSurface: '/console/war-room', liveSurfaceLabel: 'Open war-room console',
+    outputs: ['one notification', 'war-room link', 'invited SMEs', 'context pack', 'timeline'],
+    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open notifications console',
+    plainSummary:
+      'Merges notification routing and war-room setup into one step. It decides who needs to hear about an incident and on which channel, writes a single clear message, and sends it. For a major incident (Sev-1/Sev-2) it also spins up a shared war room — channel, on-call expert, live context, and a join link — and folds that link straight into the same notification, so the right people get one message with everything they need instead of two separate pings.',
+    benefits: [
+      'One notification per incident — no duplicate pings to chase.',
+      'Right person, right channel, right wording — automatically.',
+      'Major incidents get a war room with a join link in the same message.',
+      'Reduces alert fatigue by routing instead of broadcasting to everyone.',
+    ],
     howItWorks: [
-      'Detects that a major incident has been declared.',
-      'Spins up a shared channel and bridges the right responders.',
-      'Pins the incident summary, dashboards, and live status.',
-      'Keeps the space updated until the incident is resolved.',
+      'Receives the incident verdict and its context.',
+      'Chooses the channel and the people to notify (severity + hours + ownership).',
+      'On Sev-1/Sev-2, opens the war room and invites the on-call expert.',
+      'Sends one message — the notification, with the war-room link folded in.',
+    ],
+    setup: [
+      { tool: 'Chat workspace (Slack / Teams)', detail: 'Connect a workspace and app token so the agent can post and open war-room channels.' },
+      { tool: 'On-call / CMDB', detail: 'Provides the on-call expert and ownership so the right people are paged and invited.' },
+      { tool: 'Routing rules', detail: 'Define which teams or channels receive which kinds of incident.' },
     ],
   }),
   agent('Log Correlation', 'Reactive-Active', 7, 'Correlate logs, traces, and alerts.', 'Builds the evidence bundle that helps a human see the same incident from multiple angles.', {

@@ -373,7 +373,7 @@ def test_ra005_uses_slack_handle_from_oncall_lookup(monkeypatch):
     # synthetic email RA-001 produces; RA-005 should still pick the
     # slack handle for the mention.
     from agents.alert_triage import AuditMetadata, TriageVerdict
-    from agents.notification_router import decide
+    from agents.notification_assembler import decide
 
     verdict = TriageVerdict(
         affected_service="payment",
@@ -389,7 +389,7 @@ def test_ra005_uses_slack_handle_from_oncall_lookup(monkeypatch):
         ),
     )
 
-    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC))
+    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC)).decision
     assert d.mentions == ["@chinmay"]
 
 
@@ -415,7 +415,7 @@ def test_ra005_falls_back_to_email_when_no_slack_handle(monkeypatch):
     get_registry().select_provider("oncall.schedule.lookup", "db.oncall.schedule.lookup")
 
     from agents.alert_triage import AuditMetadata, TriageVerdict
-    from agents.notification_router import decide
+    from agents.notification_assembler import decide
 
     verdict = TriageVerdict(
         affected_service="payment",
@@ -431,7 +431,7 @@ def test_ra005_falls_back_to_email_when_no_slack_handle(monkeypatch):
         ),
     )
 
-    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC))
+    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC)).decision
     assert d.mentions == ["@anonymous@example.com"]
 
 
@@ -814,7 +814,7 @@ def test_db_oncall_lookup_tool_accepts_category_keywords():
 def test_ra005_category_keywords_extracted_from_verdict():
     """``_category_keywords_for`` tokenizes service, summary, runbook."""
     from agents.alert_triage import AuditMetadata, TriageVerdict
-    from agents.notification_router.agent import _category_keywords_for
+    from agents.notification_assembler.agent import _category_keywords_for
 
     v = TriageVerdict(
         affected_service="payment",
@@ -886,7 +886,7 @@ def test_ra005_picks_specialist_via_expertise_routing(monkeypatch):
     get_registry().select_provider("oncall.schedule.lookup", "db.oncall.schedule.lookup")
 
     from agents.alert_triage import AuditMetadata, TriageVerdict
-    from agents.notification_router import decide
+    from agents.notification_assembler import decide
 
     verdict = TriageVerdict(
         affected_service="payment",
@@ -902,7 +902,7 @@ def test_ra005_picks_specialist_via_expertise_routing(monkeypatch):
         ),
     )
 
-    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC))
+    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC)).decision
     assert d.mentions == ["@specialist"]
     # Matched sub-domain is surfaced on the decision so Slack can render it
     # as a dedicated "Sub-domain" field and the body gets a clean header.
@@ -917,7 +917,7 @@ def test_ra005_body_has_no_subdomain_line_when_no_match():
     """When no category matched, the body should *not* invent a Sub-domain
     line — only render fields we actually have."""
     from agents.alert_triage import AuditMetadata, TriageVerdict
-    from agents.notification_router import decide
+    from agents.notification_assembler import decide
 
     v = TriageVerdict(
         affected_service="payment",
@@ -932,7 +932,7 @@ def test_ra005_body_has_no_subdomain_line_when_no_match():
             source_alerts=["a-1"],
         ),
     )
-    d = decide(v, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC))
+    d = decide(v, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC)).decision
     assert d.category_display is None
     assert "Sub-domain:" not in d.body
     # Core fields still present.
@@ -1287,7 +1287,7 @@ def test_ra005_body_marks_platform_escalation_when_via_wildcard(monkeypatch):
     get_registry().select_provider("oncall.schedule.lookup", "db.oncall.schedule.lookup")
 
     from agents.alert_triage import AuditMetadata, TriageVerdict
-    from agents.notification_router import decide
+    from agents.notification_assembler import decide
 
     verdict = TriageVerdict(
         affected_service="ad",
@@ -1303,7 +1303,7 @@ def test_ra005_body_marks_platform_escalation_when_via_wildcard(monkeypatch):
         ),
     )
 
-    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC))
+    d = decide(verdict, now=datetime(2026, 5, 18, 6, 0, tzinfo=UTC)).decision
     assert "platform escalation" in d.body, (
         "body must surface platform escalation for wildcard-served pages"
     )
