@@ -218,11 +218,16 @@ export const AGENTS: AgentCatalogItem[] = [
       'Verifies the outcome and keeps a tested rollback ready.',
     ],
   }),
-  agent('Notification Router', 'Reactive-Active', 5, 'Route notifications to humans and chatops sinks.', 'Chooses the right channel and formats the message for it.', {
+  // RA-005 and RA-006 remain two individually-sellable catalog units. Their
+  // implementation is merged in agents/notification_assembler/ (single source
+  // of truth) so the integrated flow sends ONE message with the war-room link
+  // folded in — but each agent can still be licensed and deployed on its own.
+  // Both surface the same combined incident console.
+  agent('Notification Router', 'Reactive-Active', 5, 'Route notifications to humans and chatops sinks.', 'Chooses the right channel and formats the message for it; in the integrated flow the war-room link is folded into this message.', {
     status: 'Shipped', hitl: 'Optional',
-    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open notifications stream',
+    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open notifications console',
     plainSummary:
-      'Decides who needs to hear about an incident and on which channel, then writes a clear, readable message and sends it — so the right people get a useful notification instead of a raw alert dump.',
+      'Decides who needs to hear about an incident and on which channel, then writes a clear, readable message and sends it — so the right people get a useful notification instead of a raw alert dump. Deployed alongside the War-Room Assembler, the war-room join link is folded into this same message so an operator gets one notification, not two.',
     benefits: [
       'Right person, right channel, right wording — automatically.',
       'Reduces alert fatigue by routing instead of broadcasting to everyone.',
@@ -239,13 +244,13 @@ export const AGENTS: AgentCatalogItem[] = [
       { tool: 'Routing rules', detail: 'Define which teams or channels receive which kinds of incident.' },
     ],
   }),
-  agent('War-Room Assembler', 'Reactive-Active', 6, 'Create a shared collaboration space for the incident.', 'Brings together the right people, links, and status for the response.', {
+  agent('War-Room Assembler', 'Reactive-Active', 6, 'Create a shared collaboration space for the incident.', 'Brings together the right people, links, and status for the response; its join link is folded into the notification in the integrated flow.', {
     status: 'Shipped', hitl: 'Optional',
     inputs: ['triage verdict', 'CMDB / on-call', 'live telemetry'],
     outputs: ['bridge channel', 'invited SMEs', 'context pack', 'timeline'],
-    liveSurface: '/console/war-room', liveSurfaceLabel: 'Open war-room console',
+    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open incident console',
     howItWorks: [
-      'Detects that a major incident has been declared.',
+      'Detects that a major (Sev-1/Sev-2) incident has been declared.',
       'Spins up a shared channel and bridges the right responders.',
       'Pins the incident summary, dashboards, and live status.',
       'Keeps the space updated until the incident is resolved.',

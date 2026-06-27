@@ -61,6 +61,7 @@ const AGENT_SURFACES: Record<string, string[]> = {
   // assembled from plus the shared infra surfaces.
   'war-room-assembler':  ['/console', '/console/alerts', '/console/war-room', ...SHARED_TAIL],
   'notification-router': ['/console', '/console/notifications', ...SHARED_TAIL],
+  'war-room-assembler': ['/console', '/console/notifications', ...SHARED_TAIL],
   // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
   'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],
   // Remediation Recommender consumes the RCA verdict and ranks options; the

@@ -4,7 +4,7 @@ The v0 Orchestrator runtime component. It runs the Reactive-Active flow as an
 explicit, straight-line sequence of agent calls:
 
     RA-001 Alert Triage → RA-002 Incident Classifier → RA-003 Auto-Ticketing
-    → RA-005 Notification Router
+    → RA-005+006 Notification Assembler
 
 This is a *pure relocation* of the chain that lived inline in the demo server's
 ``/api/triage`` route handler (``demo/ui/server.py``). The behavior is byte-for-
@@ -32,8 +32,8 @@ from agents.alert_triage import Alert, TriageVerdict, triage
 from agents.auto_ticketing import TicketRecord
 from agents.auto_ticketing import ticket as auto_ticket
 from agents.incident_classifier import Classification, ClassificationInput, classify
-from agents.notification_router import RoutingDecision
-from agents.notification_router import route as route_notification
+from agents.notification_assembler import RoutingDecision, WarRoomAssembly
+from agents.notification_assembler import notify as notify_incident
 from aiops.state import repository as state_repo
 from aiops.tools.chatops import DeliveryResult
 
@@ -51,12 +51,17 @@ class ReactiveFlowResult(BaseModel):
     The ``routing`` / ``deliveries`` pair encodes three distinct states, all of
     which the original inline code produced and which callers depend on:
 
-    - ``routing=None, deliveries=None``  — RA-005 ``route`` raised; pipeline
-      still succeeded (routing failure is non-fatal).
+    - ``routing=None, deliveries=None``  — the Notification Assembler raised;
+      pipeline still succeeded (notification failure is non-fatal).
     - ``routing=<decision>, deliveries={}`` — verdict was Suppressed, so
-      ``route`` returned no chatops deliveries (empty actions short-circuit
+      ``notify`` returned no chatops deliveries (empty actions short-circuit
       the emit) but the decision object still exists.
     - ``routing=<decision>, deliveries={...}`` — happy path.
+
+    ``war_room`` is the combined agent's RA-006 half: ``None`` when notification
+    failed/was unavailable, ``assembled=False`` for Sev-3/Sev-4 (no room), and a
+    bridge-enriched assembly for Sev-1/Sev-2. The demo server records it for the
+    incident feed.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -69,6 +74,7 @@ class ReactiveFlowResult(BaseModel):
     routing: RoutingDecision | None
     deliveries: dict[str, DeliveryResult] | None
     notification_id: int | None
+    war_room: WarRoomAssembly | None = None
 
     def to_api_dict(self) -> dict[str, Any]:
         """Reproduce the legacy ``POST /api/triage`` response body verbatim.
@@ -98,7 +104,7 @@ class ReactiveFlowResult(BaseModel):
 
 
 def run_reactive_flow(alert: Alert) -> ReactiveFlowResult:
-    """Run RA-001 → RA-002 → RA-003 → RA-005 for one alert.
+    """Run RA-001 → RA-002 → RA-003 → RA-005+006 for one alert.
 
     Caller owns ``Alert`` construction (and any HTTP-level validation mapping);
     this function takes a validated ``Alert`` and never raises on a routing
@@ -130,16 +136,20 @@ def run_reactive_flow(alert: Alert) -> ReactiveFlowResult:
         alert_name=alert.metric,
     )
 
-    # RA-005: routing failure must not break the pipeline — the JSONL chatops
+    # RA-005+006 Notification Assembler: route ONE notification and, on
+    # Sev-1/Sev-2, stand up the war room and fold its join link into that same
+    # message. A failure here must not break the pipeline — the JSONL chatops
     # audit log is the durable record, and the response still returns with
     # everything else populated and notifications=None.
     routing: RoutingDecision | None = None
     deliveries: dict[str, DeliveryResult] | None = None
     notification_id: int | None = None
+    war_room: WarRoomAssembly | None = None
     try:
-        outcome = route_notification(verdict)
+        outcome = notify_incident(verdict)
         routing = outcome.decision
         deliveries = outcome.deliveries
+        war_room = outcome.war_room
         # CHAT-2 (#82): persist the structured row alongside the JSONL audit
         # log. A persistence failure must not break the pipeline — the JSONL
         # adapter (source of truth) already wrote.
@@ -148,13 +158,16 @@ def run_reactive_flow(alert: Alert) -> ReactiveFlowResult:
                 notification_id = state_repo.save_notification(routing, verdict_id=verdict_id)
         except Exception:
             logger.exception(
-                "RA-005: persist save_notification failed for verdict %s on %s "
+                "RA-005+006: persist save_notification failed for verdict %s on %s "
                 "(JSONL audit log still written)",
                 verdict_id,
                 verdict.affected_service,
             )
     except Exception:
-        logger.exception("RA-005: routing failed for verdict on %s", verdict.affected_service)
+        logger.exception(
+            "RA-005+006: notification/war-room failed for verdict on %s",
+            verdict.affected_service,
+        )
 
     return ReactiveFlowResult(
         verdict=verdict,
@@ -165,4 +178,5 @@ def run_reactive_flow(alert: Alert) -> ReactiveFlowResult:
         routing=routing,
         deliveries=deliveries,
         notification_id=notification_id,
+        war_room=war_room,
     )

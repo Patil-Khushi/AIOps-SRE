@@ -27,7 +27,7 @@ from agents.incident_classifier.models import AuditMetadata as ClassAudit
 from agents.incident_classifier.models import Classification
 from agents.incident_commander import agent as ic
 from agents.incident_commander import command
-from agents.notification_router.models import RoutingDecision
+from agents.notification_assembler.models import RoutingDecision
 from aiops import state as state_pkg
 from aiops.runtime.orchestrator import ReactiveFlowResult
 from aiops.tools.chatops import ChatMessage, DeliveryResult

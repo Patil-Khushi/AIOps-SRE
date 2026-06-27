@@ -48,7 +48,7 @@ def _make_triage_verdict(service: str = "payment", severity: str = "Sev-1"):
 
 
 def _make_routing_decision(**overrides):
-    from agents.notification_router.models import RoutingDecision
+    from agents.notification_assembler.models import RoutingDecision
 
     base = dict(
         chat_severity=Severity.P1,

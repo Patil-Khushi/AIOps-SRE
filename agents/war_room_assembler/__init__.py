@@ -1,7 +1,12 @@
-"""War-Room Assembler agent (RA-006).
+"""War-Room Assembler agent (RA-006) — Reactive-Active phase.
 
-On Sev-1/Sev-2, stands up the incident war room: a chatops channel, the
-on-call SME, a live context pack, and a seed timeline for RCA.
+**Individually sellable unit.** A customer can license and deploy RA-006 on its
+own to stand up the incident war room on Sev-1/Sev-2 (channel + on-call SME +
+context pack + seed timeline) without the notification-routing half.
+
+The implementation lives in :mod:`agents.notification_assembler` (the shared
+module that also powers the integrated one-message flow). This package is a thin
+wrapper that exposes RA-006's original standalone contract and delegates to it.
 
 Public surface::
 

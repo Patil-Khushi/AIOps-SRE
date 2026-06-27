@@ -1,10 +1,7 @@
-"""CLI entry-point for RA-006.
+"""CLI entry-point for RA-006 (standalone).
 
-Read a ``TriageVerdict`` JSON from stdin, print the resulting
-``WarRoomAssembly`` JSON on stdout. ``--assemble`` actually opens the war
-room through the chatops seam (default: dry-run / decide only).
-
-Examples::
+Read a ``TriageVerdict`` JSON from stdin, print the ``WarRoomAssembly`` JSON.
+``--assemble`` creates the war room through the chatops seam (default: decide).
 
     cat verdict.json | python -m agents.war_room_assembler
     cat verdict.json | python -m agents.war_room_assembler --assemble

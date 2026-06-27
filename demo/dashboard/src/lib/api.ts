@@ -51,7 +51,7 @@ function unwrap<T>(p: Promise<{ data: T }>): Promise<T> {
   });
 }
 
-// ── RA-006 War-Room Assembler shapes (agents/war_room_assembler models) ──
+// ── War-room shapes (agents/notification_assembler models — RA-005+006) ──
 export interface InvitedSME {
   handle: string;
   name?: string | null;
@@ -99,6 +99,23 @@ export interface WarRoomTryRequest {
   incident_id?: string | null;
   create_bridge?: boolean;
 }
+// The single notification this incident produced (RA-005+006 RoutingDecision).
+// Embedded on the incident feed row now that notification + war room are one
+// agent, so the combined page renders the message and the room from one row.
+export interface IncidentNotification {
+  chat_severity: string;
+  channel: string;
+  title: string;
+  body: string;
+  mentions: string[];
+  actions: string[];
+  reason: string;
+  response_mode?: string;
+  category_display?: string | null;
+  assignee?: string | null;
+  assignee_name?: string | null;
+  assignee_email?: string | null;
+}
 export interface WarRoomFeedRow {
   id: string;
   status: string; // open | in_call | resolved | no_room
@@ -114,6 +131,7 @@ export interface WarRoomFeedRow {
   bridge_status?: string | null;
   assembled_at: string;
   assembly: WarRoomAssembly;
+  notification?: IncidentNotification | null;
 }
 export interface WarRoomRecentResponse {
   count: number;
@@ -321,7 +339,7 @@ export const api = {
       http.get(`/api/kb/publish/outcome/${approvalId}`),
     ),
 
-  // ── RA-006 War-Room Assembler ───────────────────────────────────────────
+  // ── War-room endpoints (RA-005+006 Notification Assembler) ──────────────
   warRoomAssemble: (req: WarRoomTryRequest) =>
     unwrap<WarRoomAssembly>(http.post('/api/war-room/assemble', req)),
   warRoomRecent: (limit = 50) =>

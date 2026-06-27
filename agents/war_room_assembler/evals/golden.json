@@ -1,7 +1,7 @@
 {
   "agent": "war_room_assembler",
   "version": "0.1.0",
-  "description": "War-room assembly decisions for representative TriageVerdicts. Asserts the deterministic scalar fields (assembled / channel / chat_severity) so cases pass with or without a live observability cluster — the context pack degrades to 'unavailable' off-cluster but does not change these outcomes.",
+  "description": "War-room assembly decisions for representative TriageVerdicts (standalone RA-006 contract). Asserts the deterministic scalar fields (assembled / channel / chat_severity) so cases pass with or without a live observability cluster.",
   "cases": [
     {
       "id": "sev1-payment-assembles-room",

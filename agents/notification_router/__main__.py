@@ -1,10 +1,7 @@
-"""CLI entry-point for RA-005.
+"""CLI entry-point for RA-005 (standalone).
 
-Read a ``TriageVerdict`` JSON from stdin, print the resulting
-``RoutingDecision`` JSON on stdout. ``--send`` actually emits the
-``ChatMessage`` through the chatops seam (default: dry-run).
-
-Examples::
+Read a ``TriageVerdict`` JSON from stdin, print the ``RoutingDecision`` JSON.
+``--send`` emits the routing notification through the chatops seam.
 
     cat verdict.json | python -m agents.notification_router
     cat verdict.json | python -m agents.notification_router --send
@@ -27,8 +24,7 @@ def main() -> None:
         sys.exit(2)
     verdict = TriageVerdict.model_validate_json(raw)
     if send:
-        outcome = route(verdict)
-        print(outcome.model_dump_json(indent=2))
+        print(route(verdict).model_dump_json(indent=2))
     else:
         print(decide(verdict).model_dump_json(indent=2))
 
