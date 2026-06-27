@@ -26,6 +26,9 @@ export interface AuditMetadata {
 
 export interface TriageVerdict {
   affected_service: string;
+  // True when the affected service is on the customer-facing path. Derived by
+  // RA-001 and surfaced so the UI can flag customer impact at a glance.
+  customer_facing?: boolean;
   severity: Severity;
   confidence_score: number;
   alert_summary: string;
@@ -91,8 +94,18 @@ export interface RCAVerdict {
 // Chains the reactive flow + RCA into one coordinated Sev-1/Sev-2 response.
 export interface IcTimelineEntry {
   ts: string;
-  stage: string;   // triage | classify | correlate | ticket | notify | rca | comms | handoff
+  stage: string;   // detected | triage | classify | correlate | ticket | notify | rca | comms | handoff
   detail: string;
+}
+
+// Derived MTTA/MTTR-style durations, all measured from detection (T0). A field
+// is null when that stage did not run (e.g. handoff on a non-engaged incident).
+export interface IncidentMetrics {
+  detected_at: string;
+  time_to_triage_seconds?: number | null;
+  time_to_notify_seconds?: number | null;  // detect → on-call paged (MTTA)
+  time_to_handoff_seconds?: number | null;
+  total_coordination_seconds?: number | null;
 }
 
 export interface PostmortemSeed {
@@ -106,6 +119,7 @@ export interface PostmortemSeed {
   ranked_fix_steps: RankedFixStep[];
   contributing_signals: string[];
   timeline: IcTimelineEntry[];
+  metrics?: IncidentMetrics | null;
 }
 
 export interface IncidentCommandResult {
@@ -115,6 +129,7 @@ export interface IncidentCommandResult {
   reactive: TriageResult;                 // the /api/triage bundle (verdict + ticket + …)
   rca: RCAVerdict | null;                 // null below Sev-2
   timeline: IcTimelineEntry[];
+  metrics: IncidentMetrics | null;
   postmortem_seed: PostmortemSeed | null; // null below Sev-2
   handoff_requested: boolean;
   audit_metadata: RCAAuditMetadata;
@@ -409,8 +424,32 @@ export interface RunbookRunResponse {
   runbook_title: string | null;
   // Optional: older backend builds omit it — the UI falls back to `service`.
   matched_on?: { service: string; severity: string | null; tags: string[] };
+  // True when the operator picked this runbook instead of the auto-selected match.
+  overridden?: boolean;
   planned_steps: PlannedStep[];
   timeout_seconds: number;
+}
+
+// One library runbook for the picker (GET /api/runbook-executor/runbooks).
+export interface RunbookLibraryStep {
+  name: string;
+  action: string;
+  destructive: boolean;
+}
+export interface RunbookLibraryItem {
+  id: string;
+  title: string;
+  service: string;
+  severity: string | null;
+  tags: string[];
+  matches_service: boolean;
+  recommended: boolean;
+  steps: RunbookLibraryStep[];
+}
+export interface RunbookLibraryResponse {
+  count: number;
+  recommended: string | null;
+  runbooks: RunbookLibraryItem[];
 }
 
 // GET /api/verdicts — persisted triage verdicts (newest-first). Each injected
@@ -450,6 +489,110 @@ export interface RunbookOutcome {
   steps_total?: number;
   steps_executed?: number;
   destructive_steps?: number;
+  // Post-run verification: re-reads the flags the runbook reset and confirms
+  // the injected scenario actually cleared (⑤ Verify stage).
+  verification?: {
+    status: 'verified' | 'unverified' | 'skipped';
+    reason?: string;
+    checks: { name: string; flag: string; variant: string | null; ok: boolean; available: boolean }[];
+  };
+}
+
+// ─── Remediation Recommender (PRS-001) ──────────────────────────────────────
+// Mirrors agents/remediation_recommender/models.py and POST /api/remediation.
+
+export type RemediationActionType =
+  | 'set_flag'
+  | 'rollback_deploy'
+  | 'scale'
+  | 'restart'
+  | 'circuit_breaker'
+  | 'manual';
+
+export type OptionSource = 'rca_fix_step' | 'playbook_pattern' | 'operator_seeded';
+
+export interface RemediationOption {
+  option_id: string;
+  title: string;
+  description: string;
+  action_type: RemediationActionType;
+  blast_radius: BlastRadius;
+  blast_radius_score: number; // 1..5, lower = safer
+  rollback: string;
+  rollback_tested: boolean;
+  confidence: number;
+  estimated_mttr_minutes: number;
+  requires_hitl: true;
+  rationale: string;
+  // Tool seam handoff: how Auto-Healer would execute this option.
+  tool_capability: string | null;
+  tool_args: Record<string, unknown>;
+  source: OptionSource;
+}
+
+export interface RemediationVerdict {
+  affected_service: string;
+  incident_summary: string;
+  options: RemediationOption[];          // sorted; index 0 is the top pick
+  recommended_option_id: string;
+  auto_pick_eligible: false;
+  confidence_score: number;
+  requires_hitl: true;
+  rationale: string;
+  audit_metadata: RCAAuditMetadata;
+}
+
+// ─── Auto-Healer Lite (PRS-002) ──────────────────────────────────────────────
+// Mirrors agents/auto_healer_lite/models.py and the
+// /api/demo/auto-heal/execute route shape.
+
+// Terminal status of one execution attempt. The outcome poll returns the
+// synthetic 'pending' while the agent thread is still blocked at the gate.
+export type ExecutionStatus =
+  | 'pending'
+  | 'refused'
+  | 'pending_approval'
+  | 'blocked'
+  | 'approved'
+  | 'dry_run_ok'
+  | 'executed'
+  | 'execution_failed';
+
+export interface GateDecisionSummary {
+  allowed: boolean;
+  level: string;                 // AutonomyLevel.value, e.g. "required"
+  reason: string;
+  approver: string | null;
+  approval_id: string | null;
+  approval_status: string | null;
+}
+
+export interface ExecutionVerdict {
+  status: ExecutionStatus;
+  request_id?: string;
+  option_id?: string;
+  affected_service?: string;
+  dry_run?: boolean;
+  requires_hitl?: true;
+  decision?: GateDecisionSummary;
+  tool_capability?: string | null;
+  tool_args?: Record<string, unknown>;
+  tool_result?: Record<string, unknown> | null;
+  would_execute?: boolean;
+  error?: string | null;
+  rationale?: string;
+  audit_metadata?: RCAAuditMetadata;
+}
+
+// POST /api/demo/auto-heal/execute — returned immediately (the gated execution
+// runs on a pool thread; poll /api/demo/auto-heal/outcome/{id} for the verdict).
+export interface ExecuteRunResponse {
+  approval_id: string;
+  status: 'pending';
+  option_id: string | null;
+  affected_service: string;
+  dry_run: boolean;
+  timeout_seconds: number;
 }
 
 // GET /api/approvals/{id} — ApprovalRequest.to_record().

@@ -53,6 +53,7 @@ def save_verdict(
         cluster_key=cluster_key,
         alert_id=alert_id,
         affected_service=verdict.affected_service,
+        customer_facing=getattr(verdict, "customer_facing", False),
         severity=verdict.severity,
         confidence_score=verdict.confidence_score,
         alert_summary=verdict.alert_summary,
@@ -130,6 +131,7 @@ def _verdict_row_to_dict(row: VerdictRow) -> dict[str, Any]:
         "cluster_key": row.cluster_key,
         "incident_id": row.incident_id,
         "affected_service": row.affected_service,
+        "customer_facing": bool(getattr(row, "customer_facing", False)),
         "severity": row.severity,
         "confidence_score": row.confidence_score,
         "alert_summary": row.alert_summary,
@@ -139,7 +141,11 @@ def _verdict_row_to_dict(row: VerdictRow) -> dict[str, Any]:
         "duplicate_alert_count": row.duplicate_alert_count,
         "status": row.status,
         "audit_metadata": {
-            "created_at": row.created_at.isoformat() if row.created_at else None,
+            # _aware() stamps UTC so the ISO string carries an offset. Without it
+            # SQLite returns a naive datetime, isoformat() omits the zone, and the
+            # browser parses it as *local* time — showing a fresh incident hours
+            # in the past for non-UTC users.
+            "created_at": _aware(row.created_at).isoformat() if row.created_at else None,
             "created_by": audit.get("created_by", "RA-001"),
             "source_alerts": audit.get("source_alerts", []),
             "decision_trace": audit.get("decision_trace", []),
@@ -550,7 +556,7 @@ def _execution_row_to_dict(row: ExecutionRow) -> dict[str, Any]:
         "error": row.error,
         "rationale": row.rationale,
         "decision_trace": row.decision_trace,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "created_at": _aware(row.created_at).isoformat() if row.created_at else None,
     }
 
 

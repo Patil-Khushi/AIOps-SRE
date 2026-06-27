@@ -8,6 +8,11 @@ import { api } from '@/lib/api';
 import { setConsoleAgent } from '@/lib/consoleScope';
 import type { Severity, PrometheusAlert, TriageVerdict } from '@/types/api';
 import { timeAgo, clsx } from '@/lib/format';
+import { makeCache } from '@/lib/persistentCache';
+
+// localStorage-backed: verdict survives page reloads and new tabs so the LLM
+// pipeline isn't re-run when the same alert is clicked again.
+const triageCache = makeCache<TriageVerdict>('triage');
 
 function inferSeverity(hint: string | null | undefined): Severity {
   const s = (hint || '').toLowerCase();
@@ -52,19 +57,35 @@ export default function AlertStream() {
     return out;
   }, [alerts, q, sevFilter, sortKey]);
 
-  const runTriage = async (alert: PrometheusAlert) => {
+  const runTriage = async (alert: PrometheusAlert, force = false) => {
     setPicked(alert);
-    setVerdict(null);
     setError(null);
+
+    if (!force) {
+      const cached = triageCache.get(alert.alert_id);
+      if (cached) {
+        setVerdict(cached);
+        return;
+      }
+    }
+
+    setVerdict(null);
     setTriageBusy(true);
     try {
       const result = await api.triage(alert);
+      triageCache.set(alert.alert_id, result.verdict);
       setVerdict(result.verdict);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setTriageBusy(false);
     }
+  };
+
+  const reRunTriage = () => {
+    if (!picked) return;
+    triageCache.delete(picked.alert_id);
+    runTriage(picked, true);
   };
 
   // Hand the triaged incident off to the RCA Agent: scope the console to RCA,
@@ -178,7 +199,13 @@ export default function AlertStream() {
           <div className="card sticky top-20">
             <div className="card-header">
               <h2 className="card-title">Triage verdict</h2>
-              {triageBusy && <RefreshCw className="h-4 w-4 animate-spin text-accent" />}
+              {triageBusy ? (
+                <RefreshCw className="h-4 w-4 animate-spin text-accent" />
+              ) : verdict ? (
+                <button onClick={reRunTriage} className="btn !py-1 !text-xs" title="Re-run RA-001 for this alert">
+                  <RefreshCw className="h-3.5 w-3.5" /> Re-run
+                </button>
+              ) : null}
             </div>
             <div className="card-body">
               {!picked && (
@@ -228,7 +255,17 @@ function VerdictView({ v }: { v: TriageVerdict }) {
           confidence {(v.confidence_score * 100).toFixed(0)}%
         </span>
       </Row>
-      <Row k="Service"><span className="font-mono text-ink-900 dark:text-ink-50">{v.affected_service}</span></Row>
+      <Row k="Service">
+        <span className="font-mono text-ink-900 dark:text-ink-50">{v.affected_service}</span>
+        {v.customer_facing != null && (
+          <span className={clsx(
+            'chip ml-2',
+            v.customer_facing ? '!border-bad/40 !text-bad' : '!border-ink-300/40 !text-ink-500',
+          )}>
+            {v.customer_facing ? 'Customer-facing' : 'Internal'}
+          </span>
+        )}
+      </Row>
       <Row k="Status">
         <span className={clsx(
           'chip',
@@ -241,7 +278,12 @@ function VerdictView({ v }: { v: TriageVerdict }) {
       )}
       {v.recommended_runbook && (
         <Row k="Runbook">
-          <a href={v.recommended_runbook} target="_blank" rel="noreferrer" className="break-all font-mono text-xs text-accent hover:underline">
+          <a
+            href={`/api/runbooks/by-service/${encodeURIComponent(v.affected_service)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all font-mono text-xs text-accent hover:underline"
+          >
             {v.recommended_runbook}
           </a>
         </Row>

@@ -82,6 +82,10 @@ def _migrate_add_columns_if_missing() -> None:
         # (table, column, SQL type)
         ("clusters", "embedding", "JSON"),
         ("verdicts", "alert_id", "VARCHAR"),
+        # customer_facing flag on triage verdicts — derived by RA-001, persisted
+        # so the dashboard verdict feed can render it. NULL on pre-existing rows
+        # reads back as False (see repository._verdict_row_to_dict).
+        ("verdicts", "customer_facing", "BOOLEAN"),
         # CHAT-2 (#82): reshape of the RA-005 placeholder table into the
         # RoutingDecision-aligned schema. ``create_all`` is a no-op on the
         # existing ``notifications`` table, so additive columns need this.

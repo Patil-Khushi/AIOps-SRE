@@ -397,6 +397,9 @@ export const AGENTS: AgentCatalogItem[] = [
   agent('Remediation Recommender', 'Prescriptive-Adaptive', 23, 'Recommend the best fix and why it should work.', 'Produces ranked, safe actions with rollback awareness.', {
     status: 'Shipped',
     hitl: 'Required',
+    inputs: ['RCA verdict', 'triage context', 'environment'],
+    outputs: ['ranked options', 'blast radius', 'rollback plan', 'tool capability'],
+    liveSurface: '/agents/remediation-recommender', liveSurfaceLabel: 'Open remediation console',
     howItWorks: [
       'Takes the incident verdict and root-cause context.',
       'Generates candidate fixes, each with a rollback.',
@@ -405,7 +408,11 @@ export const AGENTS: AgentCatalogItem[] = [
     ],
   }),
   agent('Auto-Healer', 'Prescriptive-Adaptive', 24, 'Apply safe automated recovery.', 'Runs contained automation to restore service when allowed.', {
+    status: 'Shipped',
     hitl: 'Required',
+    inputs: ['chosen remediation option', 'affected service', 'approval state'],
+    outputs: ['execution verdict', 'gate decision', 'tool result', 'audit trace'],
+    liveSurface: '/agents/auto-healer', liveSurfaceLabel: 'Open auto-healer console',
     howItWorks: [
       'Receives an approved, low-risk remediation.',
       'Runs the contained recovery action (dry-run first).',

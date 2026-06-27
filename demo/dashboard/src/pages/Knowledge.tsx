@@ -125,7 +125,7 @@ function StatusBadge({ status }: { status: ReviewStatus }) {
 }
 
 export default function Knowledge() {
-  const list = useFetch(() => api.listKb({ limit: 50 }), { intervalMs: 5_000 });
+  const list = useFetch(() => api.listKb({ limit: 50 }), { intervalMs: 5_000, cacheKey: 'kb-list' });
   const [scenario, setScenario] = useState(SCENARIOS[0].key);
   const [synthesizing, setSynthesizing] = useState(false);
   const [clearing, setClearing] = useState(false);

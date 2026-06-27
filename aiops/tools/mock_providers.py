@@ -261,6 +261,38 @@ _DEPENDENCIES_MAPPING: dict[str, list[str]] = {
 }
 
 
+def _maybe_reset_feature_flag(action: str, target: str) -> dict[str, Any] | None:
+    """If a runbook step is a feature-flag reset (``action='reset_feature_flag'``,
+    ``target='flag/<name>'``), perform the REAL flip through the feature-flags
+    seam so the injected demo scenario actually clears — instead of a mock no-op.
+
+    Returns ``None`` when the step isn't a flag reset (caller falls back to the
+    normal mock). Degrades gracefully: if the seam is unreachable (no flagd /
+    off-cluster) it reports ``seam_ok=False`` but the *step* still succeeds, so
+    the executor demo completes either way."""
+    if action != "reset_feature_flag" or not target.startswith("flag/"):
+        return None
+    flag = target.split("/", 1)[1].strip()
+    if not flag:
+        return None
+    seam_ok, detail = False, "feature-flags seam unavailable — simulated"
+    try:
+        from aiops.tools import get_registry
+
+        res = get_registry().call("feature_flags.set_variant", flag=flag, variant="off")
+        seam_ok = bool(res.ok)
+        detail = res.data if res.ok else (res.error or detail)
+    except Exception as exc:  # registry/seam not wired in this context
+        detail = f"{type(exc).__name__}: {exc}"
+    return {
+        "feature_flag_reset": True,
+        "flag": flag,
+        "variant": "off",
+        "seam_ok": seam_ok,
+        "detail": detail,
+    }
+
+
 @tool(
     name="mock.automation.runbook.execute",
     capability="automation.runbook.execute",
@@ -289,23 +321,34 @@ def mock_runbook_execute(
     irrelevant.  Returns a deterministic dict so the demo can assert on it.
     """
     verb = "roll back" if mode == "rollback" else "restart"
-    return ToolResult(
-        ok=True,
-        data={
-            "runbook": runbook or "restart-deployment",
-            "target": target,
-            "namespace": namespace or "default",
-            "dry_run": dry_run,
-            "step": step,
-            "action": action,
-            "mode": mode,
-            "exit_code": 0,
-            "stdout": (
-                f"[dry-run] would {verb} {target or '<unspecified>'} in {namespace or 'default'}"
-            ),
-        },
-        metadata={"provider": "mock"},
-    )
+    data: dict[str, Any] = {
+        "runbook": runbook or "restart-deployment",
+        "target": target,
+        "namespace": namespace or "default",
+        "dry_run": dry_run,
+        "step": step,
+        "action": action,
+        "mode": mode,
+        "exit_code": 0,
+        "stdout": (
+            f"[dry-run] would {verb} {target or '<unspecified>'} in {namespace or 'default'}"
+        ),
+    }
+    # A real feature-flag reset is performed ONLY here, on the REQUIRED-HITL
+    # ``execute`` capability — so the live mutation physically cannot fire
+    # without passing the human-approval gate (CLAUDE.md principle #3). The
+    # ``apply`` (autonomous) path never mutates. Forward execute resets the flag
+    # to off; a rollback re-injects it (back to the variant it was at).
+    if mode != "rollback":
+        ff = _maybe_reset_feature_flag(action, target)
+        if ff is not None:
+            data |= ff
+            return ToolResult(
+                ok=True,
+                data=data,
+                metadata={"provider": "feature-flags-seam" if ff["seam_ok"] else "mock"},
+            )
+    return ToolResult(ok=True, data=data, metadata={"provider": "mock"})
 
 
 @tool(
@@ -359,6 +402,10 @@ def mock_runbook_apply(
     NONE-level: non-destructive steps run without a human so the gate fires
     only on the destructive ones. Destructive steps go through the REQUIRED
     ``automation.runbook.execute`` capability instead.
+
+    This path NEVER mutates the live system — a real feature-flag reset is a
+    REQUIRED-HITL action and is performed only on the ``execute`` capability
+    (see ``mock_runbook_execute``), so it cannot fire without a human gate.
     """
     return ToolResult(
         ok=True,

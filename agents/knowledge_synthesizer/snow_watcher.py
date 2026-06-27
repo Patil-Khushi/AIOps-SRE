@@ -141,6 +141,36 @@ def _build_bundle(incident: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return bundle, source
 
 
+def synthesize_incident_now(number: str) -> dict[str, Any] | None:
+    """Synthesize knowledge for ONE resolved incident on demand.
+
+    Lets the closure path (resolution verifier) trigger synthesis the instant a
+    ticket is closed — so the KB draft appears immediately for the publish
+    (3rd HITL) approval, instead of waiting on the poll loop (which can miss a
+    closure to a checkpoint/ordering race when several tickets resolve at once).
+
+    Idempotent via the KB ledger; fire-and-forget safe (returns ``None`` on any
+    failure, never raises). Reuses the same bundle reconstruction + synthesis
+    entry point as the poller, so there is no duplicated logic and the watcher
+    stays the backstop for anything this misses.
+    """
+    try:
+        if not number or repo.find_kb_by_incident_id(number) is not None:
+            return None
+        res = _default_itsm_call(f"number={number}", _FIELDS, 1)
+        if not getattr(res, "ok", False):
+            return None
+        rows = (getattr(res, "data", None) or {}).get("incidents", []) or []
+        if not rows:
+            return None
+        bundle, source = _build_bundle(rows[0])
+        logger.info("synthesize_incident_now: %s (source=%s)", number, source)
+        return _default_synthesize(bundle)
+    except Exception:
+        logger.exception("synthesize_incident_now failed for %s", number)
+        return None
+
+
 # ─── the watcher ────────────────────────────────────────────────────────────
 
 

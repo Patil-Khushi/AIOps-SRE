@@ -132,6 +132,11 @@ class TriageVerdict(BaseModel):
 
     incident_id: str | None = None
     affected_service: str
+    # True when the affected service is on the customer-facing path (storefront,
+    # checkout, payment, etc.). Derived from ``affected_service`` by the agent —
+    # see ``agents.alert_triage.agent._is_customer_facing`` — so downstream
+    # consumers (router page/no-page, ticket priority) don't recompute it.
+    customer_facing: bool = False
     severity: Severity
     confidence_score: float = Field(ge=0.0, le=1.0)
     alert_summary: str
