@@ -57,11 +57,10 @@ const AGENT_SURFACES: Record<string, string[]> = {
   // Incident Commander coordinates from the alert; its console + the approvals
   // it hands off to are the surface that matters.
   'incident-commander':  ['/console/incident-commander', '/console/approvals', '/console/health'],
-  // War-Room Assembler opens straight to its console; carry the alert stream it
-  // assembled from plus the shared infra surfaces.
-  'war-room-assembler':  ['/console', '/console/alerts', '/console/war-room', ...SHARED_TAIL],
+  // War-Room Assembler's join link is folded into the combined notifications
+  // console (see catalog liveSurface), so it shares the notification surfaces.
   'notification-router': ['/console', '/console/notifications', ...SHARED_TAIL],
-  'war-room-assembler': ['/console', '/console/notifications', ...SHARED_TAIL],
+  'war-room-assembler':  ['/console', '/console/notifications', ...SHARED_TAIL],
   // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
   'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],
   // Remediation Recommender consumes the RCA verdict and ranks options; the
