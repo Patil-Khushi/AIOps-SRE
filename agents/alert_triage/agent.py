@@ -930,9 +930,7 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
     decision_trace.append(summary_trace)
 
     # Stage 8: assemble + persist
-    decision_trace.append(
-        f'assembled verdict: sev={sev}, status={status}, team="{team}"'
-    )
+    decision_trace.append(f'assembled verdict: sev={sev}, status={status}, team="{team}"')
     audit = AuditMetadata(
         created_at=datetime.now(UTC),
         created_by="RA-001",
