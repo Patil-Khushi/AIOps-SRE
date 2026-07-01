@@ -17,7 +17,6 @@ import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
 import Knowledge from '@/pages/Knowledge';
 import RunbookExecutor from '@/pages/RunbookExecutor';
-import RemediationRecommender from '@/pages/RemediationRecommender';
 import AutoHealer from '@/pages/AutoHealer';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
@@ -60,9 +59,12 @@ export default function App() {
           path="runbook-executor"
           element={<ErrorBoundary><RunbookExecutor /></ErrorBoundary>}
         />
+        {/* Remediation Recommender is merged into the RCA console — its
+            human-selectable fix steps + approval now live there. The standalone
+            page is retired; any old link redirects to the combined surface. */}
         <Route
           path="remediation-recommender"
-          element={<ErrorBoundary><RemediationRecommender /></ErrorBoundary>}
+          element={<Navigate to="/console/rca" replace />}
         />
         <Route
           path="auto-healer"
