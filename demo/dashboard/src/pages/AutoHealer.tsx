@@ -196,8 +196,8 @@ function ExecuteOption({
             <RotateCcw className="h-4 w-4" /> Clear
           </button>
         )}
-        <Link to="/agents/remediation-recommender" className="btn">
-          <ListChecks className="h-4 w-4" /> Back to options
+        <Link to="/console/rca" className="btn">
+          <ListChecks className="h-4 w-4" /> Back to RCA
         </Link>
       </div>
 
@@ -368,13 +368,13 @@ function NoOptionCard() {
           <div className="text-sm text-ink-700 dark:text-ink-200">
             <p className="font-semibold">No remediation chosen yet.</p>
             <p className="mt-0.5 text-xs text-ink-500 dark:text-ink-400">
-              Pick a ranked option on the Remediation Recommender, then send it here to execute through
-              the approval gate. Or try the standalone restart demo below.
+              Diagnose the incident and approve a ranked fix step in the RCA console — that's where
+              remediation now lives. Or try the standalone restart demo below.
             </p>
           </div>
         </div>
-        <Link to="/agents/remediation-recommender" className="btn btn-primary flex-shrink-0">
-          Go to Remediation Recommender <ArrowRight className="h-4 w-4" />
+        <Link to="/console/rca" className="btn btn-primary flex-shrink-0">
+          Go to RCA console <ArrowRight className="h-4 w-4" />
         </Link>
       </div>
     </div>
