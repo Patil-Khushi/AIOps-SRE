@@ -10,7 +10,6 @@ import ParticleField from '@/portal/ParticleField';
 import PortalNav from '@/portal/PortalNav';
 import PortalProgressBar from '@/portal/PortalProgressBar';
 import { usePortalProgress } from '@/portal/usePortalProgress';
-import { hasEntered } from '@/lib/consoleScope';
 
 // The Adaptive AIOps Platform Portal — landing route, v2 "Cinematic".
 //
@@ -25,18 +24,23 @@ import { hasEntered } from '@/lib/consoleScope';
 
 const AUTO_TRIGGER = 0.30;
 
+// Skip the scroll-gated cinematic boot and render the hero immediately.
+// The boot curtain was prone to "sticking" on the ADAPTIVE wordmark — so the
+// full "Adaptive AIOps + SRE Ops" identity never showed and it felt like a
+// hang. Flip to `false` to bring the cinematic intro back: everything it needs
+// (usePortalProgress, BootCurtain, IntroUI, PortalProgressBar) is still wired
+// below and simply renders in its booted state while this is true.
+const SKIP_INTRO = true;
+
 export default function Landing() {
-  // Returning visitors (already entered the app once) skip the cinematic boot:
-  // start fully booted with the hero already revealed — no animation replay.
-  const skipIntro = hasEntered();
-  const { progress, setProgress, onWheel } = usePortalProgress(skipIntro ? 1 : 0);
+  const { progress, setProgress, onWheel } = usePortalProgress(SKIP_INTRO ? 1 : 0);
   const navigate = useNavigate();
   const booted = progress >= 0.999;
   const [guideOpen, setGuideOpen] = useState(false);
 
   // Latch the hero reveal once the curtain has cleared, so the (memoised) Hero
   // re-renders exactly once instead of on every boot-progress frame.
-  const [heroRevealed, setHeroRevealed] = useState(skipIntro);
+  const [heroRevealed, setHeroRevealed] = useState(SKIP_INTRO);
   useEffect(() => {
     if (progress >= 0.95 && !heroRevealed) setHeroRevealed(true);
   }, [progress, heroRevealed]);
