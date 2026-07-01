@@ -17,7 +17,7 @@ All targets are sourced from [Adaptive_AIOps_Solution_Design.pptx slide 12](docs
 | **Definition** | Elapsed time from *alert fires in the source system* (Prometheus rule transitions to `firing`) to *a human acknowledges it* (clicks Ack in PagerDuty, posts in the Slack thread, or claims the ticket in ServiceNow). Measured per incident, then averaged over a rolling window. |
 | **Baseline** | Typical NOC dwell time on Sev-1/2 is 5–15 minutes — the alert sits in a queue until the on-call notices the page, opens Slack, finds the right channel, and confirms ownership. The demo's pre-RA-005 baseline is "alert appears in Prometheus → no human action until the dashboard is manually refreshed." |
 | **Target** | **< 2 minutes for Sev-1/2** ([Solution Design](docs/Adaptive_AIOps_Solution_Design.pptx) slide 12). The auto-triage loop (#130) closes this further by triggering the pipeline within ~3 s of the alert appearing in `/api/live-alerts`. |
-| **How measured** | RA-001 emits `created_at` on the `TriageVerdict` ([agents/alert_triage/](agents/alert_triage/)). RA-005 emits a `decided_at` on `RoutingOutcome.decision` ([agents/notification_router/models.py:52](agents/notification_router/models.py#L52)). PagerDuty webhook posts the `acknowledged_at` back. MTTA = `pd.acknowledged_at − verdict.created_at`. For the demo, the audit log at `demo/audit/chatops.jsonl` is the source of truth — every send + ack has a timestamp. Post-POC: surface on a Grafana panel against the live Prometheus alert-state series. |
+| **How measured** | RA-001 emits `created_at` on the `TriageVerdict` ([agents/alert_triage/](agents/alert_triage/)). the Notification Assembler (RA-005+006) emits a `decided_at` on `NotificationOutcome.decision` ([agents/notification_assembler/models.py](agents/notification_assembler/models.py)). PagerDuty webhook posts the `acknowledged_at` back. MTTA = `pd.acknowledged_at − verdict.created_at`. For the demo, the audit log at `demo/audit/chatops.jsonl` is the source of truth — every send + ack has a timestamp. Post-POC: surface on a Grafana panel against the live Prometheus alert-state series. |
 
 ---
 
@@ -72,7 +72,7 @@ All targets are sourced from [Adaptive_AIOps_Solution_Design.pptx slide 12](docs
 | **Definition** | Per-routing-decision percentage of selected sinks where the delivery succeeded. A routing decision can fan out to N adapters (Slack channel, PagerDuty page, JSONL audit log, future Teams); deliverability is the fraction where `DeliveryResult.ok == True` for the adapters RA-005 decided to send to. The metric matches the DOC-3 issue wording: *"% of routing decisions where every selected sink succeeded."* |
 | **Baseline** | Pre-PR #127, RA-005 did not expose per-adapter delivery outcomes — a Slack post-failure was silently swallowed. So the baseline is "we cannot tell." With PR #127's `RoutingOutcome.deliveries: dict[str, DeliveryResult]`, the metric becomes observable for the first time. |
 | **Target** | **≥ 99% all-sinks-OK rate**, measured over rolling 7-day windows in steady state. PagerDuty and Slack vendor SLAs are both ≥ 99.95% — the practical headroom is dominated by transient network failures and adapter-side rate limits. For the demo, "every demo run delivers to all configured sinks" is the acceptance bar. |
-| **How measured** | `ChatOpsClient.send()` returns `dict[str, DeliveryResult]` ([aiops/tools/chatops/client.py:54](aiops/tools/chatops/client.py#L54)). Each `DeliveryResult` has `adapter`, `ok`, `error`, `latency_ms` ([aiops/tools/chatops/models.py:77-81](aiops/tools/chatops/models.py#L77-L81)). RA-005's `route()` returns `RoutingOutcome.deliveries` containing the same map ([agents/notification_router/models.py:55-59](agents/notification_router/models.py#L55-L59)). Compute: `all_ok = all(d.ok for d in outcome.deliveries.values())` per routing, then aggregate. Currently surfaced in the route return value and the audit log; not yet on a dashboard. |
+| **How measured** | `ChatOpsClient.send()` returns `dict[str, DeliveryResult]` ([aiops/tools/chatops/client.py:54](aiops/tools/chatops/client.py#L54)). Each `DeliveryResult` has `adapter`, `ok`, `error`, `latency_ms` ([aiops/tools/chatops/models.py:77-81](aiops/tools/chatops/models.py#L77-L81)). the Notification Assembler's `notify()` returns `NotificationOutcome.deliveries` containing the same map ([agents/notification_assembler/models.py](agents/notification_assembler/models.py)). Compute: `all_ok = all(d.ok for d in outcome.deliveries.values())` per routing, then aggregate. Currently surfaced in the route return value and the audit log; not yet on a dashboard. |
 
 ---
 
@@ -97,8 +97,7 @@ This table mirrors the KPI column of the [Agent Catalog xlsx](docs/Adaptive_AIOp
 | RA-002 | Incident Classifier Agent | Reactive-Active | Optional | Classification accuracy %, misroute rate |
 | RA-003 | Auto-Ticketing Agent | Reactive-Active | Optional | Ticket automation %, ticket accuracy score |
 | RA-004 | Runbook Executor Agent | Reactive-Active | Required | Auto-remediation success %, rollback incidents |
-| RA-005 | Notification Router Agent | Reactive-Active | None | Acknowledgement latency, escalation rate |
-| RA-006 | War-Room Assembler Agent | Reactive-Active | Optional | Time-to-bridge, SME coverage % |
+| RA-005+006 | Notification Assembler Agent (merged) | Reactive-Active | Optional | Acknowledgement latency, escalation rate, time-to-bridge, SME coverage % |
 | RA-007 | Log Correlation Agent | Reactive-Active | None | MTTI reduction, evidence completeness |
 | RA-008 | Incident Commander Agent (SRE) | Reactive-Active | Optional | Incident-communication compliance %, postmortem cycle time |
 | PRO-001 | Anomaly Detector Agent | Proactive | Optional | Early-warning lead time, false-positive rate |
@@ -145,7 +144,7 @@ This table mirrors the KPI column of the [Agent Catalog xlsx](docs/Adaptive_AIOp
 - [Adaptive_AIOps_Agent_Catalog.xlsx](docs/Adaptive_AIOps_Agent_Catalog.xlsx) Master sheet KPI column — authoritative per-agent metric list.
 - [evals/harness.py](evals/harness.py) — `AgentRun.pass_rate`, `TruthFileRun.pass_rate`, CI gate.
 - [aiops/tools/chatops/models.py:77-81](aiops/tools/chatops/models.py#L77-L81) — `DeliveryResult` model.
-- [agents/notification_router/models.py:55-59](agents/notification_router/models.py#L55-L59) — `RoutingOutcome.deliveries`.
+- [agents/notification_assembler/models.py](agents/notification_assembler/models.py) — `NotificationOutcome.deliveries`.
 - [CLAUDE.md "Concept cheat sheet"](CLAUDE.md) — SLI/SLO/SLA/MTTA/MTTR/MTTD/MTBF/toil/blast-radius vocabulary.
 
 Cross-references to sibling DOC-* tickets: [DOC-1 PRD.md (#114)](https://github.com/UbiquotousPanda/AIops/issues/114) · [DOC-4 RISK_REGISTER.md (#117)](https://github.com/UbiquotousPanda/AIops/issues/117) · [DOC-8 EVAL_METHODOLOGY.md (#121)](https://github.com/UbiquotousPanda/AIops/issues/121) · [DOC-9 POST_POC_ROADMAP.md (#122)](https://github.com/UbiquotousPanda/AIops/issues/122).

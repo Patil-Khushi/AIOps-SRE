@@ -7,11 +7,15 @@ Phase 1 is in flight. Shipped agents under `agents/`:
 | `alert_triage/` | RA-001 | Reactive-Active | Triages incoming alerts → `TriageVerdict` (service, severity, owning team, dedup). |
 | `incident_classifier/` | RA-002 | Reactive-Active | Assigns each verdict an `IncidentType` (infra / app / network / external_dep / change). |
 | `auto_ticketing/` | RA-003 | Reactive-Active | Turns a `TriageVerdict` into a ServiceNow PDI ticket via the `aiops.tools.itsm` seam. |
-| `notification_router/` | RA-005 | Reactive-Active | Routes verdicts to chatops (page / team channel / noise bucket) by severity + time-of-day. |
+| `notification_assembler/` | RA-005+006 | Reactive-Active | **One agent** that routes the single notification (page / team channel / noise bucket by severity + time-of-day) **and**, on Sev-1/Sev-2, stands up the war room (channel + on-call SME + context pack + seed timeline) and folds its join link into that same message. Merges the former Notification Router (RA-005) + War-Room Assembler (RA-006) into one unit — see the [product decision](#note-ra-005--ra-006-are-one-agent) below. |
 | `knowledge_synthesizer/` | PRS-007 | Prescriptive-Adaptive | On a resolved incident, drafts a postmortem + runbook suggestion + KB article (`pending_review`); publication is HITL-gated (`knowledge.publish`). |
 | `incident_commander/` | RA-008 (SRE) | Reactive-Active | Coordinates Sev-1/Sev-2 response: chains the reactive flow + RA-007 Log Correlation + RCA via the orchestrator seam, scribes a timeline, posts an IC context pack + human-IC handoff, seeds a postmortem. Takes no destructive action. |
 
-> RA-008 runs on the **orchestrator seam** (`aiops/runtime/orchestrator.py`, INFRA-2 / #74): `run_reactive_flow(alert)` is the single entry point for the RA-001 → RA-002 → RA-003 → RA-005 chain that the `/api/triage` route and the auto-triage loop also use. Call it instead of re-wiring the chain.
+> RA-008 runs on the **orchestrator seam** (`aiops/runtime/orchestrator.py`, INFRA-2 / #74): `run_reactive_flow(alert)` is the single entry point for the RA-001 → RA-002 → RA-003 → RA-005+006 chain that the `/api/triage` route and the auto-triage loop also use. Call it instead of re-wiring the chain.
+
+### Note: RA-005 + RA-006 are one agent
+
+The product ships a **single Notification Assembler** (`notification_assembler/`) that owns both the notification-routing (former RA-005) and war-room (former RA-006) responsibilities, and emits **one** message per incident — with the war-room join link folded in for Sev-1/Sev-2, or a plain notification for lower severities. The two are no longer separate, individually-deployable packages; the earlier thin `notification_router/` and `war_room_assembler/` wrappers were removed. The vision catalog (`docs/Adaptive_AIOps_Agent_Catalog.xlsx`) still lists them as distinct rows; treat "Notification Assembler" as the shipped SKU that fulfils both.
 
 When you add an agent, the contract for it lives in `docs/Adaptive_AIOps_Agent_Catalog.xlsx`. Read its row before writing code — that row is the source of truth for: description, key features, primary tool mapping, secondary integrations, inputs, outputs, HITL level, KPI.
 

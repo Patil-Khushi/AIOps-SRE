@@ -327,5 +327,5 @@ makes vendor swaps cheap.
 | [aiops/tools/chatops/adapters/slack_users.json](../aiops/tools/chatops/adapters/slack_users.json) | Placeholder handle → Slack user-ID map (committed; real IDs from env) |
 | [aiops/tools/chatops/adapters/slack.py](../aiops/tools/chatops/adapters/slack.py) | Webhook adapter; renders Application + Sub-domain Block Kit fields |
 | [aiops/tools/chatops/adapters/slack_bot.py](../aiops/tools/chatops/adapters/slack_bot.py) | Bot adapter; DMs the picked engineer on `page_oncall` actions |
-| [agents/notification_router/agent.py](../agents/notification_router/agent.py) | RA-005; `_category_keywords_for` + `_resolve_oncall` + `_mentions_from` + structured body |
+| [agents/notification_assembler/agent.py](../agents/notification_assembler/agent.py) | RA-005+006; `_category_keywords_for` + `_resolve_oncall` + `_mentions_from` + structured body |
 | [tests/test_oncall.py](../tests/test_oncall.py) | 24 tests covering repo (shift + expertise) + tool + RA-005 integration |

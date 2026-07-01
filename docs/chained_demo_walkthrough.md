@@ -218,6 +218,6 @@ Each is a tracked v-next item in the relevant agent's README.
 | `/api/triage-full` chain endpoint | [demo/ui/server.py](../demo/ui/server.py) — search for `triage_full_endpoint` |
 | `/api/remediation` standalone | [demo/ui/server.py](../demo/ui/server.py) — `remediation_endpoint` |
 | `/api/execute` standalone | [demo/ui/server.py](../demo/ui/server.py) — `execute_endpoint` |
-| Reactive chain step bodies | [agents/alert_triage/](../agents/alert_triage/), [agents/incident_classifier/](../agents/incident_classifier/), [agents/auto_ticketing/](../agents/auto_ticketing/), [agents/notification_router/](../agents/notification_router/) |
+| Reactive chain step bodies | [agents/alert_triage/](../agents/alert_triage/), [agents/incident_classifier/](../agents/incident_classifier/), [agents/auto_ticketing/](../agents/auto_ticketing/), [agents/notification_assembler/](../agents/notification_assembler/) |
 | Prescriptive chain step bodies | [agents/rca_agent/](../agents/rca_agent/), [agents/remediation_recommender/](../agents/remediation_recommender/), [agents/auto_healer_lite/](../agents/auto_healer_lite/) |
 | Scenario-lock test | [tests/test_chained_demo.py](../tests/test_chained_demo.py) |

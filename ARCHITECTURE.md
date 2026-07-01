@@ -29,7 +29,7 @@ The runtime today is the four seams plus the agents. The six-component "Agentic 
 deck names (Planner, Router, Orchestrator, Memory, Tool Registry, Eval Harness) is partially
 realized: **Tool Registry** (`aiops/tools`), **Eval Harness** (`evals/`), and now a v0
 **Orchestrator** (`aiops/runtime/orchestrator.py`, INFRA-2 / #74) exist. The orchestrator's
-`run_reactive_flow(alert)` is the single seam for the RA-001 → RA-002 → RA-003 → RA-005 chain;
+`run_reactive_flow(alert)` is the single seam for the RA-001 → RA-002 → RA-003 → RA-005+006 chain;
 the `/api/triage` route, the auto-triage loop, and the RA-008 Incident Commander all call it
 instead of re-wiring the chain (see [ADR-002](docs/adr/0002-agent-framework-choice.md)). Planner /
 Router / Memory remain deferred to Phase 3.
@@ -100,9 +100,13 @@ All Reactive-Active agents consume RA-001's `TriageVerdict`; none performs its o
 - **`auto_ticketing` (RA-003)** — `ticket(verdict) → TicketRecord`. Skips Suppressed verdicts;
   maps severity → urgency; calls `itsm.incident.create` (OPTIONAL) and `notify.send`. *Error
   modes:* ServiceNow down → `ToolResult(ok=False)` captured in the trace, flow continues.
-- **`notification_router` (RA-005)** — `decide(verdict) → RoutingDecision`, `route(...) →
-  RoutingOutcome`. Chooses a channel by severity / time-of-day / ownership and posts via the
-  chatops seam (autonomy `NONE`). *Error mode:* Slack down → JSON-file adapter still records.
+- **`notification_assembler` (RA-005+006)** — `decide(verdict) → NotificationAssembly`,
+  `notify(...) → NotificationOutcome`. One agent: chooses a channel by severity / time-of-day /
+  ownership **and**, on Sev-1/Sev-2, stands up the war room (channel + on-call SME + context pack
+  + timeline) and folds its join link into a single chatops message; lower severities get the
+  notification only (autonomy `Optional`). Merges the former Notification Router (RA-005) +
+  War-Room Assembler (RA-006). *Error mode:* Slack down → JSON-file adapter still records; a
+  failed war-room bridge degrades to `skipped`/`failed` without breaking the pipeline.
 - **`rca_agent` (PRS-008 ★)** — `analyze(RCAInput) → RCAVerdict` with ranked fix steps, each
   carrying `BlastRadius` + rollback and tagged `requires_hitl=true`. v0 is single-scenario
   (`slow-product-catalog`), pinned to Anthropic. *Side effect:* persists the verdict; **does
@@ -124,7 +128,7 @@ Alert (monitoring)
         ├─ RA-002 classify() ──────────► Classification             [llm + state]
         ├─ RA-003 ticket() ────────────► TicketRecord               [tools: itsm.incident.create]
         │     └─ notify.send ──────────► chat message               [tools/chatops]
-        └─ RA-005 route() ─────────────► RoutingOutcome              [tools/chatops]
+        └─ RA-005+006 notify() ───────► NotificationOutcome         [tools/chatops + war-room bridge]
   (Prescriptive)
   RCA analyze() ───────────────────────► RCAVerdict + fix steps     [llm; each step requires_hitl]
      └─ auto_heal/runbook execute ─────► gate.check() == REQUIRED   [policy]
