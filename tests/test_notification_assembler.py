@@ -276,7 +276,8 @@ def test_business_hours_default_is_india_time():
     assert na_agent._in_business_hours_for(datetime(2026, 5, 13, 14, 0, tzinfo=UTC), None) is False
     # An unresolvable tz name falls back to IST (not UTC).
     assert (
-        na_agent._in_business_hours_for(datetime(2026, 5, 13, 4, 0, tzinfo=UTC), "Not/AZone") is True
+        na_agent._in_business_hours_for(datetime(2026, 5, 13, 4, 0, tzinfo=UTC), "Not/AZone")
+        is True
     )
 
 

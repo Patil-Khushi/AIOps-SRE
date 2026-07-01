@@ -461,6 +461,39 @@ class ExecutionRow(SQLModel, table=True):
     )
 
 
+class IncidentResolverRow(SQLModel, table=True):
+    """Who actually resolved a past incident, so the war-room assembler can
+    re-invite them when the same class of problem recurs (institutional memory).
+
+    Written when a war room is marked ``resolved`` (RA-005+006, #197 follow-up):
+    the SMEs who *joined* the room are recorded here (or the on-call engineer as
+    a fallback). On the next Sev-1/Sev-2 incident matching the same
+    ``affected_service`` + ``category`` (failure sub-domain), these people are
+    invited as ``source="past_resolver"`` SMEs alongside the on-call and the
+    dependency owners.
+
+    ``category`` is the human-readable failure sub-domain (e.g. ``"Payment
+    Gateway"``) from the expertise-aware on-call match — nullable when no
+    sub-domain was matched, in which case lookups fall back to service-wide.
+    ``resolver_handle`` is the vendor-neutral mention (``@chinmay`` / ``@email``)
+    the war-room bridge re-invites with.
+    """
+
+    __tablename__ = "incident_resolvers"
+
+    id: int | None = Field(default=None, primary_key=True)
+    affected_service: str = Field(index=True)
+    category: str | None = Field(default=None, index=True)  # failure sub-domain display name
+    resolver_handle: str = Field(index=True)  # "@chinmay" or "@email"
+    resolver_name: str | None = None
+    resolver_email: str | None = None
+    incident_id: str | None = Field(default=None, index=True)
+    resolved_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+
+
 __all__ = [
     "ClassificationRow",
     "ClusterRow",
@@ -469,6 +502,7 @@ __all__ = [
     "ExecutionRow",
     "FailureCategoryRow",
     "HistoricalIncidentRow",
+    "IncidentResolverRow",
     "KBArticleRow",
     "NotificationRow",
     "RCAResultRow",
