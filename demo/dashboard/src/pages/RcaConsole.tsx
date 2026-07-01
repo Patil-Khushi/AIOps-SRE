@@ -100,15 +100,21 @@ export default function RcaConsole() {
     }
   };
 
-  // When arriving from Alert Triage, preselect the matching incident and run
-  // RCA automatically — one click on "Generate RCA" lands you on the result.
+  // When arriving from Alert Triage (or from an approved fix on the Approvals
+  // console), preselect the matching incident. If we already have a cached RCA
+  // for it, just select it — the selection effect restores the verdict, so the
+  // deep-link lands instantly on THAT failure without re-running the analysis.
+  // Only run RCA fresh when nothing is cached (the Alert-Triage first-look case).
   useEffect(() => {
     if (handedOff.current || !wantedService) return;
     const idx = list.findIndex((v) => v.affected_service === wantedService);
     if (idx >= 0) {
       handedOff.current = true;
       setSelectedIdx(idx);
-      runRca(results[idx].verdict, results[idx]?.ticket?.ticket_id ?? null, idx);
+      const v = results[idx].verdict;
+      if (!rcaCache.get(rcaKey(v, idx))) {
+        runRca(v, results[idx]?.ticket?.ticket_id ?? null, idx);
+      }
       return;
     }
     // The just-triaged verdict may not be in this snapshot yet (intervalMs: 0,

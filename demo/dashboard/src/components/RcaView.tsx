@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, ShieldAlert, CheckCircle2, XCircle, Undo2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { RefreshCw, ShieldAlert, CheckCircle2, XCircle, Undo2, Gavel } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { RCAVerdict, BlastRadius, RankedFixStep } from '@/types/api';
 import { clsx } from '@/lib/format';
@@ -71,7 +72,9 @@ function ApprovalBox({
   const by = approver ? ` by ${approver}` : '';
   const busy = status === 'pending';
   const done = status === 'executed';
-  const label = busy ? 'Awaiting approval…' : done ? 'Applied' : status === 'idle' ? 'Approve & apply' : 'Retry';
+  // The button only REQUESTS approval — a human grants it in the Approvals
+  // console (or Slack). Label it so nobody expects the click alone to apply.
+  const label = busy ? 'Awaiting approval…' : done ? 'Applied' : status === 'idle' ? 'Request approval & apply' : 'Retry';
 
   return (
     <div className="mt-2 rounded-md border border-accent/40 bg-accent/5 p-2.5">
@@ -98,10 +101,25 @@ function ApprovalBox({
         </button>
       </div>
 
-      {status === 'pending' && (
+      {status === 'idle' && (
         <p className="mt-2 text-[11px] text-ink-500 dark:text-ink-400">
-          Approval requested — approve or deny in the Approvals console or Slack. The flag is unchanged until then.
+          This is HITL-gated: clicking requests approval — a human then approves it in the{' '}
+          <span className="font-medium text-ink-700 dark:text-ink-200">Approvals</span> console (or Slack).
+          The flag flips only after that.
         </p>
+      )}
+      {status === 'pending' && (
+        <div className="mt-2 space-y-1.5">
+          <p className="text-[11px] text-ink-500 dark:text-ink-400">
+            Approval requested — grant it to apply the fix. The flag is unchanged until then.
+          </p>
+          <Link
+            to="/console/approvals"
+            className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition hover:bg-accent/20"
+          >
+            <Gavel className="h-3.5 w-3.5" /> Open Approvals console to approve
+          </Link>
+        </div>
       )}
       {status === 'executed' && (
         <p className="mt-2 flex items-center gap-1 text-[11px] text-ok">
@@ -201,6 +219,10 @@ export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string |
       const context: Record<string, unknown> = {
         service: v.affected_service,
         rca_verdict: v,
+        // Give the operator time to open the Approvals console and grant it —
+        // the backend default (120s) expires before a human realistically can,
+        // which surfaced as the fix "always" flipping to Retry.
+        timeout_seconds: 600,
       };
       if (incidentId) context.incident_id = incidentId;
       const res = await api.applyRcaFix(flag, fixVariant, 'set_flag', undefined, context);
