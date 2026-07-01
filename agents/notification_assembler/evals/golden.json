@@ -39,7 +39,7 @@
     },
     {
       "id": "sev2-cart-business-hours-chats-team-and-assembles",
-      "description": "Sev-2 at 14:00 UTC chats the owning team (no page) and still assembles a P2 war room.",
+      "description": "Sev-2 at 06:00 UTC (11:30 IST, business hours) chats the owning team (no page) and still assembles a P2 war room.",
       "input": {
         "verdict": {
           "affected_service": "cart",
@@ -58,7 +58,7 @@
             "decision_trace": []
           }
         },
-        "now": "2026-05-13T14:00:00Z"
+        "now": "2026-05-13T06:00:00Z"
       },
       "expected": {
         "chat_severity": "p2",

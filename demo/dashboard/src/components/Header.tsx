@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Moon, Sun, Activity, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Moon, Sun, Activity, AlertCircle, LayoutGrid } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
 import { api } from '@/lib/api';
 import type { HealthResponse } from '@/types/api';
 import { clsx } from '@/lib/format';
-import { getConsoleAgentId } from '@/lib/consoleScope';
-import { getAgentById } from '@/data/agentCatalog';
+import { useConsoleAgent } from '@/hooks/useConsoleAgent';
 
 function ChipDot({
   ok,
@@ -27,11 +26,12 @@ export default function Header() {
   const [h, setH] = useState<HealthResponse | null>(null);
   const [err, setErr] = useState(false);
 
-  // Back goes to the agent this console was opened for (not home). The agent
-  // detail page is the step before the console, so this is a true "up one level".
-  const agentId = getConsoleAgentId();
-  const agent = getAgentById(agentId);
-  const goBack = () => navigate(agent ? `/agents/${agent.id}` : '/agents');
+  // Open agent — derived from the route (shared with Sidebar via the hook).
+  const agent = useConsoleAgent();
+  // Back = one real step back in history (browser-style), not a jump to a
+  // fixed page. All-Agents = jump straight to the catalog from anywhere.
+  const goBack = () => navigate(-1);
+  const goAllAgents = () => navigate('/agents');
 
   useEffect(() => {
     let alive = true;
@@ -50,10 +50,18 @@ export default function Header() {
         <button
           onClick={goBack}
           className="btn !p-1.5"
-          title={agent ? `Back to ${agent.name}` : 'Back to agents'}
+          title="Back (one step)"
           aria-label="Back"
         >
           <ArrowLeft className="h-4 w-4" />
+        </button>
+        <button
+          onClick={goAllAgents}
+          className="btn !py-1.5 !pl-2 !pr-2.5 !text-xs"
+          title="Go to all agents"
+          aria-label="All agents"
+        >
+          <LayoutGrid className="h-4 w-4" /> All Agents
         </button>
         <Activity className="h-4 w-4 text-accent" />
         <h1 className="text-sm font-semibold text-ink-900 dark:text-ink-50">

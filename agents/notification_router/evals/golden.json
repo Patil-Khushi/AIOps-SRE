@@ -35,7 +35,7 @@
     },
     {
       "id": "sev2-cart-business-hours-chats-team",
-      "description": "Sev-2 at 14:00 UTC (business hours) should chat the owning team channel, no page.",
+      "description": "Sev-2 at 06:00 UTC (11:30 IST, business hours) should chat the owning team channel, no page.",
       "input": {
         "verdict": {
           "affected_service": "cart",
@@ -54,7 +54,7 @@
             "decision_trace": []
           }
         },
-        "now": "2026-05-13T14:00:00Z"
+        "now": "2026-05-13T06:00:00Z"
       },
       "expected": {
         "chat_severity": "p2",

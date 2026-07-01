@@ -9,6 +9,7 @@ import StatCard from '@/components/StatCard';
 import { ErrorState } from '@/components/states';
 import { api } from '@/lib/api';
 import { getAgentById } from '@/data/agentCatalog';
+import { setConsoleAgent } from '@/lib/consoleScope';
 import { clsx } from '@/lib/format';
 import type {
   ApprovalRecord, ExecutionVerdict, RemediationOption,
@@ -37,6 +38,10 @@ export default function AutoHealer() {
   const location = useLocation();
   const handoff = (location.state as HandoffState) ?? null;
   const option = handoff?.option ?? null;
+
+  // Scope the console to this agent so the sidebar shows its focused surfaces
+  // (and its name) — including after navigating to a shared /console link.
+  useEffect(() => { setConsoleAgent('auto-healer'); }, []);
 
   return (
     <div className="space-y-6">
