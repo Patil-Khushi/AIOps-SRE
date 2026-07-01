@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from agents.alert_triage import TriageVerdict
 from aiops.tools import get_registry
@@ -43,10 +44,16 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-# UTC business-hours window. The OTel demo + evals run in UTC so we pin to UTC
-# rather than guessing local time. A future v2 reads the on-call's timezone.
+# Business-hours window, evaluated in the on-call engineer's timezone — the
+# rotation is India-based, so the default is IST (#199). 9-18 = 09:00-18:00 local.
 BUSINESS_HOUR_START = 9
 BUSINESS_HOUR_END = 18
+
+# India Standard Time as a FIXED UTC+5:30 offset. India observes no DST, so the
+# default needs no IANA tz database (zoneinfo/tzdata) — the agent stays
+# dependency-free. A roster-supplied IANA name (for a non-India engineer) is
+# honoured when it resolves; otherwise IST is used.
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 TriageSev = Literal["Sev-1", "Sev-2", "Sev-3", "Sev-4"]
 
@@ -69,6 +76,23 @@ def _team_slug(team: str) -> str:
 
 def _is_business_hours(now: datetime) -> bool:
     return BUSINESS_HOUR_START <= now.hour < BUSINESS_HOUR_END
+
+
+def _in_business_hours_for(now: datetime, tz_name: str | None) -> bool:
+    """Business hours in the on-call engineer's timezone, defaulting to IST (#199).
+
+    The on-call rotation is India-based, so business hours default to India
+    Standard Time (``_IST``, a fixed UTC+5:30 offset — no DST, no tz database
+    needed). If the roster supplies a specific IANA ``timezone`` for a non-India
+    engineer and it resolves, that is honoured; otherwise IST is used.
+    """
+    tz = _IST
+    if tz_name:
+        try:
+            tz = ZoneInfo(str(tz_name))
+        except Exception:
+            logger.debug("timezone %r unresolved; using IST default", tz_name)
+    return _is_business_hours(now.astimezone(tz))
 
 
 def _channel_for(team_slug: str) -> str:
@@ -241,14 +265,17 @@ def _render_body(
 
 def _decide_routing(verdict: TriageVerdict, now: datetime, oncall: dict | None) -> RoutingDecision:
     """Pure routing decision (former RA-005 ``decide``)."""
-    in_hours = _is_business_hours(now)
+    # Business hours in the on-call engineer's timezone, defaulting to IST (the
+    # India-based rotation) when the lookup carries no timezone (#199).
+    tz_name = (oncall or {}).get("timezone")
+    in_hours = _in_business_hours_for(now, tz_name)
     sev: TriageSev = verdict.severity
     team_slug = _team_slug(verdict.assigned_team)
     title = verdict.alert_summary or f"{sev} alert on {verdict.affected_service}"
 
     audit: list[str] = [
         f"input: severity={sev}, service={verdict.affected_service!r}, team={verdict.assigned_team!r}",
-        f"hour={now.hour:02d}Z, business_hours={'yes' if in_hours else 'no'}",
+        f"hour={now.hour:02d}Z, tz={tz_name or 'IST'}, business_hours={'yes' if in_hours else 'no'}",
     ]
     if oncall and oncall.get("matched_category"):
         audit.append(
@@ -384,6 +411,68 @@ def _invited_smes(verdict: TriageVerdict, oncall: dict | None) -> list[InvitedSM
     ]
 
 
+def _dependency_owner_smes(verdict: TriageVerdict, exclude_handles: set[str]) -> list[InvitedSME]:
+    """Invite the on-call owners of the affected service's downstream dependencies (#197).
+
+    RA-006's contract (README step 2 + the Seams table) is to pick SMEs from the
+    impacted CIs *and their dependencies*, not just the owning team's on-call.
+    This resolves the dependency graph via ``itsm.cmdb.dependencies``, each
+    dependency's owning team via ``itsm.cmdb.lookup``, and that team's on-call
+    via ``oncall.schedule.lookup``, returning one ``dependency_owner`` SME per
+    distinct engineer.
+
+    Best-effort and side-effect-free: any unregistered capability or non-ok
+    result for a given dependency is skipped (never raises), so a partial CMDB
+    can't break war-room assembly (CLAUDE.md safe-autonomy). De-dups against
+    ``exclude_handles`` (the on-call already invited) and within itself.
+    """
+    registry = get_registry()
+    try:
+        dep_res = registry.call("itsm.cmdb.dependencies", service=verdict.affected_service)
+    except KeyError:
+        return []
+    if not dep_res.ok or not isinstance(dep_res.data, dict):
+        return []
+
+    seen = set(exclude_handles)
+    out: list[InvitedSME] = []
+    for raw_dep in dep_res.data.get("dependencies") or []:
+        dep = str(raw_dep).strip()
+        if not dep:
+            continue
+        try:
+            cmdb = registry.call("itsm.cmdb.lookup", service=dep)
+        except KeyError:
+            continue
+        team = (cmdb.data or {}).get("team") if (cmdb.ok and isinstance(cmdb.data, dict)) else None
+        if not isinstance(team, str) or not team.strip():
+            continue
+        try:
+            oc = registry.call("oncall.schedule.lookup", team=team, service=dep)
+        except KeyError:
+            continue
+        data = oc.data if (oc.ok and isinstance(oc.data, dict)) else {}
+        handle = (data.get("slack_handle") or "").strip()
+        email = data.get("engineer_email")
+        if handle and not handle.startswith("@"):
+            handle = f"@{handle}"
+        if not handle and email:
+            handle = f"@{email}"
+        if not handle or handle in seen:
+            continue
+        seen.add(handle)
+        out.append(
+            InvitedSME(
+                handle=handle,
+                name=data.get("engineer_name") or email,
+                team=team,
+                reason=f"owns dependency {dep} of {verdict.affected_service}",
+                source="dependency_owner",
+            )
+        )
+    return out
+
+
 def _context_item(label: str, capability: str, **kwargs) -> ContextPackItem:
     """Call a read-only observability seam and fold the result into one pack
     line. Any failure becomes ``"unavailable"`` rather than raising — the
@@ -474,7 +563,12 @@ def _decide_war_room(verdict: TriageVerdict, now: datetime, oncall: dict | None)
         audit.append("oncall: no lookup result — falling back to verdict.assigned_engineer")
 
     invited = _invited_smes(verdict, oncall)
-    audit.append(f"smes: invited {len(invited)} (source=oncall)")
+    dep_smes = _dependency_owner_smes(verdict, {s.handle for s in invited})
+    invited = invited + dep_smes
+    audit.append(
+        f"smes: invited {len(invited)} "
+        f"({len(invited) - len(dep_smes)} on-call + {len(dep_smes)} dependency-owner)"
+    )
 
     context_pack = _build_context_pack(verdict)
     live = sum(

@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 
 from agents.alert_triage import AuditMetadata, TriageVerdict
+from agents.notification_assembler import agent as na_agent
 from agents.notification_assembler import decide, notify
+from aiops.tools import ToolResult
 from aiops.tools.chatops import ChatOpsClient, Severity, get_client
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -65,7 +67,8 @@ def test_sev1_pages_oncall_even_at_night():
 
 
 def test_sev2_in_business_hours_chats_team_no_page():
-    d = decide(_verdict(severity="Sev-2"), now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC)).decision
+    # 06:00 UTC = 11:30 IST — business hours on the India-based rotation (#199).
+    d = decide(_verdict(severity="Sev-2"), now=datetime(2026, 5, 13, 6, 0, tzinfo=UTC)).decision
 
     assert d.chat_severity == Severity.P2
     assert d.channel == "team-payments"
@@ -128,7 +131,7 @@ def test_team_slug_strips_team_suffix_and_lowercases():
     # slug regression can't silently degrade channel selection.
     d = decide(
         _verdict(severity="Sev-2", team="Order Experience"),
-        now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC),
+        now=datetime(2026, 5, 13, 6, 0, tzinfo=UTC),  # 11:30 IST — business hours
     ).decision
     assert d.channel == "team-order-experience"
 
@@ -261,6 +264,125 @@ def test_notify_records_adapter_failures_and_continues(_isolated_chatops: ChatOp
     assert outcome.deliveries["_RecordingAdapter"].ok is True
     assert outcome.deliveries["BadAdapter"].ok is False
     assert "RuntimeError: boom" in outcome.deliveries["BadAdapter"].error
+
+
+# ─── #199 business hours default to India Standard Time ────────────────────
+
+
+def test_business_hours_default_is_india_time():
+    # 04:00 UTC = 09:30 IST (in hours) though UTC is after-hours → default IST.
+    assert na_agent._in_business_hours_for(datetime(2026, 5, 13, 4, 0, tzinfo=UTC), None) is True
+    # 14:00 UTC = 19:30 IST → after hours on the India clock.
+    assert na_agent._in_business_hours_for(datetime(2026, 5, 13, 14, 0, tzinfo=UTC), None) is False
+    # An unresolvable tz name falls back to IST (not UTC).
+    assert (
+        na_agent._in_business_hours_for(datetime(2026, 5, 13, 4, 0, tzinfo=UTC), "Not/AZone") is True
+    )
+
+
+def test_sev2_routing_defaults_to_india_business_hours(monkeypatch):
+    # Mock on-call carries no timezone → IST default. 04:00 UTC = 09:30 IST
+    # (in hours) → chat the team, no page (a UTC window would have paged).
+    monkeypatch.setattr(na_agent, "_resolve_oncall", lambda v: {"engineer_email": "x@example.com"})
+    d = decide(_verdict(severity="Sev-2"), now=datetime(2026, 5, 13, 4, 0, tzinfo=UTC)).decision
+    assert d.channel == "team-payments"
+    assert "page_oncall" not in d.actions
+    assert d.response_mode == "notify"
+
+
+def test_sev2_routing_after_hours_in_india_pages(monkeypatch):
+    # 14:00 UTC = 19:30 IST → after hours → page the on-call.
+    monkeypatch.setattr(na_agent, "_resolve_oncall", lambda v: {"engineer_email": "x@example.com"})
+    d = decide(_verdict(severity="Sev-2"), now=datetime(2026, 5, 13, 14, 0, tzinfo=UTC)).decision
+    assert d.channel == "incidents"
+    assert "page_oncall" in d.actions
+
+
+# ─── #197 dependency-owner SME invites (war-room half) ─────────────────────
+
+
+class _FakeRegistry:
+    """Canned tool registry for deterministic SME-selection tests.
+
+    Dispatches the three capabilities ``_dependency_owner_smes`` /
+    ``_resolve_oncall`` use; everything else (observability) returns not-ok so
+    the context pack degrades to 'unavailable' without affecting the SME list.
+    """
+
+    def __init__(self, deps, teams, oncall_by_team):
+        self._deps = deps
+        self._teams = teams
+        self._oncall = oncall_by_team
+
+    def call(self, capability, **kw):
+        if capability == "itsm.cmdb.dependencies":
+            return ToolResult(ok=True, data={"dependencies": self._deps.get(kw.get("service"), [])})
+        if capability == "itsm.cmdb.lookup":
+            team = self._teams.get(kw.get("service"))
+            return ToolResult(ok=bool(team), data={"team": team} if team else None)
+        if capability == "oncall.schedule.lookup":
+            data = self._oncall.get(kw.get("team"))
+            return ToolResult(ok=bool(data), data=data)
+        return ToolResult(ok=False, error="not wired in fake")
+
+
+def test_war_room_invites_dependency_owners(monkeypatch):
+    fake = _FakeRegistry(
+        deps={"payment": ["currency", "fraud-detection"]},
+        teams={"currency": "Pricing Team", "fraud-detection": "Trust and Safety"},
+        oncall_by_team={
+            "Payments Team": {"engineer_email": "chinmay@example.com", "slack_handle": "@chinmay"},
+            "Pricing Team": {"engineer_email": "riya@example.com", "slack_handle": "@riya"},
+            "Trust and Safety": {"engineer_email": "arjun@example.com", "slack_handle": "@arjun"},
+        },
+    )
+    monkeypatch.setattr(na_agent, "get_registry", lambda: fake)
+    wr = na_agent.decide_war_room(
+        _verdict(severity="Sev-1", service="payment", team="Payments Team", incident_id="INC1"),
+        now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC),
+    )
+    handles = [s.handle for s in wr.invited]
+    sources = {s.handle: s.source for s in wr.invited}
+    assert handles == ["@chinmay", "@riya", "@arjun"]
+    assert sources["@chinmay"] == "oncall"
+    assert sources["@riya"] == "dependency_owner"
+    assert sources["@arjun"] == "dependency_owner"
+
+
+def test_war_room_dependency_owner_deduped_against_oncall(monkeypatch):
+    # A dependency whose on-call is the SAME person as the primary on-call is
+    # invited only once.
+    fake = _FakeRegistry(
+        deps={"payment": ["currency"]},
+        teams={"currency": "Pricing Team"},
+        oncall_by_team={
+            "Payments Team": {"engineer_email": "chinmay@example.com", "slack_handle": "@chinmay"},
+            "Pricing Team": {"engineer_email": "chinmay@example.com", "slack_handle": "@chinmay"},
+        },
+    )
+    monkeypatch.setattr(na_agent, "get_registry", lambda: fake)
+    wr = na_agent.decide_war_room(
+        _verdict(severity="Sev-1", service="payment", team="Payments Team"),
+        now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC),
+    )
+    assert [s.handle for s in wr.invited] == ["@chinmay"]
+
+
+def test_war_room_dependency_lookup_failure_is_skipped(monkeypatch):
+    # An unresolvable dependency (no CMDB team) is skipped; on-call still invited.
+    fake = _FakeRegistry(
+        deps={"payment": ["ghost-service"]},
+        teams={},
+        oncall_by_team={
+            "Payments Team": {"engineer_email": "chinmay@example.com", "slack_handle": "@chinmay"},
+        },
+    )
+    monkeypatch.setattr(na_agent, "get_registry", lambda: fake)
+    wr = na_agent.decide_war_room(
+        _verdict(severity="Sev-1", service="payment", team="Payments Team"),
+        now=datetime(2026, 5, 13, 2, 0, tzinfo=UTC),
+    )
+    assert [s.handle for s in wr.invited] == ["@chinmay"]
 
 
 # ─── golden.json regression (flat run() output) ─────────────────────────────
