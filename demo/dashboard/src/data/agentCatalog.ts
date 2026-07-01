@@ -389,12 +389,15 @@ export const AGENTS: AgentCatalogItem[] = [
     hitl: 'Required',
     inputs: ['RCA verdict', 'triage context', 'environment'],
     outputs: ['ranked options', 'blast radius', 'rollback plan', 'tool capability'],
-    liveSurface: '/agents/remediation-recommender', liveSurfaceLabel: 'Open remediation console',
+    // Merged into the RCA console — the ranked fix steps and human selection +
+    // approval now live on the RCA surface (see RcaView). Its live surface opens
+    // there rather than a standalone page.
+    liveSurface: '/console/rca', liveSurfaceLabel: 'Open RCA & remediation console',
     howItWorks: [
       'Takes the incident verdict and root-cause context.',
       'Generates candidate fixes, each with a rollback.',
       'Ranks them by likely effectiveness and blast radius.',
-      'Presents the best option for human approval.',
+      'Presents the ranked steps in the RCA console for human selection and approval.',
     ],
   }),
   agent('Auto-Healer', 'Prescriptive-Adaptive', 24, 'Apply safe automated recovery.', 'Runs contained automation to restore service when allowed.', {

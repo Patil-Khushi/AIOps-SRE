@@ -187,9 +187,11 @@ export default function RcaConsole() {
             </ul>
           </div>
 
-          {/* RCA panel */}
+          {/* RCA panel — sticky on large screens but capped to the viewport and
+              internally scrollable, so a long verdict (many fix steps + trace)
+              is fully reachable instead of clipped below the fold. */}
           <aside className="lg:col-span-3">
-            <div className="card sticky top-20">
+            <div className="card lg:sticky lg:top-20 lg:flex lg:max-h-[calc(100vh-6rem)] lg:flex-col lg:overflow-hidden">
               <div className="card-header">
                 <h2 className="card-title">Root-cause analysis</h2>
                 <button
@@ -202,7 +204,7 @@ export default function RcaConsole() {
                   {rca ? 'Re-generate RCA' : 'Generate RCA'}
                 </button>
               </div>
-              <div className="card-body">
+              <div className="card-body lg:flex-1 lg:overflow-y-auto">
                 {!rca && !rcaBusy && !rcaError && (
                   <EmptyState
                     label={selected ? `Analyse ${selected.affected_service}` : 'Select an incident'}
