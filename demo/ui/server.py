@@ -119,6 +119,9 @@ from aiops.tools import (  # noqa: E402
 from aiops.tools import (  # noqa: E402
     oncall as _oncall_tool,  # noqa: F401  — DB-backed oncall provider registration
 )
+from aiops.tools import (  # noqa: E402
+    resolvers as _resolvers_tool,  # noqa: F401  — DB-backed incident.resolvers.lookup registration
+)
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import register_env_adapters  # noqa: E402
 from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
@@ -2310,19 +2313,68 @@ class WarRoomStatusRequest(BaseModel):
     status: str
 
 
+def _record_resolvers_from_row(row: dict[str, Any]) -> int:
+    """On resolve, remember who fixed it so the war-room assembler can re-invite
+    them next time this class of incident recurs (institutional memory).
+
+    "Who fixed it" = the invited SMEs whose attendance is ``joined``; if none
+    joined, fall back to the on-call engineer (the ``oncall``-sourced SME, else
+    the first invited). Scoped to the incident's service + failure sub-domain
+    (``notification.category_display``). Best-effort — never raises into the
+    status transition. Returns the number of resolver rows written."""
+    assembly = row.get("assembly") or {}
+    invited = assembly.get("invited") or []
+    if not invited:
+        return 0
+    joined = [s for s in invited if s.get("attendance") == "joined"]
+    if not joined:
+        # Fallback: the on-call SME (or, failing that, the first invited).
+        oncall = [s for s in invited if s.get("source") == "oncall"]
+        joined = oncall[:1] or invited[:1]
+
+    service = row.get("service")
+    if not service:
+        return 0
+    category = ((row.get("notification") or {}).get("category_display")) or None
+
+    written = 0
+    for sme in joined:
+        handle = (sme.get("handle") or "").strip()
+        if not handle:
+            continue
+        try:
+            state_repo.save_incident_resolver(
+                affected_service=service,
+                category=category,
+                resolver_handle=handle,
+                resolver_name=sme.get("name"),
+                resolver_email=None,
+            )
+            written += 1
+        except Exception:
+            logger.exception("resolver-memory: failed to record %s for %s", handle, service)
+    return written
+
+
 @app.post("/api/war-room/{wid}/status")
 def war_room_set_status_endpoint(wid: str, req: WarRoomStatusRequest) -> dict[str, Any]:
     """Advance a war room's lifecycle (open → in_call → resolved). The board
     uses this so an operator can mark the bridge call in progress or the
-    incident resolved. ``no_room`` rows are terminal and can't be advanced."""
+    incident resolved. ``no_room`` rows are terminal and can't be advanced.
+
+    On the first transition to ``resolved`` we record who fixed it (the joined
+    SMEs, or the on-call as fallback) via ``_record_resolvers_from_row`` so a
+    recurrence of the same service + sub-domain re-invites them."""
     if req.status not in WAR_ROOM_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {WAR_ROOM_STATUSES}")
     for row in _RECENT_WAR_ROOMS:
         if row.get("id") == wid:
             if row.get("status") == "no_room":
                 raise HTTPException(status_code=409, detail="no_room war rooms are terminal")
+            newly_resolved = req.status == "resolved" and row.get("status") != "resolved"
             row["status"] = req.status
-            return {"id": wid, "status": req.status}
+            recorded = _record_resolvers_from_row(row) if newly_resolved else 0
+            return {"id": wid, "status": req.status, "resolvers_recorded": recorded}
     raise HTTPException(status_code=404, detail=f"war room {wid!r} not found")
 
 

@@ -473,6 +473,58 @@ def _dependency_owner_smes(verdict: TriageVerdict, exclude_handles: set[str]) ->
     return out
 
 
+def _past_resolver_smes(
+    verdict: TriageVerdict, oncall: dict | None, exclude_handles: set[str]
+) -> list[InvitedSME]:
+    """Invite engineers who resolved this class of incident before (institutional
+    memory). Matches on the affected service **and** the failure sub-domain
+    (``matched_category_display`` from the expertise-aware on-call lookup); when
+    no sub-domain matched, falls back to service-wide.
+
+    Reads the ``incident.resolvers.lookup`` seam (populated when a war room is
+    marked resolved — the SMEs who joined, or the on-call as fallback). Best-
+    effort and side-effect-free: an unregistered capability (e.g. in evals) or a
+    non-ok result yields no SMEs, so assembly is never broken. De-dups against
+    ``exclude_handles`` (on-call + dependency owners already invited)."""
+    category = (oncall or {}).get("matched_category_display")
+    try:
+        res = get_registry().call(
+            "incident.resolvers.lookup",
+            service=verdict.affected_service,
+            category=category,
+        )
+    except KeyError:
+        return []
+    if not res.ok or not isinstance(res.data, dict):
+        return []
+
+    seen = set(exclude_handles)
+    out: list[InvitedSME] = []
+    for row in res.data.get("resolvers") or []:
+        handle = (row.get("resolver_handle") or "").strip()
+        if handle and not handle.startswith("@"):
+            handle = f"@{handle}"
+        if not handle or handle in seen:
+            continue
+        seen.add(handle)
+        sub = row.get("category")
+        reason = (
+            f"resolved a past {verdict.affected_service} / {sub} incident"
+            if sub
+            else f"resolved a past {verdict.affected_service} incident"
+        )
+        out.append(
+            InvitedSME(
+                handle=handle,
+                name=row.get("resolver_name") or row.get("resolver_email"),
+                team=verdict.assigned_team,
+                reason=reason,
+                source="past_resolver",
+            )
+        )
+    return out
+
+
 def _context_item(label: str, capability: str, **kwargs) -> ContextPackItem:
     """Call a read-only observability seam and fold the result into one pack
     line. Any failure becomes ``"unavailable"`` rather than raising — the
@@ -565,9 +617,12 @@ def _decide_war_room(verdict: TriageVerdict, now: datetime, oncall: dict | None)
     invited = _invited_smes(verdict, oncall)
     dep_smes = _dependency_owner_smes(verdict, {s.handle for s in invited})
     invited = invited + dep_smes
+    past_smes = _past_resolver_smes(verdict, oncall, {s.handle for s in invited})
+    invited = invited + past_smes
     audit.append(
         f"smes: invited {len(invited)} "
-        f"({len(invited) - len(dep_smes)} on-call + {len(dep_smes)} dependency-owner)"
+        f"({len(invited) - len(dep_smes) - len(past_smes)} on-call + "
+        f"{len(dep_smes)} dependency-owner + {len(past_smes)} past-resolver)"
     )
 
     context_pack = _build_context_pack(verdict)

@@ -23,6 +23,7 @@ from aiops.state.models import (
     ClusterRow,
     ExecutionRow,
     HistoricalIncidentRow,
+    IncidentResolverRow,
     KBArticleRow,
     NotificationRow,
     RCAResultRow,
@@ -470,6 +471,85 @@ def _notification_row_to_dict(row: NotificationRow) -> dict[str, Any]:
         "reason": row.reason,
         "audit_trace": list(row.audit_trace or []),
     }
+
+
+# ─── incident resolvers (RA-005+006 institutional memory) ──────────────────
+
+
+def save_incident_resolver(
+    *,
+    affected_service: str,
+    resolver_handle: str,
+    category: str | None = None,
+    resolver_name: str | None = None,
+    resolver_email: str | None = None,
+    incident_id: str | None = None,
+) -> int:
+    """Record that ``resolver_handle`` helped resolve an incident on
+    ``affected_service`` (optionally scoped to a failure sub-domain
+    ``category``). Returns the row id.
+
+    Written when a war room is marked ``resolved``. Callers should record one
+    row per resolver (the SMEs who joined, or the on-call as a fallback). This
+    is append-only history — the same engineer may accrue many rows over time;
+    :func:`list_incident_resolvers` de-dups on read (most-recent-first)."""
+    row = IncidentResolverRow(
+        affected_service=affected_service,
+        category=category,
+        resolver_handle=resolver_handle,
+        resolver_name=resolver_name,
+        resolver_email=resolver_email,
+        incident_id=incident_id,
+    )
+    with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return row.id or 0
+
+
+def list_incident_resolvers(
+    *,
+    affected_service: str,
+    category: str | None = None,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Return the most recent distinct resolvers for a service, newest first.
+
+    Matching (per the product decision): when ``category`` is given, return
+    resolvers of incidents on ``affected_service`` **with that same failure
+    sub-domain**; when ``category`` is ``None``, fall back to service-wide
+    (any sub-domain). De-dups by ``resolver_handle`` keeping the most recent,
+    and caps at ``limit`` so a war room isn't flooded with historical names."""
+    stmt = (
+        select(IncidentResolverRow)
+        .where(IncidentResolverRow.affected_service == affected_service)
+        .order_by(IncidentResolverRow.resolved_at.desc())  # type: ignore[attr-defined]
+    )
+    if category:
+        stmt = stmt.where(IncidentResolverRow.category == category)
+    with _session() as s:
+        rows = s.exec(stmt).all()
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in rows:
+        if r.resolver_handle in seen:
+            continue
+        seen.add(r.resolver_handle)
+        out.append(
+            {
+                "resolver_handle": r.resolver_handle,
+                "resolver_name": r.resolver_name,
+                "resolver_email": r.resolver_email,
+                "category": r.category,
+                "incident_id": r.incident_id,
+                "resolved_at": _aware(r.resolved_at).isoformat() if r.resolved_at else None,
+            }
+        )
+        if len(out) >= limit:
+            break
+    return out
 
 
 # ─── executions (PRS-002 Auto-Healer Lite output) ──────────────────────────
