@@ -1,10 +1,20 @@
 import { useMemo, useState } from 'react';
-import { Check, ChevronDown, Clock, Gavel, ShieldCheck, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Brain, Check, ChevronDown, Clock, Gavel, HeartPulse, ShieldCheck, X } from 'lucide-react';
 import { api, ApiError } from '@/lib/api';
 import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
+import { setConsoleAgent } from '@/lib/consoleScope';
 import { clsx, timeAgo } from '@/lib/format';
 import type { ApprovalRecord, ApprovalStatus } from '@/types/api';
+
+// Where an approval originated, from its gated capability — decides which
+// "continue" button is highlighted after the human approves it.
+function originOf(action: string): 'rca' | 'auto-healer' | null {
+  if (action === 'rca.fix_step.execute') return 'rca';
+  if (action.startsWith('auto_heal')) return 'auto-healer';
+  return null;
+}
 
 const ACTION_LABEL: Record<string, string> = {
   'rca.fix_step.execute': 'RCA fix step',
@@ -36,11 +46,26 @@ function expiresLabel(iso: string): string {
 }
 
 export default function Approvals() {
+  const navigate = useNavigate();
   const [approver, setApprover] = useState('console-operator');
   const [showResolved, setShowResolved] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<Record<string, ApprovalStatus>>({});
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Continue the flow after an approval: scope the console to the chosen agent
+  // and deep-link. For RCA we forward the affected service so the RCA console
+  // opens on THAT failure (not the full list) — the handoff restores the cached
+  // verdict, so it's instant and doesn't re-run the analysis.
+  const goTo = (target: 'rca' | 'auto-healer', service: string | null) => {
+    if (target === 'rca') {
+      setConsoleAgent('rca-agent');
+      navigate('/console/rca', service ? { state: { service } } : {});
+    } else {
+      setConsoleAgent('auto-healer');
+      navigate('/agents/auto-healer');
+    }
+  };
 
   const { data, loading, error, refetch } = useFetch(() => api.approvals(showResolved), { intervalMs: 3000, cacheKey: `approvals-${showResolved}` });
 
@@ -149,6 +174,7 @@ export default function Approvals() {
                     busy={busyId === r.id}
                     onApprove={() => decide(r, 'approve')}
                     onDeny={() => decide(r, 'deny')}
+                    onGoTo={goTo}
                   />
                 ))}
               </tbody>
@@ -166,12 +192,14 @@ function Row({
   busy,
   onApprove,
   onDeny,
+  onGoTo,
 }: {
   r: ApprovalRecord;
   status: ApprovalStatus;
   busy: boolean;
   onApprove: () => void;
   onDeny: () => void;
+  onGoTo: (target: 'rca' | 'auto-healer', service: string | null) => void;
 }) {
   const pending = status === 'pending';
   const label = ACTION_LABEL[r.action] ?? r.action;
@@ -179,6 +207,8 @@ function Row({
   const chips = NOTABLE_CTX.filter((k) => r.context[k] != null && r.context[k] !== '').map(
     (k) => [k, String(r.context[k])] as const,
   );
+  const service = typeof r.context.service === 'string' && r.context.service ? r.context.service : null;
+  const origin = originOf(r.action);
 
   return (
     <tr className="align-top hover:bg-ink-50/60 dark:hover:bg-ink-800/30">
@@ -217,7 +247,33 @@ function Row({
         </span>
       </td>
       <td className="px-4 py-3 text-right">
-        {pending ? <ActionDropdown busy={busy} onApprove={onApprove} onDeny={onDeny} /> : <span className="text-xs text-ink-400">done</span>}
+        {pending ? (
+          <ActionDropdown busy={busy} onApprove={onApprove} onDeny={onDeny} />
+        ) : status === 'approved' ? (
+          // After approval, continue the flow — back to RCA (deep-linked to THIS
+          // failure) or over to the Auto-Healer. The origin capability decides
+          // which is highlighted as the primary next step.
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => onGoTo('rca', service)}
+              title={service ? `Open RCA for ${service}` : 'Open the RCA console'}
+              className={clsx('btn !py-1 !text-xs', origin === 'rca' ? 'btn-primary' : 'btn-ghost')}
+            >
+              <Brain className="h-3.5 w-3.5" /> RCA
+            </button>
+            <button
+              type="button"
+              onClick={() => onGoTo('auto-healer', service)}
+              title="Open the Auto-Healer console"
+              className={clsx('btn !py-1 !text-xs', origin === 'auto-healer' ? 'btn-primary' : 'btn-ghost')}
+            >
+              <HeartPulse className="h-3.5 w-3.5" /> Auto-Heal
+            </button>
+          </div>
+        ) : (
+          <span className="text-xs text-ink-400">done</span>
+        )}
       </td>
     </tr>
   );
