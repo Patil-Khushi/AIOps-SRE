@@ -1720,6 +1720,30 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
     """
     from aiops.tools.rca_remediation import request_fix_step
 
+    # Dedupe: if an identical fix (same flag + variant + action) is already
+    # awaiting approval, return that pending approval instead of stacking a
+    # second one. Repeated "Request approval & apply" clicks otherwise create a
+    # duplicate approval on the HITL page for the same request.
+    try:
+        for pending in get_approval_registry().list_pending():
+            if (
+                pending.action == "rca.fix_step.execute"
+                and pending.context.get("flag") == req.flag
+                and pending.context.get("variant") == req.variant
+                and pending.context.get("action_type") == req.action_type
+            ):
+                return {
+                    "approval_id": pending.id,
+                    "action_type": req.action_type,
+                    "flag": req.flag,
+                    "variant": req.variant,
+                    "status": "pending",
+                    "timeout_seconds": req.timeout_seconds,
+                    "deduplicated": True,
+                }
+    except Exception:
+        logger.exception("apply-fix dedupe check failed (non-fatal)")
+
     approval_id = _uuid_hex()
     ctx: dict[str, Any] = {
         "approval_id": approval_id,
@@ -1728,6 +1752,10 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
         "action_type": req.action_type,
         "flag": req.flag,
         "variant": req.variant,
+        # Carried onto the approval record so the HITL console can show the
+        # affected service, deep-link back to its RCA, and hand the approved fix
+        # to the Auto-Healer.
+        "service": req.service,
     }
 
     def _run_executor() -> None:

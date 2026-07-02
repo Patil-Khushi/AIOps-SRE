@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Sparkles, RefreshCw, Inbox, Brain } from 'lucide-react';
+import { Sparkles, RefreshCw, Inbox, Brain, Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, LoadingState, ErrorState } from '@/components/states';
 import { SeverityBadge, StatusChip } from '@/components/SeverityBadge';
 import { RcaView } from '@/components/RcaView';
-import type { TriageVerdict, RCAVerdict, TriageResult } from '@/types/api';
+import type { TriageVerdict, RCAVerdict, TriageResult, PrometheusAlert } from '@/types/api';
 import { clsx, timeAgo } from '@/lib/format';
 import { makeCache } from '@/lib/persistentCache';
 
@@ -30,7 +30,14 @@ function rcaKey(v: TriageVerdict, idx: number): string {
 // verdict; everything below the verdict belongs here.
 
 export default function RcaConsole() {
-  const verdicts = useFetch(api.triageLive, { intervalMs: 0, cacheKey: 'triage-live' });
+  // Triaged verdicts (RCA's input). Polled so incidents self-populate as the
+  // background auto-triage loop produces verdicts — the operator never has to
+  // wait on a manual triage pass.
+  const verdicts = useFetch(api.triageLive, { intervalMs: 5000, cacheKey: 'triage-live' });
+  // Currently-firing alerts, fetched fast + in parallel so they show on the RCA
+  // page IMMEDIATELY (as "triaging…" placeholders) instead of a blocking
+  // spinner while the first triage pass runs.
+  const live = useFetch(api.liveAlerts, { intervalMs: 5000, cacheKey: 'live-alerts' });
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [rca, setRca] = useState<RCAVerdict | null>(null);
   // ServiceNow incident number for the verdict the current RCA was run on.
@@ -48,6 +55,13 @@ export default function RcaConsole() {
 
   const results = useMemo<TriageResult[]>(() => verdicts.data?.results ?? [], [verdicts.data]);
   const list: TriageVerdict[] = results.map((r) => r.verdict);
+
+  // Firing alerts not yet represented by a triaged verdict — shown as
+  // "triaging…" placeholders so the operator sees the incident immediately.
+  const firing: PrometheusAlert[] = useMemo(() => {
+    const triagedServices = new Set(list.map((v) => v.affected_service));
+    return (live.data?.alerts ?? []).filter((a) => !triagedServices.has(a.service));
+  }, [live.data, list]);
   const selectedResult = results[selectedIdx] ?? null;
   const selected: TriageVerdict | null = selectedResult?.verdict ?? null;
 
@@ -146,18 +160,20 @@ export default function RcaConsole() {
         </button>
       </div>
 
-      {verdicts.loading && !verdicts.data ? (
-        <div className="card"><LoadingState label="Loading triaged incidents…" /></div>
-      ) : verdicts.error ? (
+      {verdicts.error && !verdicts.data ? (
         <div className="card"><ErrorState error={verdicts.error} /></div>
-      ) : list.length === 0 ? (
-        <div className="card">
-          <EmptyState
-            label="No triaged incidents yet"
-            hint="Inject a scenario on the Overview page — once Alert Triage writes a verdict, it lands here for root-cause analysis."
-            icon={<Inbox className="h-7 w-7" />}
-          />
-        </div>
+      ) : list.length === 0 && firing.length === 0 ? (
+        verdicts.loading || live.loading ? (
+          <div className="card"><LoadingState label="Loading incidents…" /></div>
+        ) : (
+          <div className="card">
+            <EmptyState
+              label="No incidents yet"
+              hint="Inject a scenario on the Overview page — firing alerts appear here immediately and RCA unlocks once each is triaged."
+              icon={<Inbox className="h-7 w-7" />}
+            />
+          </div>
+        )
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
           {/* Incident picker */}
@@ -188,6 +204,31 @@ export default function RcaConsole() {
                       </p>
                     </div>
                   </button>
+                </li>
+              ))}
+              {/* Firing-but-not-yet-triaged alerts — shown immediately so the
+                  operator sees the incident without waiting for the triage pass.
+                  Non-selectable until a verdict exists (auto-triage fills it in). */}
+              {firing.map((a) => (
+                <li key={`firing-${a.alert_id}`}>
+                  <div className="card w-full cursor-default opacity-90">
+                    <div className="card-body !py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="chip !border-warn/40 !text-warn">
+                          <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> triaging…
+                        </span>
+                      </div>
+                      <h3 className="mt-1.5 truncate text-sm font-semibold text-ink-900 dark:text-ink-50">
+                        {a.service}
+                      </h3>
+                      <p className="mt-0.5 truncate text-xs text-ink-500 dark:text-ink-400">
+                        {a.annotations?.summary || a.annotations?.description || a.metric}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-ink-400 dark:text-ink-500">
+                        RCA unlocks once triage writes a verdict.
+                      </p>
+                    </div>
+                  </div>
                 </li>
               ))}
             </ul>

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   HeartPulse, ShieldCheck, ShieldAlert, PlayCircle, RotateCcw, Loader2, CheckCircle2,
-  XCircle, ExternalLink, AlertTriangle, Clock, Wrench, Undo2, FlaskConical, ListChecks,
+  XCircle, Gavel, AlertTriangle, Clock, Wrench, Undo2, FlaskConical, ListChecks,
   ArrowRight, Server,
 } from 'lucide-react';
 import StatCard from '@/components/StatCard';
@@ -10,6 +10,7 @@ import { ErrorState } from '@/components/states';
 import { api } from '@/lib/api';
 import { getAgentById } from '@/data/agentCatalog';
 import { setConsoleAgent } from '@/lib/consoleScope';
+import { makeCache } from '@/lib/persistentCache';
 import { clsx } from '@/lib/format';
 import type {
   ApprovalRecord, ExecutionVerdict, RemediationOption,
@@ -17,11 +18,10 @@ import type {
 
 // ─── Auto-Healer Lite console (PRS-002) ──────────────────────────────────────
 //
-// Auto-Healer's OWN surface. It takes a single RemediationOption chosen on the
-// Remediation Recommender page (PRS-001) and executes it — but only through the
-// platform's REQUIRED HITL gate, so nothing fires until a human approves it.
-// Day-1 is a safe dry-run: the agent validates the option, clears the gate, and
-// reports what it WOULD have run without touching a real tool. A standalone
+// Auto-Healer's OWN surface. It takes a single RemediationOption (chosen in the
+// RCA console, or handed from the Approvals page after a human grants the fix)
+// and executes it — but only through the platform's REQUIRED HITL gate, so
+// nothing fires until a human approves it. Day-1 is a safe dry-run. A standalone
 // "restart a deployment" demo exercises the same gate when no option is handed.
 
 type HandoffState = {
@@ -29,15 +29,42 @@ type HandoffState = {
   affectedService?: string;
   incidentId?: string | null;
   rootCause?: string | null;
+  // Set when the option arrived from an ALREADY-approved RCA fix (the fix was
+  // applied through the RCA console). We then show it as resolved rather than
+  // re-executing — a second execution would re-trip the HITL gate for a fix the
+  // human already approved.
+  resolvedVia?: 'rca' | null;
 } | null;
 
 type Phase = 'idle' | 'running' | 'done';
 
+// Single-slot persisted execution session. When the operator leaves to grant
+// the HITL approval on the Approvals console and comes back, we resume the SAME
+// run (its option + approval id) instead of showing an empty "nothing chosen"
+// page.
+type HealSession = {
+  option: RemediationOption;
+  affectedService: string;
+  incidentId: string | null;
+  rootCause: string | null;
+  approvalId: string | null;
+};
+const healSession = makeCache<HealSession>('autoheal-session');
+
 export default function AutoHealer() {
   const catalog = getAgentById('auto-healer');
   const location = useLocation();
-  const handoff = (location.state as HandoffState) ?? null;
-  const option = handoff?.option ?? null;
+  const stateHandoff = (location.state as HandoffState) ?? null;
+  // Fresh router state wins; otherwise resume a persisted session so a return
+  // trip from the Approvals console lands back on the same execution.
+  const persisted = stateHandoff ? null : healSession.get('current');
+  const option = stateHandoff?.option ?? persisted?.option ?? null;
+  const affectedService =
+    stateHandoff?.affectedService ?? persisted?.affectedService ?? (option?.tool_args?.service as string) ?? 'unknown';
+  const incidentId = stateHandoff?.incidentId ?? persisted?.incidentId ?? null;
+  const rootCause = stateHandoff?.rootCause ?? persisted?.rootCause ?? null;
+  const resolvedVia = stateHandoff?.resolvedVia ?? null;
+  const resumeApprovalId = persisted?.approvalId ?? null;
 
   // Scope the console to this agent so the sidebar shows its focused surfaces
   // (and its name) — including after navigating to a shared /console link.
@@ -47,12 +74,17 @@ export default function AutoHealer() {
     <div className="space-y-6">
       <PageHeader />
       {option ? (
-        <ExecuteOption
-          option={option}
-          affectedService={handoff?.affectedService ?? option.tool_args?.service as string ?? 'unknown'}
-          incidentId={handoff?.incidentId ?? null}
-          rootCause={handoff?.rootCause ?? null}
-        />
+        resolvedVia === 'rca' ? (
+          <ResolvedOption option={option} affectedService={affectedService} rootCause={rootCause} />
+        ) : (
+          <ExecuteOption
+            option={option}
+            affectedService={affectedService}
+            incidentId={incidentId}
+            rootCause={rootCause}
+            resumeApprovalId={resumeApprovalId}
+          />
+        )
       ) : (
         <>
           <NoOptionCard />
@@ -87,12 +119,13 @@ function PageHeader() {
 
 // ─── primary surface: execute a handed-off option ────────────────────────────
 function ExecuteOption({
-  option, affectedService, incidentId, rootCause,
+  option, affectedService, incidentId, rootCause, resumeApprovalId,
 }: {
   option: RemediationOption;
   affectedService: string;
   incidentId: string | null;
   rootCause: string | null;
+  resumeApprovalId?: string | null;
 }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [live, setLive] = useState(false);
@@ -100,6 +133,16 @@ function ExecuteOption({
   const [verdict, setVerdict] = useState<ExecutionVerdict | null>(null);
   const [approval, setApproval] = useState<ApprovalRecord | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // Resume a run left in flight before a trip to the Approvals console — pick
+  // the polling back up on the same approval id so the outcome shows on return.
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (resumed.current || !resumeApprovalId) return;
+    resumed.current = true;
+    setApprovalId(resumeApprovalId);
+    setPhase('running');
+  }, [resumeApprovalId]);
 
   const start = useCallback(async () => {
     setErr(null);
@@ -112,11 +155,15 @@ function ExecuteOption({
       // execution_failed. dry_run=true (default) only rehearses.
       const res = await api.executeOption(option, affectedService, { incidentId, dryRun: !live });
       setApprovalId(res.approval_id);
+      // Persist so leaving to approve (and returning) resumes this same run.
+      healSession.set('current', {
+        option, affectedService, incidentId, rootCause, approvalId: res.approval_id,
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setPhase('idle');
     }
-  }, [option, affectedService, incidentId, live]);
+  }, [option, affectedService, incidentId, rootCause, live]);
 
   const reset = useCallback(() => {
     setPhase('idle');
@@ -124,6 +171,7 @@ function ExecuteOption({
     setVerdict(null);
     setApproval(null);
     setErr(null);
+    healSession.delete('current');
   }, []);
 
   // Poll the outcome store (+ the approval record) while the gated run is live.
@@ -337,8 +385,9 @@ function HitlPanel({ approvalId, approval }: { approvalId: string; approval: App
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-warn" />
           <div className="min-w-0 text-sm text-ink-700 dark:text-ink-200">
-            <p>This remediation is held at the platform HITL gate. Open the approver console to approve
-              or deny it — this page updates automatically when you return.</p>
+            <p>This remediation is held at the platform HITL gate. Approve it on the Approvals console —
+              then use its <span className="font-medium">Auto-Heal</span> button to come back; this run
+              resumes right here with the outcome.</p>
             <p className="mt-1.5 font-mono text-[11px] text-ink-500 dark:text-ink-400">
               approval id <span className="text-ink-700 dark:text-ink-300">{approvalId}</span>
               {approval?.action && <> · action <span className="text-ink-700 dark:text-ink-300">{approval.action}</span></>}
@@ -346,13 +395,50 @@ function HitlPanel({ approvalId, approval }: { approvalId: string; approval: App
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <a href="/hitl" target="_blank" rel="noreferrer" className="btn btn-primary">
-            <ExternalLink className="h-4 w-4" /> Open HITL approver console
-          </a>
+          <Link to="/console/approvals" className="btn btn-primary">
+            <Gavel className="h-4 w-4" /> Approve on Approvals console
+          </Link>
           <span className="inline-flex items-center gap-1.5 text-xs text-ink-500 dark:text-ink-400">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> waiting for a decision…
           </span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── resolved: option arrived from an already-approved RCA fix ───────────────
+// The fix was approved on the HITL console and applied through the RCA console,
+// so there's nothing to re-execute here (that would re-trip the gate for an
+// already-approved fix). Show it as resolved with a way back.
+function ResolvedOption({
+  option, affectedService, rootCause,
+}: {
+  option: RemediationOption;
+  affectedService: string;
+  rootCause: string | null;
+}) {
+  return (
+    <div className="space-y-4">
+      <ChosenOption option={option} service={affectedService} rootCause={rootCause} />
+      <div className="card border-ok/40">
+        <div className="card-body flex items-start gap-3">
+          <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0 text-ok" />
+          <div className="text-sm text-ink-700 dark:text-ink-200">
+            <p className="font-semibold text-ok">Resolved via approved RCA fix.</p>
+            <p className="mt-0.5 text-xs text-ink-500 dark:text-ink-400">
+              This remediation was approved on the HITL console and applied through the RCA console
+              {option.tool_capability
+                ? <> — <span className="font-mono">{option.tool_capability}({JSON.stringify(option.tool_args)})</span></>
+                : ''}
+              . No second execution is needed; the service should be recovering.
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Link to="/console/rca" className="btn"><ListChecks className="h-4 w-4" /> Back to RCA</Link>
+        <Link to="/console/approvals" className="btn"><Gavel className="h-4 w-4" /> Approvals</Link>
       </div>
     </div>
   );
