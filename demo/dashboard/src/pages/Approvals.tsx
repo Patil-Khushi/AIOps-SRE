@@ -6,34 +6,7 @@ import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { setConsoleAgent } from '@/lib/consoleScope';
 import { clsx, timeAgo } from '@/lib/format';
-import type { ApprovalRecord, ApprovalStatus, RemediationOption } from '@/types/api';
-
-// Build a chosen-remediation handoff from an approved RCA fix so the Auto-Healer
-// shows it (resolved) instead of "No remediation chosen yet". The fix was
-// already applied through the RCA console, so this is display-only.
-function optionFromApproval(r: ApprovalRecord, service: string | null): RemediationOption {
-  const flag = typeof r.context.flag === 'string' ? r.context.flag : '';
-  const variant = typeof r.context.variant === 'string' ? r.context.variant : 'off';
-  return {
-    option_id: `approved-${r.id.slice(0, 8)}`,
-    title: flag ? `Disable failure flag ${flag}` : 'Approved remediation',
-    description: service
-      ? `Approved fix for ${service}${flag ? ` — set ${flag} → ${variant}` : ''}.`
-      : 'Human-approved remediation.',
-    action_type: 'set_flag',
-    blast_radius: 'low',
-    blast_radius_score: 1,
-    rollback: flag ? `Set ${flag} back to its previous variant.` : 'Revert the applied change.',
-    rollback_tested: true,
-    confidence: 0.9,
-    estimated_mttr_minutes: 2,
-    requires_hitl: true,
-    rationale: `Approved on the HITL console${r.approver ? ` by ${r.approver}` : ''}.`,
-    tool_capability: flag ? 'feature_flags.set_variant' : null,
-    tool_args: flag ? { flag, variant } : {},
-    source: 'rca_fix_step',
-  };
-}
+import type { ApprovalRecord, ApprovalStatus } from '@/types/api';
 
 // Where an approval originated, from its gated capability — decides which
 // "continue" button is highlighted after the human approves it.
@@ -92,25 +65,10 @@ export default function Approvals() {
       navigate('/console/rca', service ? { state: { service } } : {});
       return;
     }
+    // Auto-Healer executes the fix. Return with no state so its persisted
+    // session resumes and shows the execution outcome for the run you approved.
     setConsoleAgent('auto-healer');
-    if (r.action === 'rca.fix_step.execute') {
-      // Hand the approved RCA fix over as the chosen remediation so Auto-Healer
-      // shows it (resolved) rather than an empty page. resolvedVia:'rca' tells
-      // it not to re-execute (the human already approved + RCA applied it).
-      navigate('/agents/auto-healer', {
-        state: {
-          option: optionFromApproval(r, service),
-          affectedService: service ?? 'unknown',
-          incidentId: null,
-          rootCause: null,
-          resolvedVia: 'rca',
-        },
-      });
-    } else {
-      // Auto-Healer's own approval — return with no state so its persisted
-      // session resumes and shows the execution outcome.
-      navigate('/agents/auto-healer');
-    }
+    navigate('/agents/auto-healer');
   };
 
   const { data, loading, error, refetch } = useFetch(() => api.approvals(showResolved), { intervalMs: 3000, cacheKey: `approvals-${showResolved}` });

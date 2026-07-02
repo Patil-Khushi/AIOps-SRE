@@ -1364,8 +1364,41 @@ async def trigger_auto_heal_execute(req: HitlDemoExecuteRequest) -> dict[str, An
     that here (browsers would time out). Poll
     ``/api/demo/auto-heal/outcome/{approval_id}`` for the final ExecutionVerdict.
     """
+    option_id = req.option.get("option_id") if isinstance(req.option, dict) else None
+
+    # Dedupe: collapse repeated executes of the SAME option+service+mode that are
+    # still awaiting approval into one pending approval, so double-clicks don't
+    # stack duplicates on the HITL console.
+    try:
+        for pending in get_approval_registry().list_pending():
+            if (
+                pending.action.startswith("auto_heal")
+                and pending.context.get("service") == req.affected_service
+                and pending.context.get("option_id") == option_id
+                and pending.context.get("dry_run") == req.dry_run
+            ):
+                return {
+                    "approval_id": pending.id,
+                    "status": "pending",
+                    "option_id": option_id,
+                    "affected_service": req.affected_service,
+                    "dry_run": req.dry_run,
+                    "timeout_seconds": req.timeout_seconds,
+                    "deduplicated": True,
+                }
+    except Exception:
+        logger.exception("auto-heal execute dedupe check failed (non-fatal)")
+
     approval_id = _uuid_hex()
-    hitl_ctx = {"approval_id": approval_id, "approval_timeout_seconds": req.timeout_seconds}
+    hitl_ctx = {
+        "approval_id": approval_id,
+        "approval_timeout_seconds": req.timeout_seconds,
+        # Carried onto the approval record so the HITL console can show the
+        # service, dedupe repeats, and deep-link back.
+        "service": req.affected_service,
+        "option_id": option_id,
+        "dry_run": req.dry_run,
+    }
     execution_req = ExecutionRequest(
         option=req.option,
         affected_service=req.affected_service,

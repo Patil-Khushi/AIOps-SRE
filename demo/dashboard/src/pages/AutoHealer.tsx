@@ -29,11 +29,6 @@ type HandoffState = {
   affectedService?: string;
   incidentId?: string | null;
   rootCause?: string | null;
-  // Set when the option arrived from an ALREADY-approved RCA fix (the fix was
-  // applied through the RCA console). We then show it as resolved rather than
-  // re-executing — a second execution would re-trip the HITL gate for a fix the
-  // human already approved.
-  resolvedVia?: 'rca' | null;
 } | null;
 
 type Phase = 'idle' | 'running' | 'done';
@@ -63,7 +58,6 @@ export default function AutoHealer() {
     stateHandoff?.affectedService ?? persisted?.affectedService ?? (option?.tool_args?.service as string) ?? 'unknown';
   const incidentId = stateHandoff?.incidentId ?? persisted?.incidentId ?? null;
   const rootCause = stateHandoff?.rootCause ?? persisted?.rootCause ?? null;
-  const resolvedVia = stateHandoff?.resolvedVia ?? null;
   const resumeApprovalId = persisted?.approvalId ?? null;
 
   // Scope the console to this agent so the sidebar shows its focused surfaces
@@ -74,17 +68,13 @@ export default function AutoHealer() {
     <div className="space-y-6">
       <PageHeader />
       {option ? (
-        resolvedVia === 'rca' ? (
-          <ResolvedOption option={option} affectedService={affectedService} rootCause={rootCause} />
-        ) : (
-          <ExecuteOption
-            option={option}
-            affectedService={affectedService}
-            incidentId={incidentId}
-            rootCause={rootCause}
-            resumeApprovalId={resumeApprovalId}
-          />
-        )
+        <ExecuteOption
+          option={option}
+          affectedService={affectedService}
+          incidentId={incidentId}
+          rootCause={rootCause}
+          resumeApprovalId={resumeApprovalId}
+        />
       ) : (
         <>
           <NoOptionCard />
@@ -402,43 +392,6 @@ function HitlPanel({ approvalId, approval }: { approvalId: string; approval: App
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> waiting for a decision…
           </span>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── resolved: option arrived from an already-approved RCA fix ───────────────
-// The fix was approved on the HITL console and applied through the RCA console,
-// so there's nothing to re-execute here (that would re-trip the gate for an
-// already-approved fix). Show it as resolved with a way back.
-function ResolvedOption({
-  option, affectedService, rootCause,
-}: {
-  option: RemediationOption;
-  affectedService: string;
-  rootCause: string | null;
-}) {
-  return (
-    <div className="space-y-4">
-      <ChosenOption option={option} service={affectedService} rootCause={rootCause} />
-      <div className="card border-ok/40">
-        <div className="card-body flex items-start gap-3">
-          <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0 text-ok" />
-          <div className="text-sm text-ink-700 dark:text-ink-200">
-            <p className="font-semibold text-ok">Resolved via approved RCA fix.</p>
-            <p className="mt-0.5 text-xs text-ink-500 dark:text-ink-400">
-              This remediation was approved on the HITL console and applied through the RCA console
-              {option.tool_capability
-                ? <> — <span className="font-mono">{option.tool_capability}({JSON.stringify(option.tool_args)})</span></>
-                : ''}
-              . No second execution is needed; the service should be recovering.
-            </p>
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <Link to="/console/rca" className="btn"><ListChecks className="h-4 w-4" /> Back to RCA</Link>
-        <Link to="/console/approvals" className="btn"><Gavel className="h-4 w-4" /> Approvals</Link>
       </div>
     </div>
   );

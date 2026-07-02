@@ -1,26 +1,26 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { RefreshCw, ShieldAlert, CheckCircle2, XCircle, Undo2, Gavel } from 'lucide-react';
-import { api } from '@/lib/api';
-import type { RCAVerdict, BlastRadius, RankedFixStep } from '@/types/api';
+import { useNavigate } from 'react-router-dom';
+import { ShieldAlert, CheckCircle2, Undo2, HeartPulse, ArrowRight } from 'lucide-react';
+import { setConsoleAgent } from '@/lib/consoleScope';
+import type { RCAVerdict, BlastRadius, RankedFixStep, RemediationOption } from '@/types/api';
 import { clsx } from '@/lib/format';
 
 // ─── Shared RCA result renderer ─────────────────────────────────────────────
 //
-// The single source of truth for drawing a root-cause verdict AND driving its
-// remediation: root cause + confidence, a HUMAN-SELECTABLE list of ranked fix
-// steps (each with a tested rollback), and a REQUIRED-HITL "approve & apply"
-// gate for the step the operator picks. This is where the former standalone
-// Remediation Recommender folds in — RCA no longer just shows steps, it lets a
-// human choose which one to run and approve it. Imported by both the RCA Agent
-// console (PRS-008 ★) and the Incident Commander console (RA-008) so the two
-// never drift.
+// Draws a root-cause verdict and lets a human CHOOSE which fix step to run:
+// root cause + confidence, a single-select list of ranked fix steps (each with
+// a tested rollback), and a "Send to Auto-Healer" hand-off for the chosen step.
 //
-// ``incidentId`` is the ServiceNow incident number for the verdict. When set,
-// apply-fix forwards it (+ service + RCA verdict) so the backend persists the
-// verdict and fires the resolution verifier after the flag flip — that's what
-// raises the 2nd (ticket-close) HITL approval. With no incident_id the verifier
-// is skipped and only the fix approval appears.
+// RCA does NOT execute the fix. Analysis + human selection live here; the actual
+// resolution — dry-run, then the REQUIRED-HITL live execution — is the
+// Auto-Healer's job (PRS-002). Selecting a step and sending it hands a
+// RemediationOption to the Auto-Healer console, which owns the single approval
+// and flips the flag. Imported by both the RCA Agent console (PRS-008 ★) and the
+// Incident Commander console (RA-008) so the two never drift.
+//
+// ``incidentId`` is the ServiceNow incident number for the verdict; it rides
+// along on the hand-off so the Auto-Healer can forward it to the resolution
+// verifier after a live execution.
 
 const BLAST_RADIUS_STYLE: Record<BlastRadius, string> = {
   low: '!border-ok/40 !text-ok',
@@ -28,9 +28,12 @@ const BLAST_RADIUS_STYLE: Record<BlastRadius, string> = {
   high: '!border-bad/40 !text-bad',
 };
 
+// 1..5 blast-radius score the Auto-Healer / gate reason strings expect.
+const BLAST_SCORE: Record<BlastRadius, number> = { low: 1, medium: 3, high: 5 };
+
 // Maps an affected service to the flagd failure flag whose flip is the real,
-// reversible remediation. Only services with a known flag get the
-// "Approve & apply" action — everything else stays advisory-only.
+// reversible remediation. Only services with a known flag get an executable
+// hand-off — everything else stays advisory-only.
 const SERVICE_FLAG: Record<string, string> = {
   payment: 'paymentFailure',
   paymentservice: 'paymentFailure',
@@ -49,110 +52,19 @@ function flagForService(service: string): string | null {
   return SERVICE_FLAG[service.toLowerCase().trim()] ?? null;
 }
 
-// A step is one-click executable when it flips a known feature flag. Everything
-// else is advisory — the operator carries it out manually.
+// A step is executable when it flips a known feature flag. Everything else is
+// advisory — the operator carries it out manually.
 function stepFlag(step: RankedFixStep): string | null {
   return step.action_type === 'set_flag' && step.flag ? step.flag : null;
 }
 
-type ApplyStatus =
-  | 'idle' | 'pending' | 'executed' | 'denied' | 'expired' | 'blocked' | 'unsupported' | 'error';
-
-function ApprovalBox({
-  flag, variant, status, error, approver, onApply, closeFollows = false,
-}: {
-  flag: string;
-  variant: string;
-  status: ApplyStatus;
-  error: string | null;
-  approver: string | null;
-  onApply: () => void;
-  closeFollows?: boolean;
-}) {
-  const by = approver ? ` by ${approver}` : '';
-  const busy = status === 'pending';
-  const done = status === 'executed';
-  // The button only REQUESTS approval — a human grants it in the Approvals
-  // console (or Slack). Label it so nobody expects the click alone to apply.
-  const label = busy ? 'Awaiting approval…' : done ? 'Applied' : status === 'idle' ? 'Request approval & apply' : 'Retry';
-
-  return (
-    <div className="mt-2 rounded-md border border-accent/40 bg-accent/5 p-2.5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="card-title !text-[10px]">Apply this step</p>
-          <p className="mt-0.5 text-[11px] text-ink-500 dark:text-ink-400">
-            Set flag <span className="font-mono text-ink-700 dark:text-ink-200">{flag}</span> →{' '}
-            <span className="font-mono text-ink-700 dark:text-ink-200">{variant}</span> · requires HITL approval
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onApply}
-          disabled={busy || done}
-          className={clsx(
-            'inline-flex flex-shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition',
-            'border-accent/40 bg-accent/10 text-accent hover:bg-accent/20',
-            'disabled:cursor-not-allowed disabled:opacity-50',
-          )}
-        >
-          {busy ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : done ? <CheckCircle2 className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
-          {label}
-        </button>
-      </div>
-
-      {status === 'idle' && (
-        <p className="mt-2 text-[11px] text-ink-500 dark:text-ink-400">
-          This is HITL-gated: clicking requests approval — a human then approves it in the{' '}
-          <span className="font-medium text-ink-700 dark:text-ink-200">Approvals</span> console (or Slack).
-          The flag flips only after that.
-        </p>
-      )}
-      {status === 'pending' && (
-        <div className="mt-2 space-y-1.5">
-          <p className="text-[11px] text-ink-500 dark:text-ink-400">
-            Approval requested — grant it to apply the fix. The flag is unchanged until then.
-          </p>
-          <Link
-            to="/console/approvals"
-            className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition hover:bg-accent/20"
-          >
-            <Gavel className="h-3.5 w-3.5" /> Open Approvals console to approve
-          </Link>
-        </div>
-      )}
-      {status === 'executed' && (
-        <p className="mt-2 flex items-center gap-1 text-[11px] text-ok">
-          <CheckCircle2 className="h-3 w-3" /> Approved{by} — {flag} set to {variant}.{' '}
-          {closeFollows
-            ? 'Verifying recovery — a ticket-close approval will appear in the HITL console shortly.'
-            : 'The service should recover shortly.'}
-        </p>
-      )}
-      {status === 'denied' && (
-        <p className="mt-2 flex items-center gap-1 text-[11px] text-bad">
-          <XCircle className="h-3 w-3" /> Denied{by} — flag left unchanged.
-        </p>
-      )}
-      {status === 'expired' && <p className="mt-2 text-[11px] text-warn">Approval expired — no change made.</p>}
-      {(status === 'error' || status === 'blocked' || status === 'unsupported') && (
-        <p className="mt-2 text-[11px] text-bad">{error || 'Could not apply the fix.'}</p>
-      )}
-    </div>
-  );
-}
-
 export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string | null }) {
+  const navigate = useNavigate();
   const steps = v.ranked_fix_steps;
-  // Default the selection to the first one-click-executable step (so the safest
-  // remediable action is pre-highlighted); fall back to the first step.
+  // Default the selection to the first executable step (so the safest remediable
+  // action is pre-highlighted); fall back to the first step.
   const firstExecutable = steps.findIndex((s) => stepFlag(s));
   const [selectedStep, setSelectedStep] = useState(firstExecutable >= 0 ? firstExecutable : 0);
-
-  const [applyStatus, setApplyStatus] = useState<ApplyStatus>('idle');
-  const [applyError, setApplyError] = useState<string | null>(null);
-  const [applyApprover, setApplyApprover] = useState<string | null>(null);
-  const [approvalId, setApprovalId] = useState<string | null>(null);
 
   const chosen: RankedFixStep | undefined = steps[selectedStep];
   // The flag the chosen step would flip. Fall back to the service's known flag
@@ -162,75 +74,43 @@ export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string |
     : null;
   const fixVariant = chosen?.variant ?? 'off';
 
-  // New verdict → reset the selection to its safest executable step and clear
-  // any in-flight approval state.
+  // New verdict → reset the selection to its safest executable step.
   useEffect(() => {
     const idx = steps.findIndex((s) => stepFlag(s));
     setSelectedStep(idx >= 0 ? idx : 0);
-    setApplyStatus('idle');
-    setApplyError(null);
-    setApplyApprover(null);
-    setApprovalId(null);
   }, [v]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Switching to a different step abandons the previous step's approval state —
-  // each step is approved on its own.
-  const pickStep = (i: number) => {
-    if (i === selectedStep) return;
-    setSelectedStep(i);
-    setApplyStatus('idle');
-    setApplyError(null);
-    setApplyApprover(null);
-    setApprovalId(null);
-  };
-
-  useEffect(() => {
-    if (applyStatus !== 'pending' || !approvalId) return;
-    let alive = true;
-    const timer = setInterval(async () => {
-      try {
-        const o = await api.hitlOutcome(approvalId);
-        if (!alive || !o.status || o.status === 'pending') return;
-        setApplyStatus(o.status as ApplyStatus);
-        setApplyError(o.error ?? null);
-        setApplyApprover(o.approver ?? null);
-        clearInterval(timer);
-      } catch {
-        /* transient — keep polling */
-      }
-    }, 2000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
+  // Hand the chosen fix step to the Auto-Healer as a RemediationOption. The
+  // Auto-Healer console shows it with dry-run/live and runs the single
+  // HITL-gated execution — RCA never flips the flag itself.
+  const sendToHealer = () => {
+    if (!chosen || !flag) return;
+    const option: RemediationOption = {
+      option_id: `rca-${v.affected_service}-${selectedStep}`,
+      title: `Disable failure flag ${flag}`,
+      description: chosen.description,
+      action_type: 'set_flag',
+      blast_radius: chosen.blast_radius,
+      blast_radius_score: BLAST_SCORE[chosen.blast_radius],
+      rollback: chosen.rollback,
+      rollback_tested: true,
+      confidence: v.confidence_score,
+      estimated_mttr_minutes: 2,
+      requires_hitl: true,
+      rationale: v.root_cause,
+      tool_capability: 'feature_flags.set_variant',
+      tool_args: { flag, variant: fixVariant },
+      source: 'rca_fix_step',
     };
-  }, [applyStatus, approvalId]);
-
-  const applyFix = async () => {
-    if (!flag) return;
-    setApplyStatus('pending');
-    setApplyError(null);
-    try {
-      // Always forward the service + RCA verdict so the backend fires the
-      // resolution verifier after the flag flip — that's what raises the 2nd
-      // (ticket-close) HITL approval. Include the incident number when we have
-      // it; when the analyzed verdict was a Suppressed duplicate with no ticket,
-      // the backend recovers the open incident for this service so the close
-      // approval still appears.
-      const context: Record<string, unknown> = {
-        service: v.affected_service,
-        rca_verdict: v,
-        // Give the operator time to open the Approvals console and grant it —
-        // the backend default (120s) expires before a human realistically can,
-        // which surfaced as the fix "always" flipping to Retry.
-        timeout_seconds: 600,
-      };
-      if (incidentId) context.incident_id = incidentId;
-      const res = await api.applyRcaFix(flag, fixVariant, 'set_flag', undefined, context);
-      setApprovalId(res.approval_id);
-    } catch (e) {
-      setApplyStatus('error');
-      setApplyError(e instanceof Error ? e.message : String(e));
-    }
+    setConsoleAgent('auto-healer');
+    navigate('/agents/auto-healer', {
+      state: {
+        option,
+        affectedService: v.affected_service,
+        incidentId,
+        rootCause: v.root_cause,
+      },
+    });
   };
 
   return (
@@ -248,7 +128,7 @@ export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string |
       <div>
         <div className="flex items-baseline justify-between gap-2">
           <p className="card-title !text-[10px]">Ranked fix steps ({steps.length})</p>
-          <span className="text-[10px] text-ink-500 dark:text-ink-400">select a step to approve</span>
+          <span className="text-[10px] text-ink-500 dark:text-ink-400">select a step to send</span>
         </div>
         <ol className="mt-2 space-y-2">
           {steps.map((step, i) => {
@@ -258,7 +138,7 @@ export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string |
               <li key={i}>
                 <button
                   type="button"
-                  onClick={() => pickStep(i)}
+                  onClick={() => setSelectedStep(i)}
                   aria-pressed={isSelected}
                   className={clsx(
                     'w-full rounded-md border p-2.5 text-left transition-colors',
@@ -290,7 +170,7 @@ export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string |
                           <ShieldAlert className="mr-1 inline h-3 w-3" /> HITL required
                         </span>
                         {executable ? (
-                          <span className="chip !border-ok/40 !text-ok" title="One-click remediable">
+                          <span className="chip !border-ok/40 !text-ok" title="Executable by the Auto-Healer">
                             <CheckCircle2 className="mr-1 inline h-3 w-3" /> auto: set {step.flag}→{step.variant}
                           </span>
                         ) : (
@@ -304,18 +184,34 @@ export function RcaView({ v, incidentId }: { v: RCAVerdict; incidentId: string |
                         <span><span className="text-ink-500 dark:text-ink-400">rollback:</span> {step.rollback}</span>
                       </div>
 
-                      {/* The approval gate renders inline under the SELECTED step. */}
+                      {/* The hand-off renders inline under the SELECTED step. */}
                       {isSelected && (
                         flag ? (
-                          <ApprovalBox
-                            flag={flag}
-                            variant={fixVariant}
-                            status={applyStatus}
-                            error={applyError}
-                            approver={applyApprover}
-                            onApply={applyFix}
-                            closeFollows={!!incidentId}
-                          />
+                          <div className="mt-2 rounded-md border border-accent/40 bg-accent/5 p-2.5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="card-title !text-[10px]">Resolve this step</p>
+                                <p className="mt-0.5 text-[11px] text-ink-500 dark:text-ink-400">
+                                  Auto-Healer runs it (dry-run → live) through the HITL gate: set{' '}
+                                  <span className="font-mono text-ink-700 dark:text-ink-200">{flag}</span> →{' '}
+                                  <span className="font-mono text-ink-700 dark:text-ink-200">{fixVariant}</span>.
+                                </p>
+                              </div>
+                              {/* Stop the parent step-select button from also firing. */}
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                onClick={(e) => { e.stopPropagation(); sendToHealer(); }}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); sendToHealer(); } }}
+                                className={clsx(
+                                  'inline-flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition',
+                                  'border-accent/40 bg-accent/10 text-accent hover:bg-accent/20',
+                                )}
+                              >
+                                <HeartPulse className="h-3.5 w-3.5" /> Send to Auto-Healer <ArrowRight className="h-3.5 w-3.5" />
+                              </span>
+                            </div>
+                          </div>
                         ) : (
                           <p className="mt-2 rounded-md border border-ink-200 bg-ink-50/50 p-2 text-[11px] text-ink-500 dark:border-ink-700 dark:bg-ink-800/30 dark:text-ink-400">
                             This step has no automated executor — perform it manually, then verify recovery.
