@@ -132,6 +132,7 @@ def test_mapped_alert_triggers_render_and_attach(monkeypatch):
     assert record.created
     assert record.ticket_id == "INC0010001"
     assert record.system == "servicenow"
+    assert record.attachment_added is True
 
     capabilities_called = [c for c, _ in registry.calls]
     assert "observability.metrics.render_panel" in capabilities_called
@@ -142,6 +143,10 @@ def test_mapped_alert_triggers_render_and_attach(monkeypatch):
     )
     assert render_kwargs["dashboard_uid"] == "otel-demo-services"
     assert render_kwargs["panel_id"] == 5
+    # #196: the panel config carries a single time_range, and the agent asks
+    # the renderer for a PNG explicitly.
+    assert render_kwargs["time_range"] == "15m"
+    assert render_kwargs["format"] == "png"
 
     attach_kwargs = next(kw for cap, kw in registry.calls if cap == "itsm.incident.attachment.add")
     assert attach_kwargs["sys_id"] == "abc123"
@@ -177,6 +182,7 @@ def test_unmapped_alert_skips_render_and_attach(monkeypatch):
     assert any(
         "no panel mapped for alert 'SomeUnmappedAlert'" in line for line in record.audit_metadata
     )
+    assert record.attachment_added is False
 
 
 def test_render_failure_does_not_break_ticket(monkeypatch):
@@ -213,6 +219,7 @@ def test_render_failure_does_not_break_ticket(monkeypatch):
     assert "itsm.incident.attachment.add" not in capabilities_called
 
     assert any("render_panel failed" in line for line in record.audit_metadata)
+    assert record.attachment_added is False
 
 
 def test_alert_name_omitted_skips_attachment(monkeypatch):
@@ -237,6 +244,7 @@ def test_alert_name_omitted_skips_attachment(monkeypatch):
     capabilities_called = [c for c, _ in registry.calls]
     assert "observability.metrics.render_panel" not in capabilities_called
     assert any("alert_name not supplied" in line for line in record.audit_metadata)
+    assert record.attachment_added is False
 
 
 def test_attachment_filename_is_sanitized():
@@ -275,6 +283,7 @@ def test_mock_provider_ticket_skips_grafana_path(monkeypatch):
 
     assert record.created
     assert record.system == "mock"
+    assert record.attachment_added is False
     capabilities_called = [c for c, _ in registry.calls]
     assert "observability.metrics.render_panel" not in capabilities_called
     assert "itsm.incident.attachment.add" not in capabilities_called

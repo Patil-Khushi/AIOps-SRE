@@ -165,8 +165,25 @@ if _use_mock_itsm():
     provider="mock",
     description="Pretend to send a chat notification.",
 )
-def mock_notify(channel: str, message: str) -> ToolResult:
-    return ToolResult(ok=True, data={"channel": channel, "message": message[:200]})
+def mock_notify(
+    channel: str,
+    message: str,
+    severity: str | None = None,
+    ticket_id: str | None = None,
+) -> ToolResult:
+    """``severity`` / ``ticket_id`` are accepted (not just dropped by the
+    registry's signature filter) so tests can assert RA-003 forwarded them and
+    a real chat adapter can colour-code + deep-link the message — mirrors the
+    forwarded-kwargs pattern on ``mock_create_incident``."""
+    return ToolResult(
+        ok=True,
+        data={
+            "channel": channel,
+            "message": message[:200],
+            "severity": severity,
+            "ticket_id": ticket_id,
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

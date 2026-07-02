@@ -59,11 +59,13 @@ def render_panel(
     dashboard_uid: str,
     panel_id: int,
     *,
+    time_range: str | None = None,
     from_: str = "now-15m",
     to: str = "now",
     width: int = 800,
     height: int = 400,
     tz: str = "UTC",
+    format: str = "png",
 ) -> ToolResult:
     """GET ``/render/d-solo/{dashboard_uid}?panelId={panel_id}&...``.
 
@@ -86,6 +88,23 @@ def render_panel(
             error="render_panel requires dashboard_uid",
             metadata={"provider": "grafana", "url": url},
         )
+
+    # PNG is the only output the image-renderer produces; accept the kwarg
+    # (RA-003 passes format="png" per #196) but reject anything else loudly
+    # rather than silently returning a PNG under the wrong extension.
+    if format != "png":
+        return ToolResult(
+            ok=False,
+            error=f"unsupported format {format!r}; the image-renderer only emits PNG",
+            metadata={"provider": "grafana", "url": url},
+        )
+
+    # A single ``time_range`` (e.g. "15m", "6h") is the panel-config surface
+    # (#196); expand it to Grafana's relative from/to window. Explicit
+    # ``from_``/``to`` still work for callers that need a custom window.
+    if time_range:
+        from_ = f"now-{time_range}"
+        to = "now"
 
     params = {
         "panelId": str(panel_id),
@@ -138,8 +157,10 @@ def render_panel(
             "panel_id": panel_id,
             "width": width,
             "height": height,
+            "time_range": time_range,
             "from": from_,
             "to": to,
+            "format": format,
         },
         metadata={"provider": "grafana", "url": url},
     )

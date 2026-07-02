@@ -1,29 +1,25 @@
 {
-  "_doc": "Alert-name -> Grafana panel coordinates (DEMO-8 / #60). Loaded by agents.auto_ticketing on every ticket-create attempt; failure to render or attach the panel must NOT break ticket creation. Keys are Prometheus alert rule names (the `alert` field from demo/scenarios/*.yaml). Keys starting with `_` are reserved for documentation entries like this one and are filtered out at load time. Add entries here when wiring a new scenario whose Grafana view is worth attaching. `dashboard_uid` is the stable id from the dashboard's URL (.../d/<UID>/...); `panel_id` is the numeric id shown when 'Inspect → Panel JSON' on that panel. `from` and `to` accept Grafana's relative time expressions.",
+  "_doc": "Alert-name -> Grafana panel coordinates (DEMO-8 / #60). Loaded by agents.auto_ticketing on every ticket-create attempt; failure to render or attach the panel must NOT break ticket creation. Keys are Prometheus alert rule names (the `alert` field from demo/scenarios/*.yaml). Keys starting with `_` are reserved for documentation entries like this one and are filtered out at load time. Add entries here when wiring a new scenario whose Grafana view is worth attaching. `dashboard_uid` is the stable id from the dashboard's URL (.../d/<UID>/...); `panel_id` is the numeric id shown when 'Inspect -> Panel JSON' on that panel. `time_range` is a single relative window (e.g. `15m`, `6h`) that the renderer expands to Grafana's from=now-<range> / to=now.",
   "_verify": "TODO post-merge (#60 follow-up): the `dashboard_uid` and `panel_id` values below are placeholders that haven't been validated against a running Grafana yet. A wrong UID surfaces as a silent 'no panel mapped' or a 404 from the renderer — neither breaks ticket creation, but neither produces an attachment. Verify against the OTel demo's Grafana once the grafana-image-renderer plugin is enabled on the cluster.",
 
   "PaymentErrorRateHigh": {
     "dashboard_uid": "otel-demo-services",
     "panel_id": 5,
-    "from": "now-15m",
-    "to": "now"
+    "time_range": "15m"
   },
   "AdErrorRateHigh": {
     "dashboard_uid": "otel-demo-services",
     "panel_id": 7,
-    "from": "now-15m",
-    "to": "now"
+    "time_range": "15m"
   },
   "CartErrorRateHigh": {
     "dashboard_uid": "otel-demo-services",
     "panel_id": 9,
-    "from": "now-15m",
-    "to": "now"
+    "time_range": "15m"
   },
   "SlowProductCatalog": {
     "dashboard_uid": "otel-demo-services",
     "panel_id": 11,
-    "from": "now-30m",
-    "to": "now"
+    "time_range": "30m"
   }
 }

@@ -33,7 +33,7 @@ from typing import Any
 import aiops.tools.itsm
 import aiops.tools.mock_providers
 import aiops.tools.observability  # noqa: F401  — registers grafana.render_panel
-from agents.alert_triage.models import Severity, TriageVerdict
+from agents.alert_triage.models import TriageVerdict
 from agents.auto_ticketing.models import TicketRecord, TicketSystem
 from agents.incident_classifier.models import Classification
 from aiops.tools import get_registry
@@ -105,40 +105,41 @@ def _try_attach_grafana_panel(
     sys_id: str,
     alert_name: str,
     audit: list[str],
-) -> None:
+) -> bool:
     """Render the alert's Grafana panel and attach it to the incident.
 
-    Every failure path is logged to ``audit`` and swallowed — ticket
-    creation has already succeeded, and a missing attachment must not
-    erase that success.  Failure modes worth distinguishing in the audit
-    log: alert unmapped (most alerts), Grafana unreachable / plugin
-    missing, ServiceNow attachment endpoint failure.
+    Returns ``True`` only when the PNG actually attached to the incident;
+    every other path returns ``False``. Each failure is logged to ``audit``
+    and swallowed — ticket creation has already succeeded, and a missing
+    attachment must not erase that success. Failure modes worth
+    distinguishing in the audit log: alert unmapped (most alerts), Grafana
+    unreachable / plugin missing, ServiceNow attachment endpoint failure.
     """
     panel = _panel_for(alert_name)
     if panel is None:
         audit.append(f"grafana attachment skipped: no panel mapped for alert {alert_name!r}")
-        return
+        return False
 
     try:
         render = registry.call(
             "observability.metrics.render_panel",
             dashboard_uid=panel["dashboard_uid"],
             panel_id=int(panel["panel_id"]),
-            from_=panel.get("from", "now-15m"),
-            to=panel.get("to", "now"),
+            time_range=panel.get("time_range", "15m"),
+            format="png",
         )
     except Exception as exc:  # registry-level (capability not registered)
         audit.append(f"grafana attachment skipped: render_panel raised {type(exc).__name__}: {exc}")
-        return
+        return False
 
     if not render.ok or not render.data:
         audit.append(f"grafana render_panel failed: {render.error}")
-        return
+        return False
 
     png_bytes = render.data.get("png_bytes")
     if not isinstance(png_bytes, bytes) or not png_bytes:
         audit.append("grafana render_panel returned no png_bytes; skipping attach")
-        return
+        return False
 
     file_name = _safe_attachment_filename(alert_name)
     try:
@@ -154,7 +155,7 @@ def _try_attach_grafana_panel(
             f"grafana attachment skipped: incident.attachment.add raised "
             f"{type(exc).__name__}: {exc}"
         )
-        return
+        return False
 
     if attach.ok:
         audit.append(
@@ -162,11 +163,27 @@ def _try_attach_grafana_panel(
             f"{len(png_bytes)} bytes, "
             f"attachment_sys_id={(attach.data or {}).get('attachment_sys_id')})"
         )
-    else:
-        audit.append(f"grafana incident.attachment.add failed: {attach.error}")
+        return True
+    audit.append(f"grafana incident.attachment.add failed: {attach.error}")
+    return False
 
 
-_SEV1_CHANNEL = "oncall"
+# Severity → ServiceNow urgency (1=High / 2=Medium / 3=Low; Sev-4 clamps to 3)
+# and → chat channel (Sev-1 pages #oncall; everything else batches to the noise
+# bucket). Module-level lookups rather than functions so the mapping is a single
+# transparent table — and ``.get(severity, default)`` keeps an unexpected
+# severity string from raising, defaulting it to Low / noise.
+#
+# Notification Router (#35) will eventually own channel routing with
+# policy-driven config + on-call schedules; two channels is enough to demo it.
+URGENCY_MAP: dict[str, int] = {"Sev-1": 1, "Sev-2": 2, "Sev-3": 3, "Sev-4": 3}
+CHANNEL_MAP: dict[str, str] = {
+    "Sev-1": "oncall",
+    "Sev-2": "alerts-noise",
+    "Sev-3": "alerts-noise",
+    "Sev-4": "alerts-noise",
+}
+_DEFAULT_URGENCY = 3
 _DEFAULT_CHANNEL = "alerts-noise"
 
 # RA-002's incident_type taxonomy is internal; ServiceNow's ``category`` field
@@ -185,84 +202,86 @@ _INCIDENT_TYPE_TO_SNOW_CATEGORY: dict[str, str] = {
 }
 
 
-def _severity_to_urgency(severity: Severity) -> int:
-    """ServiceNow urgency is 1=High / 2=Medium / 3=Low. Sev-4 clamps to 3."""
-    return {"Sev-1": 1, "Sev-2": 2, "Sev-3": 3, "Sev-4": 3}[severity]
-
-
-def _severity_to_channel(severity: Severity) -> str:
-    """Sev-1 goes to the oncall channel; everything else to the noise bucket.
-
-    Notification Router (#35) will replace this with policy-driven routing
-    that respects tenant config + on-call schedules. Until then, two
-    channels is enough to demo the path.
-    """
-    return _SEV1_CHANNEL if severity == "Sev-1" else _DEFAULT_CHANNEL
-
-
 def _build_short_description(verdict: TriageVerdict) -> str:
-    """ServiceNow's short_description has a 160-char limit; cap aggressively."""
+    """ServiceNow's short_description is VARCHAR(160). Build the headline, then
+    truncate the whole string to ``157 + "..."`` when it overruns so the
+    reader can tell the title was clipped (vs. a silent hard cut)."""
     summary = verdict.alert_summary.strip()
-    head = f"[{verdict.severity}] {verdict.affected_service}: "
-    budget = 160 - len(head)
-    return head + (summary[:budget] if len(summary) > budget else summary)
+    short = f"[{verdict.severity}] {verdict.affected_service}: {summary}"
+    if len(short) > 160:
+        short = short[:157] + "..."
+    return short
 
 
 def _build_description(
     verdict: TriageVerdict,
     classification: Classification | None,
 ) -> str:
-    """Multi-paragraph triage context for ServiceNow's ``description`` field.
+    """Multi-section triage context for ServiceNow's ``description`` field.
 
     The short_description is capped at 160 chars and only carries the alert
     headline; a human opening the incident needs the full narrative, the
     routing context, the classifier's verdict (when available), and RA-001's
-    8-stage decision trace to act without re-running the agent. Layout is
-    plain text with bare section labels so it survives ServiceNow's HTML
-    sanitization unchanged. Lines stay aligned with a fixed-width key column
-    so the field renders readably in both ServiceNow's monospace
+    decision trace to act without re-running the agent. Layout is plain text
+    with ``=== Section ===`` headers so it survives ServiceNow's HTML
+    sanitization unchanged and renders readably in both ServiceNow's
     activity-stream view and the dashboard's prose pane.
+
+    Decision-trace note (issue #196): the doc's ``matched rule`` line comes
+    from a ``rule_matched`` field that the real ``TriageVerdict`` does not
+    carry. We render the two lines that DO map to real fields (CMDB lookup,
+    on-call) and keep RA-001's full ordered ``decision_trace`` beneath them —
+    honoring the doc's new line style without fabricating a rule or dropping
+    the real trace.
     """
     sections: list[str] = []
 
-    sections.append("ALERT SUMMARY\n" + verdict.alert_summary.strip())
+    sections.append("=== Alert Summary ===\n" + verdict.alert_summary.strip())
 
+    # Routing is Team / Engineer / Runbook only. The doc's routing block (#196)
+    # intentionally drops the old Severity + Confidence lines — this is a
+    # decision, not an oversight. Severity is already visible in
+    # short_description; the triage confidence_score is deliberately not
+    # surfaced on the ticket per the doc. If a future reader wants it back,
+    # re-adding f"{'Confidence:':<9} {verdict.confidence_score:.2f}" here is the
+    # spot — but that's a doc change, not a bug fix.
     routing_lines = [
-        f"  Severity       : {verdict.severity}",
-        f"  Confidence     : {verdict.confidence_score:.2f}",
-        f"  Assigned team  : {verdict.assigned_team}",
-        f"  On-call        : {verdict.assigned_engineer or 'unassigned'}",
-        f"  Runbook        : {verdict.recommended_runbook or 'none'}",
+        f"{'Team:':<9} {verdict.assigned_team}",
+        f"{'Engineer:':<9} {verdict.assigned_engineer or 'unassigned'}",
+        f"{'Runbook:':<9} {verdict.recommended_runbook or 'none'}",
     ]
-    sections.append("INCIDENT ROUTING\n" + "\n".join(routing_lines))
+    sections.append("=== Routing ===\n" + "\n".join(routing_lines))
 
+    # Classification block is emitted only when RA-002 actually ran. When it
+    # didn't (e.g. the eval harness feeds verdicts only), the section is
+    # omitted entirely rather than carrying a placeholder — the route can
+    # patch it in later via itsm.incident.update once classification runs.
     if classification is not None:
         tags = ", ".join(classification.tags) if classification.tags else "none"
+        # Type / Confidence / Probable cause / Tags per the doc (#196). The old
+        # body's Rationale line is intentionally dropped here — a decision, not
+        # an accidental deletion. (The classifier's Confidence shown here is
+        # RA-002's, distinct from the triage confidence_score dropped above.)
         cls_lines = [
-            f"  Type           : {classification.incident_type}",
-            f"  Confidence     : {classification.confidence:.2f}",
-            f"  Probable cause : {classification.probable_root_cause}",
-            f"  Rationale      : {classification.rationale}",
-            f"  Tags           : {tags}",
+            f"{'Type:':<15} {classification.incident_type}",
+            f"{'Confidence:':<15} {classification.confidence:.2f}",
+            f"{'Probable cause:':<15} {classification.probable_root_cause}",
+            f"{'Tags:':<15} {tags}",
         ]
-        sections.append("CLASSIFICATION (RA-002)\n" + "\n".join(cls_lines))
-    else:
-        # Placeholder kept in the body even when classification is missing so
-        # the structure of the description does not change between pipeline
-        # variants. The route can patch the block in later via
-        # itsm.incident.update once classification has run.
-        sections.append(
-            "CLASSIFICATION (RA-002)\n  Pending — classifier has not run for this incident yet."
-        )
+        sections.append("=== Classification (RA-002) ===\n" + "\n".join(cls_lines))
 
+    trace_lines = [
+        f"- CMDB lookup: {verdict.affected_service} -> {verdict.assigned_team}",
+        f"- assigned on-call: {verdict.assigned_engineer or 'unassigned'} (PagerDuty schedule)",
+    ]
     trace = list(verdict.audit_metadata.decision_trace or [])
     if trace:
-        numbered = "\n".join(f"  {i}. {step}" for i, step in enumerate(trace, 1))
-        sections.append("DECISION TRACE (RA-001)\n" + numbered)
+        trace_lines.append("- trace:")
+        trace_lines.extend(f"  {i}. {step}" for i, step in enumerate(trace, 1))
     else:
-        sections.append("DECISION TRACE (RA-001)\n  (no trace recorded)")
+        trace_lines.append("- trace: (none recorded)")
+    sections.append("=== Decision Trace (RA-001) ===\n" + "\n".join(trace_lines))
 
-    sections.append("— Generated by Auto-Ticketing (RA-003)")
     return "\n\n".join(sections)
 
 
@@ -328,8 +347,8 @@ def ticket(
         audit.append(f"duplicate cluster covered {verdict.duplicate_alert_count} alert(s)")
         return TicketRecord(created=False, audit_metadata=audit)
 
-    urgency = _severity_to_urgency(verdict.severity)
-    channel = _severity_to_channel(verdict.severity)
+    urgency = URGENCY_MAP.get(verdict.severity, _DEFAULT_URGENCY)
+    channel = CHANNEL_MAP.get(verdict.severity, _DEFAULT_CHANNEL)
     short_description = _build_short_description(verdict)
     description = _build_description(verdict, classification)
     assignment_group = verdict.assigned_team
@@ -353,11 +372,14 @@ def ticket(
 
     ticket_id: str | None = None
     system: TicketSystem = "none"
+    attachment_added = False
     try:
         result = registry.call(
             "itsm.incident.create",
             short_description=short_description,
-            urgency=urgency,
+            # ServiceNow's REST API expects urgency as a string ("1".."3");
+            # pass it as one here so the payload is correct at the seam.
+            urgency=str(urgency),
             description=description,
             assignment_group=assignment_group,
             category=category,
@@ -384,7 +406,7 @@ def ticket(
             if system == "servicenow":
                 snow_sys_id = data.get("sys_id")
                 if snow_sys_id and alert_name:
-                    _try_attach_grafana_panel(
+                    attachment_added = _try_attach_grafana_panel(
                         registry=registry,
                         sys_id=snow_sys_id,
                         alert_name=alert_name,
@@ -402,6 +424,8 @@ def ticket(
             "notify.send",
             channel=channel,
             message=notification_text,
+            severity=verdict.severity,
+            ticket_id=ticket_id,
         )
         if notify_result.ok:
             notification_sent = True
@@ -417,8 +441,12 @@ def ticket(
         system=system,
         urgency=urgency,
         short_description=short_description,
+        category=category,
         channel_notified=channel,
         notification_sent=notification_sent,
+        assigned_team=verdict.assigned_team,
+        assigned_engineer=verdict.assigned_engineer,
+        attachment_added=attachment_added,
         audit_metadata=audit,
     )
 

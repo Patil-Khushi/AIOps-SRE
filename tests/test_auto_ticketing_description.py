@@ -130,33 +130,42 @@ def test_description_includes_alert_summary_routing_classification_and_trace(mon
 
     assert record.created is True
     assert record.ticket_id == "INC0000001"
+    # New TicketRecord fields (#196): ownership carried through + mapped category.
+    assert record.assigned_team == "Payments Team"
+    assert record.assigned_engineer == "oncall@payments.example.com"
+    assert record.category == "software"
+    # No alert_name supplied here, so the Grafana attachment path never runs.
+    assert record.attachment_added is False
 
     desc = captured["description"]
     assert isinstance(desc, str)
 
-    # Section headers
-    assert "ALERT SUMMARY" in desc
-    assert "INCIDENT ROUTING" in desc
-    assert "CLASSIFICATION (RA-002)" in desc
-    assert "DECISION TRACE (RA-001)" in desc
+    # Section headers (=== style, #196)
+    assert "=== Alert Summary ===" in desc
+    assert "=== Routing ===" in desc
+    assert "=== Classification (RA-002) ===" in desc
+    assert "=== Decision Trace (RA-001) ===" in desc
 
     # Alert summary verbatim
     assert "0.05/s above 0.01/s threshold" in desc
 
-    # Routing block — severity, confidence, team, on-call, runbook
-    assert "Severity       : Sev-1" in desc
-    assert "Confidence     : 0.92" in desc
-    assert "Assigned team  : Payments Team" in desc
-    assert "On-call        : oncall@payments.example.com" in desc
-    assert "Runbook        : https://runbooks.example.com/payment-5xx" in desc
+    # Routing block — Team / Engineer / Runbook only (severity + confidence dropped)
+    assert "Team:" in desc and "Payments Team" in desc
+    assert "Engineer:" in desc and "oncall@payments.example.com" in desc
+    assert "Runbook:" in desc and "https://runbooks.example.com/payment-5xx" in desc
 
-    # Classification block filled, NOT the pending placeholder
-    assert "Type           : application" in desc
-    assert "Probable cause : downstream Stripe API rejections" in desc
-    assert "Tags           : 5xx, payment, checkout-blocker" in desc
-    assert "Pending — classifier has not run" not in desc
+    # Classification block filled; Rationale line intentionally dropped per #196,
+    # and no pending placeholder
+    assert "Type:" in desc and "application" in desc
+    assert "Probable cause:" in desc and "downstream Stripe API rejections" in desc
+    assert "Tags:" in desc and "5xx, payment, checkout-blocker" in desc
+    assert "Rationale" not in desc
+    assert "Pending" not in desc
 
-    # All 8 RA-001 decision-trace stages, numbered
+    # Hybrid decision trace: the doc's CMDB-lookup + on-call lines, with the
+    # full RA-001 8-stage trace preserved beneath them.
+    assert "- CMDB lookup: payment -> Payments Team" in desc
+    assert "- assigned on-call: oncall@payments.example.com (PagerDuty schedule)" in desc
     for n in range(1, 9):
         assert f"  {n}. " in desc
     assert "LLM severity: Sev-1" in desc
@@ -172,7 +181,8 @@ def test_assignment_group_and_category_passed_to_registry(monkeypatch):
     assert captured["category"] == "software"
     # short_description still carries the headline (existing contract)
     assert captured["short_description"].startswith("[Sev-1] payment:")
-    assert captured["urgency"] == 1
+    # #196: urgency is forwarded to the ITSM seam as a string ("1".."3").
+    assert captured["urgency"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -196,18 +206,26 @@ def test_incident_type_maps_to_servicenow_category(monkeypatch, incident_type, e
 # ─── classification missing (eval-harness path) ─────────────────────────────
 
 
-def test_description_carries_pending_placeholder_when_classification_missing(monkeypatch):
+def test_description_omits_classification_block_when_classification_missing(monkeypatch):
     captured = _last_create_payload(monkeypatch)
     record = ticket(_verdict())  # no classification
 
     assert record.created is True
     desc = captured["description"]
-    assert "CLASSIFICATION (RA-002)" in desc
-    assert "Pending — classifier has not run" in desc
+    # #196: no placeholder — the whole classification section is omitted when
+    # RA-002 has not run.
+    assert "=== Classification (RA-002) ===" not in desc
+    assert "Pending" not in desc
+    # The other sections still render.
+    assert "=== Alert Summary ===" in desc
+    assert "=== Routing ===" in desc
+    assert "=== Decision Trace (RA-001) ===" in desc
     # category is omitted when classification is unavailable
     assert captured["category"] is None
+    assert record.category is None
     # assignment_group still flows from the verdict
     assert captured["assignment_group"] == "Payments Team"
+    assert record.assigned_team == "Payments Team"
 
 
 def test_description_handles_missing_optional_verdict_fields(monkeypatch):
@@ -219,8 +237,10 @@ def test_description_handles_missing_optional_verdict_fields(monkeypatch):
     ticket(v)
 
     desc = captured["description"]
-    assert "On-call        : unassigned" in desc
-    assert "Runbook        : none" in desc
+    assert "Engineer: unassigned" in desc
+    assert "none" in desc
+    # on-call also reflects 'unassigned' in the decision-trace block
+    assert "- assigned on-call: unassigned (PagerDuty schedule)" in desc
 
 
 # ─── suppressed: nothing should be sent at all ─────────────────────────────

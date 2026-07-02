@@ -30,7 +30,11 @@
         "system_in": ["mock", "servicenow"],
         "ticket_id_contains": "INC",
         "notification_sent": true,
-        "short_description_contains": "[Sev-1] payment"
+        "short_description_contains": "[Sev-1] payment",
+        "assigned_team": "Payments Team",
+        "assigned_engineer": "oncall@payments.example.com",
+        "attachment_added": false,
+        "category": null
       }
     },
     {
@@ -135,7 +139,9 @@
         "created": false,
         "ticket_id": null,
         "notification_sent": false,
-        "audit_metadata_contains": "skipped: status=Suppressed"
+        "audit_metadata_contains": "skipped: status=Suppressed",
+        "attachment_added": false,
+        "assigned_team": null
       }
     }
   ]
