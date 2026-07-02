@@ -336,7 +336,9 @@ def _ensure_executable_action(
     )
     before = steps[target_idx]
     if before.action_type is FixActionType.SET_FLAG and before.flag == mapped:
-        return steps  # already correct — nothing to do
+        # Primary already correct — but still ground the OTHER steps below, so a
+        # secondary set_flag with an invented flag never offers a dead apply.
+        return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
     steps[target_idx] = before.model_copy(
         update={"action_type": FixActionType.SET_FLAG, "flag": mapped, "variant": "off"}
     )
@@ -350,7 +352,13 @@ def _ensure_executable_action(
             f"annotated fix step #{target_idx + 1} with executable action "
             f"set_flag(flag={mapped}, off) from affected_service={service!r}"
         )
-    return steps
+    # Ground the REMAINING steps against the live flagd config: the map only
+    # fixes the primary step, so any other set_flag step the LLM invented
+    # (e.g. 'adServiceManualGc') would otherwise stay executable and the operator
+    # could send it to the Auto-Healer, where set_variant rejects it. Grounding
+    # keeps real flags (adManualGc, adHighCpu, …) and downgrades invented ones
+    # to manual.
+    return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
 
 
 def _coerce_verdict(

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Brain, Check, ChevronDown, Clock, Gavel, HeartPulse, ShieldCheck, X } from 'lucide-react';
+import { Brain, Check, Clock, Gavel, HeartPulse, ShieldCheck, X } from 'lucide-react';
 import { api, ApiError } from '@/lib/api';
 import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
@@ -252,7 +252,26 @@ function Row({
       </td>
       <td className="px-4 py-3 text-right">
         {pending ? (
-          <ActionDropdown busy={busy} onApprove={onApprove} onDeny={onDeny} />
+          // Inline buttons (not a dropdown) — the table container clips an
+          // absolutely-positioned menu, which hid the Approve/Deny actions.
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={onApprove}
+              disabled={busy}
+              className="inline-flex items-center gap-1 rounded-md border border-ok/40 px-2.5 py-1 text-xs font-medium text-ok transition hover:bg-ok/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Check className="h-3.5 w-3.5" /> {busy ? 'Working…' : 'Approve'}
+            </button>
+            <button
+              type="button"
+              onClick={onDeny}
+              disabled={busy}
+              className="inline-flex items-center gap-1 rounded-md border border-bad/40 px-2.5 py-1 text-xs font-medium text-bad transition hover:bg-bad/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <X className="h-3.5 w-3.5" /> Deny
+            </button>
+          </div>
         ) : status === 'approved' ? (
           // After approval, continue the flow — back to RCA (deep-linked to THIS
           // failure) or over to the Auto-Healer. The origin capability decides
@@ -283,34 +302,3 @@ function Row({
   );
 }
 
-function ActionDropdown({ busy, onApprove, onDeny }: { busy: boolean; onApprove: () => void; onDeny: () => void }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative inline-block text-left">
-      <button type="button" onClick={() => setOpen((o) => !o)} disabled={busy} className="btn btn-ghost !py-1.5 !text-xs">
-        {busy ? 'Working…' : 'Action'} {!busy && <ChevronDown className="h-3.5 w-3.5" />}
-      </button>
-      {open && !busy && (
-        <>
-          <button type="button" aria-hidden className="fixed inset-0 z-10 cursor-default" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-20 mt-1 w-32 overflow-hidden rounded-lg border border-ink-200 bg-white shadow-lg dark:border-ink-700 dark:bg-ink-900">
-            <button
-              type="button"
-              onClick={() => { setOpen(false); onApprove(); }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-ok hover:bg-ok/10"
-            >
-              <Check className="h-3.5 w-3.5" /> Approve
-            </button>
-            <button
-              type="button"
-              onClick={() => { setOpen(false); onDeny(); }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-bad hover:bg-bad/10"
-            >
-              <X className="h-3.5 w-3.5" /> Deny
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}

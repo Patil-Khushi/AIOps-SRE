@@ -24,7 +24,10 @@ Environment context (use this when reasoning about likely causes):
   common source of synthetic failures. Flag names follow a consistent
   pattern: ``<camelCasedServiceName>Failure`` — e.g. ``paymentFailure``,
   ``productCatalogFailure``, ``recommendationCacheFailure``, ``cartFailure``,
-  ``adServiceHighCpu``, ``adServiceManualGc``.
+  ``adFailure``. Use the SHORT service name (``ad``, not ``adService``) when
+  composing the flag. Some services also expose named fault flags such as
+  ``adHighCpu`` and ``adManualGc`` — never invent a name; only use a flag you
+  are confident exists (otherwise mark the step ``manual``).
 - When a single service shows latency or error injection that originates
   *inside* the service boundary (trace spans show the delay is within the
   service, not in a downstream call), the flag named after that service is
@@ -100,7 +103,10 @@ Environment context (use this when reasoning about likely causes):
   common source of synthetic failures. Flag names follow a consistent
   pattern: ``<camelCasedServiceName>Failure`` — e.g. ``paymentFailure``,
   ``productCatalogFailure``, ``recommendationCacheFailure``, ``cartFailure``,
-  ``adServiceHighCpu``, ``adServiceManualGc``.
+  ``adFailure``. Use the SHORT service name (``ad``, not ``adService``) when
+  composing the flag. Some services also expose named fault flags such as
+  ``adHighCpu`` and ``adManualGc`` — never invent a name; only use a flag you
+  are confident exists (otherwise mark the step ``manual``).
 - When a single service shows latency or error injection that originates
   *inside* the service boundary (trace spans show the delay is within the
   service, not in a downstream call), the flag named after that service is
