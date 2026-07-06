@@ -59,12 +59,27 @@ export default function RcaConsole() {
   const results = useMemo<TriageResult[]>(() => verdicts.data?.results ?? [], [verdicts.data]);
   const list: TriageVerdict[] = results.map((r) => r.verdict);
 
+  // Services currently firing, from the cheap live-alerts poll (no LLM).
+  const firingServices = useMemo(
+    () => new Set((live.data?.alerts ?? []).map((a) => a.service)),
+    [live.data],
+  );
+
   // Firing alerts not yet represented by a triaged verdict — shown as
   // "triaging…" placeholders so the operator sees the incident immediately.
-  const firing: PrometheusAlert[] = useMemo(() => {
-    const triagedServices = new Set(list.map((v) => v.affected_service));
-    return (live.data?.alerts ?? []).filter((a) => !triagedServices.has(a.service));
-  }, [live.data, list]);
+  const firing: PrometheusAlert[] = useMemo(
+    () => (live.data?.alerts ?? []).filter((a) => !list.some((v) => v.affected_service === a.service)),
+    [live.data, list],
+  );
+
+  // A triaged incident is shown only while its service is still firing. Once the
+  // Auto-Healer flips the flag off, the service stops firing (its synthetic alert
+  // is gated on flag state) and drops out here automatically — so a resolved
+  // failure disappears from the RCA list without a manual refresh. We only apply
+  // this once a live-alerts frame has loaded; a fetch error leaves live.data
+  // undefined, so we don't hide everything on a transient Prometheus blip.
+  const liveLoaded = !!live.data;
+  const isResolved = (service: string) => liveLoaded && !firingServices.has(service);
   const selectedResult = results[selectedIdx] ?? null;
   const selected: TriageVerdict | null = selectedResult?.verdict ?? null;
 
@@ -183,6 +198,8 @@ export default function RcaConsole() {
           <div className="lg:col-span-2">
             <ul className="space-y-2">
               {list.map((v, i) => (
+                // Hide once resolved — service no longer firing after the fix.
+                isResolved(v.affected_service) ? null : (
                 <li key={i}>
                   <button
                     onClick={() => setSelectedIdx(i)}
@@ -208,6 +225,7 @@ export default function RcaConsole() {
                     </div>
                   </button>
                 </li>
+                )
               ))}
               {/* Firing-but-not-yet-triaged alerts — shown immediately so the
                   operator sees the incident without waiting for the triage pass.

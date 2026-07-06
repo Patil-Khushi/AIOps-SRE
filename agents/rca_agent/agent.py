@@ -40,7 +40,7 @@ from agents.rca_agent.prompts import (
     RCA_PROMPT_USER_V1,
     SYSTEM_PROMPT_V3,
 )
-from agents.rca_agent.remediation_map import flag_for_service
+from agents.rca_agent.remediation_map import _normalise, flag_for_service
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
 
@@ -256,6 +256,44 @@ def _live_flag_names() -> set[str] | None:
         return None
 
 
+def _live_flag_variants() -> dict[str, str] | None:
+    """Best-effort ``{flag: current_variant}`` from the live flagd config.
+
+    Returns ``None`` when unavailable (no flagd / not configured / call failed)
+    so callers fail *open*. Uses the feature-flags seam, not a vendor SDK.
+    """
+    try:
+        from aiops.tools import get_registry
+
+        res = get_registry().call("feature_flags.list_variants")
+        if not getattr(res, "ok", False):
+            return None
+        variants = (getattr(res, "data", None) or {}).get("variants") or {}
+        return {str(k): str(v) for k, v in variants.items()} or None
+    except Exception:
+        return None
+
+
+def _active_flag_for_service(service: str) -> str | None:
+    """The single flagd flag currently non-``off`` whose name matches ``service``.
+
+    A service can own several fault flags (e.g. ``ad`` → ``adFailure`` /
+    ``adHighCpu`` / ``adManualGc``); the *injected* failure is the one that's on.
+    Turning off the generic ``<service>Failure`` map default when a *different*
+    flag was injected is a no-op that leaves the incident live — so we detect the
+    real on-flag and target that.
+
+    Returns ``None`` when flagd is unavailable, nothing is on for the service, or
+    more than one candidate is on (ambiguous — fall back to the map / LLM flag).
+    """
+    variants = _live_flag_variants()
+    if not variants:
+        return None
+    norm = _normalise(service)
+    on = [f for f, v in variants.items() if v != "off" and f.lower().startswith(norm)]
+    return on[0] if len(on) == 1 else None
+
+
 def _ground_set_flags_against_flagd(
     steps: list[RankedFixStep], *, decision_trace: list[str]
 ) -> list[RankedFixStep]:
@@ -335,46 +373,57 @@ def _ensure_executable_action(
         0,
     )
     before = steps[target_idx]
-    if before.action_type is FixActionType.SET_FLAG and before.flag == mapped:
-        # Primary already correct — but still ground the OTHER steps below, so a
-        # secondary set_flag with an invented flag never offers a dead apply.
-        return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
-    # If the LLM already named a REAL configured flag, keep it: a service can
-    # have several fault flags (e.g. adFailure / adHighCpu / adManualGc) and the
-    # right one depends on the incident — the generic <service>Failure map value
-    # would flip the wrong (no-op) flag for a CPU/GC injection. Only override
-    # when the flag is missing or invented (not in the live flagd config).
+
+    # Pick the flag the executable step should flip, in priority order:
+    #   1. The flag currently ON for this service — that IS the injected failure,
+    #      and it may not be the generic <service>Failure map default (a CPU/GC
+    #      injection flips adHighCpu / adManualGc, not adFailure). Flipping the
+    #      wrong flag off is a no-op that leaves the incident live, so the live
+    #      on-flag is authoritative when flagd can tell us.
+    #   2. Otherwise, a REAL configured flag the LLM already named (may be more
+    #      specific than the map default).
+    #   3. Otherwise, the curated map default.
+    active = _active_flag_for_service(service)
     available = _live_flag_names()
-    if (
+    llm_flag_is_real = (
         before.action_type is FixActionType.SET_FLAG
         and before.flag
         and available
         and before.flag in available
-    ):
-        decision_trace.append(
-            f"kept fix step #{target_idx + 1} flag {before.flag!r} — a configured flagd flag "
-            f"more specific than the map default {mapped!r} for affected_service={service!r}"
-        )
-        return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
-    steps[target_idx] = before.model_copy(
-        update={"action_type": FixActionType.SET_FLAG, "flag": mapped, "variant": "off"}
     )
-    if before.action_type is FixActionType.SET_FLAG and before.flag and before.flag != mapped:
+    if active:
+        target_flag = active
+        why = f"currently-on injected flag for affected_service={service!r}"
+    elif llm_flag_is_real:
+        target_flag = before.flag  # type: ignore[assignment]
+        why = f"configured flagd flag kept for affected_service={service!r}"
+    else:
+        target_flag = mapped
+        why = f"authoritative map for affected_service={service!r}"
+
+    if before.action_type is FixActionType.SET_FLAG and before.flag == target_flag:
+        # Primary already correct — but still ground the OTHER steps below, so a
+        # secondary set_flag with an invented flag never offers a dead apply.
+        return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
+
+    prior = before.flag if before.action_type is FixActionType.SET_FLAG else None
+    steps[target_idx] = before.model_copy(
+        update={"action_type": FixActionType.SET_FLAG, "flag": target_flag, "variant": "off"}
+    )
+    if prior and prior != target_flag:
         decision_trace.append(
-            f"corrected fix step #{target_idx + 1} flag {before.flag!r} → {mapped!r} "
-            f"(authoritative map for affected_service={service!r})"
+            f"corrected fix step #{target_idx + 1} flag {prior!r} → {target_flag!r} ({why})"
         )
     else:
         decision_trace.append(
             f"annotated fix step #{target_idx + 1} with executable action "
-            f"set_flag(flag={mapped}, off) from affected_service={service!r}"
+            f"set_flag(flag={target_flag}, off) — {why}"
         )
-    # Ground the REMAINING steps against the live flagd config: the map only
-    # fixes the primary step, so any other set_flag step the LLM invented
-    # (e.g. 'adServiceManualGc') would otherwise stay executable and the operator
-    # could send it to the Auto-Healer, where set_variant rejects it. Grounding
-    # keeps real flags (adManualGc, adHighCpu, …) and downgrades invented ones
-    # to manual.
+    # Ground the REMAINING steps against the live flagd config: any other set_flag
+    # step the LLM invented (e.g. 'adServiceManualGc') would otherwise stay
+    # executable and the operator could send it to the Auto-Healer, where
+    # set_variant rejects it. Grounding keeps real flags and downgrades invented
+    # ones to manual.
     return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
 
 
