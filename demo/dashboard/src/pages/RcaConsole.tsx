@@ -30,14 +30,17 @@ function rcaKey(v: TriageVerdict, idx: number): string {
 // verdict; everything below the verdict belongs here.
 
 export default function RcaConsole() {
-  // Triaged verdicts (RCA's input). Polled so incidents self-populate as the
-  // background auto-triage loop produces verdicts — the operator never has to
-  // wait on a manual triage pass.
-  const verdicts = useFetch(api.triageLive, { intervalMs: 5000, cacheKey: 'triage-live' });
-  // Currently-firing alerts, fetched fast + in parallel so they show on the RCA
-  // page IMMEDIATELY (as "triaging…" placeholders) instead of a blocking
-  // spinner while the first triage pass runs.
-  const live = useFetch(api.liveAlerts, { intervalMs: 5000, cacheKey: 'live-alerts' });
+  // Triaged verdicts (RCA's input). One-shot (cached): /api/triage/live runs the
+  // triage LLM for every firing alert, so we must NOT poll it — polling floods
+  // the LLM gateway and makes RCA + other endpoints time out. It loads once,
+  // survives navigation via the cache, and refreshes on demand (button / the
+  // Alert-Triage hand-off). The background auto-triage loop still triages new
+  // alerts server-side; a Refresh surfaces them.
+  const verdicts = useFetch(api.triageLive, { intervalMs: 0, cacheKey: 'triage-live' });
+  // Currently-firing alerts — a cheap Prometheus read (no LLM), polled gently so
+  // firing alerts show on the RCA page IMMEDIATELY as "triaging…" placeholders
+  // instead of a blocking spinner while the first triage pass runs.
+  const live = useFetch(api.liveAlerts, { intervalMs: 12000, cacheKey: 'live-alerts' });
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [rca, setRca] = useState<RCAVerdict | null>(null);
   // ServiceNow incident number for the verdict the current RCA was run on.

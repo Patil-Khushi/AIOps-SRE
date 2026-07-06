@@ -339,6 +339,23 @@ def _ensure_executable_action(
         # Primary already correct — but still ground the OTHER steps below, so a
         # secondary set_flag with an invented flag never offers a dead apply.
         return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
+    # If the LLM already named a REAL configured flag, keep it: a service can
+    # have several fault flags (e.g. adFailure / adHighCpu / adManualGc) and the
+    # right one depends on the incident — the generic <service>Failure map value
+    # would flip the wrong (no-op) flag for a CPU/GC injection. Only override
+    # when the flag is missing or invented (not in the live flagd config).
+    available = _live_flag_names()
+    if (
+        before.action_type is FixActionType.SET_FLAG
+        and before.flag
+        and available
+        and before.flag in available
+    ):
+        decision_trace.append(
+            f"kept fix step #{target_idx + 1} flag {before.flag!r} — a configured flagd flag "
+            f"more specific than the map default {mapped!r} for affected_service={service!r}"
+        )
+        return _ground_set_flags_against_flagd(steps, decision_trace=decision_trace)
     steps[target_idx] = before.model_copy(
         update={"action_type": FixActionType.SET_FLAG, "flag": mapped, "variant": "off"}
     )
