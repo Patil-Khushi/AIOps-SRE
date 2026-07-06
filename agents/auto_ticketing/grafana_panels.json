@@ -1,25 +1,29 @@
 {
-  "_doc": "Alert-name -> Grafana panel coordinates (DEMO-8 / #60). Loaded by agents.auto_ticketing on every ticket-create attempt; failure to render or attach the panel must NOT break ticket creation. Keys are Prometheus alert rule names (the `alert` field from demo/scenarios/*.yaml). Keys starting with `_` are reserved for documentation entries like this one and are filtered out at load time. Add entries here when wiring a new scenario whose Grafana view is worth attaching. `dashboard_uid` is the stable id from the dashboard's URL (.../d/<UID>/...); `panel_id` is the numeric id shown when 'Inspect -> Panel JSON' on that panel. `time_range` is a single relative window (e.g. `15m`, `6h`) that the renderer expands to Grafana's from=now-<range> / to=now.",
-  "_verify": "TODO post-merge (#60 follow-up): the `dashboard_uid` and `panel_id` values below are placeholders that haven't been validated against a running Grafana yet. A wrong UID surfaces as a silent 'no panel mapped' or a 404 from the renderer — neither breaks ticket creation, but neither produces an attachment. Verify against the OTel demo's Grafana once the grafana-image-renderer plugin is enabled on the cluster.",
+  "_doc": "Alert-name -> Grafana view attached to the ServiceNow incident (DEMO-8 / #60). Loaded by agents.auto_ticketing on every ticket-create attempt; failure to render or attach must NOT break ticket creation. Keys are Prometheus alert rule names (the `alert` field in demo/otel-demo/values.yaml serverFiles.alerting_rules). Keys starting with `_` are reserved for documentation entries like this one and are filtered out at load time. `dashboard_uid` is the stable id from the dashboard's URL (.../d/<UID>/...). RENDER MODE: OMIT `panel_id` to render the WHOLE dashboard in kiosk mode (no nav chrome) — use this to attach a dashboard's summary/Overview row as one image; collapsed rows stay collapsed. INCLUDE `panel_id` (from 'Inspect -> Panel JSON') to render a single panel via d-solo. `time_range` is a single relative window (e.g. `15m`, `6h`); `width`/`height` size the PNG (dashboards want a taller height, e.g. 860).",
+  "_verify": "Validated 2026-07-06 against the running OTel demo (grafana-image-renderer enabled via demo/otel-demo/values.yaml). All demo alerts attach the OpenTelemetry Collector dashboard's 'Overview' (dashboard_uid `otel-demo_otel-collector_dashboard`, no panel_id -> full-dashboard kiosk render at 1000x860). Only the 'Overview' row is expanded on that dashboard, so the shot shows the Service table + Receivers/Processors/Exporters throughput (Spans/Logs/Metrics) + error/drop gauges, with the other rows as thin collapsed bars. render_panel returns a real ~85KB PNG. Note: full-dashboard renders lean harder on the image-renderer's headless Chromium; an occasional 503 under memory pressure is non-fatal (ticket still created, no attachment that time).",
 
   "PaymentErrorRateHigh": {
-    "dashboard_uid": "otel-demo-services",
-    "panel_id": 5,
-    "time_range": "15m"
+    "dashboard_uid": "otel-demo_otel-collector_dashboard",
+    "time_range": "30m",
+    "width": 1000,
+    "height": 860
   },
   "AdErrorRateHigh": {
-    "dashboard_uid": "otel-demo-services",
-    "panel_id": 7,
-    "time_range": "15m"
+    "dashboard_uid": "otel-demo_otel-collector_dashboard",
+    "time_range": "30m",
+    "width": 1000,
+    "height": 860
   },
   "CartErrorRateHigh": {
-    "dashboard_uid": "otel-demo-services",
-    "panel_id": 9,
-    "time_range": "15m"
+    "dashboard_uid": "otel-demo_otel-collector_dashboard",
+    "time_range": "30m",
+    "width": 1000,
+    "height": 860
   },
-  "SlowProductCatalog": {
-    "dashboard_uid": "otel-demo-services",
-    "panel_id": 11,
-    "time_range": "30m"
+  "ProductCatalogErrorRateHigh": {
+    "dashboard_uid": "otel-demo_otel-collector_dashboard",
+    "time_range": "30m",
+    "width": 1000,
+    "height": 860
   }
 }

@@ -6,11 +6,12 @@ the raw bytes plus its content type.  RA-003 Auto-Ticketing attaches the
 PNG to the ServiceNow incident so a triager opens the incident and sees
 the actual graph that breached the threshold (DEMO-8 / #60).
 
-Requires the ``grafana-image-renderer`` plugin to be installed on the
-target Grafana instance.  The OTel demo's Grafana ships *without* it by
-default; enable via the helm values block this PR adds, or set
-``GF_INSTALL_PLUGINS=grafana-image-renderer`` on the Grafana pod
-directly.  Without the plugin the endpoint returns a 500 — the renderer
+Requires server-side rendering to be enabled on the target Grafana.  The
+OTel demo's Grafana ships *without* it by default; enable it via the
+``grafana.imageRenderer`` block in ``demo/otel-demo/values.yaml`` (DEMO-8
+/ #60), which deploys the ``grafana-image-renderer`` as a sidecar pod, or
+set ``GF_INSTALL_PLUGINS=grafana-image-renderer`` on the Grafana pod
+directly.  Without a renderer the endpoint returns a 500 — the renderer
 captures that as ``ToolResult(ok=False)`` and the auto-ticketing agent
 falls through to a no-attachment ticket without raising.
 
@@ -53,11 +54,11 @@ def _config() -> tuple[str, str, float]:
     name="grafana.observability.metrics.render_panel",
     capability="observability.metrics.render_panel",
     provider="grafana",
-    description="Render a Grafana dashboard panel as a PNG via the image-renderer plugin.",
+    description="Render a Grafana panel (or a whole dashboard in kiosk mode) as a PNG via the image-renderer plugin.",
 )
 def render_panel(
     dashboard_uid: str,
-    panel_id: int,
+    panel_id: int | None = None,
     *,
     time_range: str | None = None,
     from_: str = "now-15m",
@@ -67,7 +68,15 @@ def render_panel(
     tz: str = "UTC",
     format: str = "png",
 ) -> ToolResult:
-    """GET ``/render/d-solo/{dashboard_uid}?panelId={panel_id}&...``.
+    """Render a Grafana view as a PNG. Two modes:
+
+    - ``panel_id`` set -> single panel via ``/render/d-solo/{uid}?panelId=``
+      (already chrome-less).
+    - ``panel_id=None`` -> the WHOLE dashboard via ``/render/d/{uid}`` in
+      **kiosk** mode (no nav bar / news popups). Collapsed rows stay
+      collapsed, so a dashboard whose only expanded row is a summary (e.g. the
+      OTel Collector "Overview") renders as just that summary + thin collapsed
+      bars. Give it a taller ``height`` (e.g. 860) than a single panel.
 
     Returns the PNG bytes in ``data["png_bytes"]`` alongside the rendered
     size and the panel coordinates.  On failure (plugin not installed,
@@ -107,20 +116,27 @@ def render_panel(
         to = "now"
 
     params = {
-        "panelId": str(panel_id),
         "from": from_,
         "to": to,
         "width": str(width),
         "height": str(height),
         "tz": tz,
     }
+    if panel_id is None:
+        # Whole-dashboard render. kiosk mode strips the nav bar + the "what's
+        # new" popups that otherwise overlay a full-page render.
+        endpoint = f"{url}/render/d/{dashboard_uid}"
+        params["kiosk"] = "true"
+    else:
+        endpoint = f"{url}/render/d-solo/{dashboard_uid}"
+        params["panelId"] = str(panel_id)
     headers = {"Accept": "image/png"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
         r = httpx.get(
-            f"{url}/render/d-solo/{dashboard_uid}",
+            endpoint,
             params=params,
             headers=headers,
             timeout=timeout,

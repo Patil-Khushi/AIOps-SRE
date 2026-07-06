@@ -141,11 +141,13 @@ def test_mapped_alert_triggers_render_and_attach(monkeypatch):
     render_kwargs = next(
         kw for cap, kw in registry.calls if cap == "observability.metrics.render_panel"
     )
-    assert render_kwargs["dashboard_uid"] == "otel-demo-services"
-    assert render_kwargs["panel_id"] == 5
-    # #196: the panel config carries a single time_range, and the agent asks
-    # the renderer for a PNG explicitly.
-    assert render_kwargs["time_range"] == "15m"
+    # Validated live 2026-07-06 (#60): demo alerts attach the OTel Collector
+    # "Overview" as a full-dashboard kiosk render — no panel_id, sized 1000x860.
+    assert render_kwargs["dashboard_uid"] == "otel-demo_otel-collector_dashboard"
+    assert render_kwargs["panel_id"] is None
+    assert render_kwargs["time_range"] == "30m"
+    assert render_kwargs["width"] == 1000
+    assert render_kwargs["height"] == 860
     assert render_kwargs["format"] == "png"
 
     attach_kwargs = next(kw for cap, kw in registry.calls if cap == "itsm.incident.attachment.add")

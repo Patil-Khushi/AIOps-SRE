@@ -120,12 +120,19 @@ def _try_attach_grafana_panel(
         audit.append(f"grafana attachment skipped: no panel mapped for alert {alert_name!r}")
         return False
 
+    # A mapping WITHOUT panel_id renders the whole dashboard in kiosk mode
+    # (e.g. the OTel Collector "Overview" summary); WITH panel_id it renders a
+    # single panel. Dashboards want a taller default height than a lone panel.
+    panel_id = panel.get("panel_id")
+    is_dashboard = panel_id is None
     try:
         render = registry.call(
             "observability.metrics.render_panel",
             dashboard_uid=panel["dashboard_uid"],
-            panel_id=int(panel["panel_id"]),
+            panel_id=None if is_dashboard else int(panel_id),
             time_range=panel.get("time_range", "15m"),
+            width=int(panel.get("width", 800)),
+            height=int(panel.get("height", 860 if is_dashboard else 400)),
             format="png",
         )
     except Exception as exc:  # registry-level (capability not registered)

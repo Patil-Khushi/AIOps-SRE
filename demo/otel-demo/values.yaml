@@ -18,6 +18,45 @@ default:
     value: deployment.environment=poc
 opensearch:
   enabled: false
+# DEMO-8 / #60: server-side panel rendering so RA-003 Auto-Ticketing can attach
+# the breaching Grafana panel as a PNG to the ServiceNow incident (a triager
+# sees the graph without leaving the ticket). Enabled as a SEPARATE renderer pod
+# (imageRenderer.enabled) rather than the in-pod GF_INSTALL_PLUGINS route: the
+# stock Grafana image lacks the Chromium shared libs the in-pod plugin needs, so
+# the sidecar is the path Grafana Labs recommends and the one most likely to
+# work unattended. The chart wires GF_RENDERING_SERVER_URL / _CALLBACK_URL
+# automatically when this is on. Costs one extra small pod (~a few hundred MB) —
+# acceptable on the 6 GB k3s VM.
+#
+# UNVERIFIED against a live cluster yet: after bring-up, confirm the
+# grafana-image-renderer pod is Ready, then validate the dashboard UIDs + panel
+# IDs in agents/auto_ticketing/grafana_panels.json (still placeholders — see its
+# _verify entry) before expecting a real attachment.
+grafana:
+  imageRenderer:
+    enabled: true
+    # Grafana here is served under the /grafana sub-path (root_url +
+    # serve_from_sub_path, behind the frontend-proxy). The renderer's headless
+    # browser calls back to Grafana to load the panel, but the chart's default
+    # callback URL omits that prefix — so it requests /d-solo/... instead of
+    # /grafana/d-solo/... and Grafana returns 500. grafanaSubPath appends the
+    # prefix to GF_RENDERING_CALLBACK_URL (-> http://grafana.<ns>:80/grafana/).
+    # Trailing slash matters — the renderer joins it as <callback> + "d-solo/…".
+    grafanaSubPath: grafana/
+  # Enabling imageRenderer changes the Grafana pod template (triggers a rollout),
+  # but single-node k3s on a 16 GB laptop can't hold two Grafana pods at once.
+  # The default RollingUpdate (maxSurge 25%) starts the new pod before removing
+  # the old one, so the new pod stays Pending on "Insufficient memory" and helm
+  # --wait times out. maxSurge=0 / maxUnavailable=1 flips the order: the old pod
+  # is removed first, then the new one schedules into the freed memory. Kept as
+  # RollingUpdate (not Recreate) on purpose — switching an already-deployed
+  # cluster to Recreate fails with "rollingUpdate may not be specified when type
+  # is Recreate". Brief Grafana downtime on upgrade is fine for a demo.
+  deploymentStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
 prometheus:
   server:
     global:
