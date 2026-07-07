@@ -386,12 +386,67 @@ export type RunbookResolutionStatus =
   | 'failed'
   | 'no_runbook';
 
+// ─── RA-004 audit event log + simulation detail/comparison (#213 / #217) ─────
+
+export type AuditEventType =
+  | 'STEP_STARTED'
+  | 'STEP_SIMULATED'
+  | 'GATE_CHECKED'
+  | 'HITL_REQUESTED'
+  | 'HITL_APPROVED'
+  | 'STEP_EXECUTED'
+  | 'STEP_FAILED'
+  | 'STEP_BLOCKED'
+  | 'STEP_ROLLED_BACK';
+
+export interface AuditEventMetadata {
+  reason?: string;
+  gate_type?: string; // '' | 'none' | 'required'
+  approval_id?: string;
+  // Backend uses extra="allow", so unknown keys may appear.
+  [key: string]: unknown;
+}
+
+export interface AuditEvent {
+  seq: number;
+  incident_id: string;
+  runbook_id: string;
+  step_id: string;
+  timestamp: string;
+  status: AuditEventType;
+  metadata: AuditEventMetadata;
+}
+
+// The full dry-run prediction captured per step.
+export interface SimulationDetail {
+  predicted_actions: string[];
+  warnings: string[];
+  estimated_duration_ms: number | null;
+  predicted_side_effects: string[];
+  summary: string;
+}
+
+// Structured diff of prediction vs. actual execution (side-effects + duration).
+export interface SimulationComparison {
+  matched: boolean;
+  divergences: string[];
+  predicted_side_effects: string[];
+  actual_side_effects: string[];
+  unexpected_side_effects: string[];
+  missing_side_effects: string[];
+  estimated_duration_ms: number | null;
+  actual_duration_ms: number | null;
+  duration_delta_ms: number | null;
+}
+
 export interface RunbookStepRecord {
   name: string;
   action: string;
   destructive: boolean;
   status: RunbookStepStatus;
   simulate?: Record<string, unknown> | null;
+  simulation?: SimulationDetail | null;
+  comparison?: SimulationComparison | null;
   executed?: Record<string, unknown> | null;
   rolled_back: boolean;
   rollback?: Record<string, unknown> | null;
@@ -409,8 +464,18 @@ export interface PlannedStep {
   name: string;
   action: string;
   destructive: boolean;
-  // Read-only dry-run preview computed up-front (mock simulate provider).
-  simulate?: { preview?: string; changes?: unknown[]; error?: string } & Record<string, unknown>;
+  // Read-only dry-run preview computed up-front (mock simulate provider). Now
+  // carries the full prediction (#213) alongside the legacy preview/changes.
+  simulate?: {
+    preview?: string;
+    changes?: unknown[];
+    error?: string;
+    predicted_actions?: string[];
+    warnings?: string[];
+    estimated_duration_ms?: number | null;
+    predicted_side_effects?: string[];
+    summary?: string;
+  } & Record<string, unknown>;
 }
 
 // POST /api/demo/runbook-executor/run — returned immediately (runbook selected
@@ -489,6 +554,8 @@ export interface RunbookOutcome {
   steps_total?: number;
   steps_executed?: number;
   destructive_steps?: number;
+  // Append-only, ordered audit trail of the run (#213). Ordered by `seq`.
+  audit_events?: AuditEvent[];
   // Post-run verification: re-reads the flags the runbook reset and confirms
   // the injected scenario actually cleared (⑤ Verify stage).
   verification?: {

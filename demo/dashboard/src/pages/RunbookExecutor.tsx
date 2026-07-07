@@ -2,7 +2,8 @@ import { Fragment, ReactNode, useCallback, useEffect, useRef, useState } from 'r
 import {
   PlayCircle, RotateCcw, Search, FlaskConical, Cog, UserCheck, BadgeCheck, Undo2,
   CheckCircle2, XCircle, Loader2, ExternalLink, ShieldCheck, AlertTriangle, Clock,
-  SkipForward, FileText, Inbox, Calendar, ChevronDown, ChevronUp,
+  SkipForward, FileText, Inbox, Calendar, ChevronDown, ChevronUp, Ban, Activity,
+  GitCompare,
 } from 'lucide-react';
 import StatCard from '@/components/StatCard';
 import { SeverityBadge } from '@/components/SeverityBadge';
@@ -12,8 +13,8 @@ import { api } from '@/lib/api';
 import { getAgentById } from '@/data/agentCatalog';
 import { clsx, timeAgo } from '@/lib/format';
 import type {
-  ApprovalRecord, PlannedStep, RunbookOutcome, RunbookRunResponse, RunbookStepRecord,
-  Severity, VerdictRecord,
+  ApprovalRecord, AuditEvent, AuditEventType, PlannedStep, RunbookOutcome,
+  RunbookRunResponse, RunbookStepRecord, SimulationComparison, Severity, VerdictRecord,
 } from '@/types/api';
 
 // Triage emits 'Sev-2'; the runbook selector matches 'sev2'.
@@ -276,6 +277,9 @@ function RunDetail({
           {awaitingApproval && <HitlPanel approvalId={run.approval_id} approval={approval} />}
           <StepList run={run} outcome={outcome} approval={approval} phase={phase} />
           {outcome?.verification && <VerifyCard verification={outcome.verification} />}
+          {outcome?.audit_events && outcome.audit_events.length > 0 && (
+            <AuditTimeline events={outcome.audit_events} />
+          )}
         </>
       )}
     </div>
@@ -693,8 +697,12 @@ function DryRunCard({ steps }: { steps: PlannedStep[] }) {
       <div className="card-body space-y-2">
         {steps.map((s, i) => {
           const sim = s.simulate ?? {};
-          const preview = (sim.error as string | undefined) ?? sim.preview ?? '(no preview returned)';
+          const preview = sim.error ?? sim.summary ?? sim.preview ?? '(no preview returned)';
           const changes = Array.isArray(sim.changes) ? sim.changes : [];
+          const predictedActions = sim.predicted_actions ?? [];
+          const predictedSE = sim.predicted_side_effects ?? [];
+          const warnings = sim.warnings ?? [];
+          const estMs = typeof sim.estimated_duration_ms === 'number' ? sim.estimated_duration_ms : null;
           return (
             <div key={s.name} className="rounded-lg border border-ink-200 bg-ink-50/40 p-3 dark:border-ink-700 dark:bg-ink-900/40">
               <div className="flex flex-wrap items-center gap-2">
@@ -702,10 +710,20 @@ function DryRunCard({ steps }: { steps: PlannedStep[] }) {
                 <span className="text-sm font-semibold text-ink-900 dark:text-ink-50">{s.name}</span>
                 <span className="font-mono text-[11px] text-ink-500 dark:text-ink-400">{s.action}</span>
                 {s.destructive && <span className="chip !border-bad/40 !text-bad">destructive</span>}
+                {estMs != null && <span className="chip !text-[10px] font-mono">~{estMs}ms</span>}
                 <span className="chip !border-ok/40 !text-ok">{sim.error ? 'error' : 'dry-run ok'}</span>
               </div>
               <p className="mt-1.5 break-words font-mono text-[11px] text-ink-600 dark:text-ink-300">{preview}</p>
-              <p className="mt-0.5 font-mono text-[10px] text-ink-500 dark:text-ink-500">
+              <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+                <PredictField label="predicted actions" items={predictedActions} />
+                <PredictField label="predicted side effects" items={predictedSE} />
+              </div>
+              {warnings.length > 0 && (
+                <p className="mt-1 flex items-start gap-1.5 font-mono text-[10px] text-warn">
+                  <AlertTriangle className="mt-px h-3 w-3 flex-shrink-0" /> {warnings.join(' · ')}
+                </p>
+              )}
+              <p className="mt-1 font-mono text-[10px] text-ink-500 dark:text-ink-500">
                 changes: {changes.length === 0 ? 'none (read-only preview)' : JSON.stringify(changes)}
               </p>
             </div>
@@ -850,6 +868,7 @@ function StepList({
                   {rolledBack && <span className="chip !border-warn/40 !text-warn">rolled back</span>}
                 </div>
                 {detail && <p className="mt-1 break-words font-mono text-[11px] text-ink-500 dark:text-ink-400">{detail}</p>}
+                {rec?.comparison && <ComparisonStrip c={rec.comparison} />}
               </div>
               <span className={clsx('chip flex-shrink-0 font-mono', STEP_BADGE[status] ?? '')}>
                 {status === 'awaiting' ? 'awaiting approval' : status}
@@ -904,6 +923,159 @@ function VerifyCard({ verification }: { verification: NonNullable<RunbookOutcome
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── audit event log (#213 / #217): ordered, immutable event stream ─────────────
+const EVENT_TONE: Record<string, { text: string; ring: string; bg: string }> = {
+  ink: { text: 'text-ink-500 dark:text-ink-400', ring: 'border-ink-300 dark:border-ink-600', bg: 'bg-ink-100 dark:bg-ink-800' },
+  accent: { text: 'text-accent', ring: 'border-accent/40', bg: 'bg-accent/10' },
+  ok: { text: 'text-ok', ring: 'border-ok/40', bg: 'bg-ok/10' },
+  warn: { text: 'text-warn', ring: 'border-warn/40', bg: 'bg-warn/10' },
+  bad: { text: 'text-bad', ring: 'border-bad/40', bg: 'bg-bad/10' },
+};
+
+const EVENT_VISUAL: Record<AuditEventType, { icon: typeof Search; tone: string; label: string }> = {
+  STEP_STARTED: { icon: PlayCircle, tone: 'ink', label: 'Step started' },
+  STEP_SIMULATED: { icon: FlaskConical, tone: 'accent', label: 'Simulated (dry-run)' },
+  GATE_CHECKED: { icon: ShieldCheck, tone: 'accent', label: 'Gate checked' },
+  HITL_REQUESTED: { icon: UserCheck, tone: 'warn', label: 'Approval requested' },
+  HITL_APPROVED: { icon: BadgeCheck, tone: 'ok', label: 'Approved' },
+  STEP_EXECUTED: { icon: CheckCircle2, tone: 'ok', label: 'Executed' },
+  STEP_FAILED: { icon: XCircle, tone: 'bad', label: 'Failed' },
+  STEP_BLOCKED: { icon: Ban, tone: 'warn', label: 'Blocked at HITL gate' },
+  STEP_ROLLED_BACK: { icon: Undo2, tone: 'warn', label: 'Rolled back' },
+};
+
+function fmtEventTime(ts: string): string {
+  try {
+    return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
+  } catch {
+    return ts;
+  }
+}
+
+function metaStr(meta: AuditEvent['metadata'], key: string): string {
+  const v = meta?.[key];
+  return typeof v === 'string' ? v : '';
+}
+
+function AuditTimeline({ events }: { events: AuditEvent[] }) {
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-accent" />
+          <h2 className="card-title">Audit event log</h2>
+        </div>
+        <span className="chip font-mono">{events.length} events</span>
+      </div>
+      <div className="card-body">
+        <p className="mb-3 text-[11px] text-ink-500 dark:text-ink-400">
+          Append-only, ordered record of the run — every step transition and gate decision, in sequence.
+        </p>
+        <ol className="space-y-0">
+          {events.map((e, i) => {
+            const v = EVENT_VISUAL[e.status] ?? { icon: Activity, tone: 'ink', label: e.status };
+            const tone = EVENT_TONE[v.tone] ?? EVENT_TONE.ink;
+            const Icon = v.icon;
+            const last = i === events.length - 1;
+            const gate = metaStr(e.metadata, 'gate_type');
+            const appr = metaStr(e.metadata, 'approval_id');
+            const reason = metaStr(e.metadata, 'reason');
+            return (
+              <li key={e.seq} className="relative flex gap-3 pb-4 last:pb-0">
+                {!last && (
+                  <span
+                    className="absolute left-[13px] top-7 h-[calc(100%-1rem)] w-px bg-ink-200 dark:bg-ink-700"
+                    aria-hidden
+                  />
+                )}
+                <span className={clsx('relative z-10 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border', tone.ring, tone.bg)}>
+                  <Icon className={clsx('h-3.5 w-3.5', tone.text)} />
+                </span>
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-mono text-[10px] text-ink-400">#{e.seq}</span>
+                    <span className={clsx('text-sm font-semibold', tone.text)}>{v.label}</span>
+                    <span className="font-mono text-[11px] text-ink-500 dark:text-ink-400">{e.step_id}</span>
+                    {gate && <span className="chip !text-[10px]">gate · {gate}</span>}
+                    {appr && <span className="chip !text-[10px] font-mono">appr · {appr.slice(0, 8)}</span>}
+                    <span className="ml-auto font-mono text-[10px] text-ink-400">{fmtEventTime(e.timestamp)}</span>
+                  </div>
+                  {reason && <p className="mt-0.5 break-words text-[11px] text-ink-500 dark:text-ink-400">{reason}</p>}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
+// ─── sim-vs-execution comparison strip (#213 / #217) ────────────────────────────
+function ComparisonStrip({ c }: { c: SimulationComparison }) {
+  const dur = c.duration_delta_ms;
+  return (
+    <div className="mt-2 rounded-md border border-ink-200 bg-white/60 p-2 dark:border-ink-700 dark:bg-ink-900/50">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-ink-500 dark:text-ink-400">
+          <GitCompare className="h-3 w-3" /> sim vs actual
+        </span>
+        <span className={clsx('chip !text-[10px]', c.matched ? '!border-ok/40 !text-ok' : '!border-warn/40 !text-warn')}>
+          {c.matched ? 'matched' : 'diverged'}
+        </span>
+        {dur != null && (
+          <span className="font-mono text-[10px] text-ink-500 dark:text-ink-400">
+            {c.estimated_duration_ms ?? '?'}ms → {c.actual_duration_ms ?? '?'}ms
+            <span className={clsx('ml-1', dur > 0 ? 'text-warn' : 'text-ink-400')}>({dur >= 0 ? '+' : ''}{dur}ms)</span>
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+        <SideEffectList label="predicted" items={c.predicted_side_effects} />
+        <SideEffectList label="actual" items={c.actual_side_effects} />
+      </div>
+      {c.unexpected_side_effects.length > 0 && (
+        <p className="mt-1 break-words font-mono text-[10px] text-bad">unexpected: {c.unexpected_side_effects.join(', ')}</p>
+      )}
+      {c.missing_side_effects.length > 0 && (
+        <p className="mt-1 break-words font-mono text-[10px] text-warn">missing: {c.missing_side_effects.join(', ')}</p>
+      )}
+    </div>
+  );
+}
+
+function SideEffectList({ label, items }: { label: string; items: string[] }) {
+  return (
+    <div className="min-w-0">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-400">{label}</span>
+      {items.length === 0 ? (
+        <span className="ml-1 font-mono text-[10px] text-ink-400">none</span>
+      ) : (
+        <ul className="mt-0.5 space-y-0.5">
+          {items.map((s, i) => (
+            <li key={`${i}-${s}`} className="break-words font-mono text-[10px] text-ink-600 dark:text-ink-300">{s}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Predicted actions / side-effects list used by the enriched dry-run card.
+function PredictField({ label, items }: { label: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="min-w-0">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-400">{label}</span>
+      <ul className="mt-0.5 space-y-0.5">
+        {items.map((s, i) => (
+          <li key={`${i}-${s}`} className="break-words font-mono text-[10px] text-ink-600 dark:text-ink-300">{s}</li>
+        ))}
+      </ul>
     </div>
   );
 }
