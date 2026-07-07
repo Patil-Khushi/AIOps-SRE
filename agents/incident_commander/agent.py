@@ -466,8 +466,9 @@ def reset_state() -> None:
     (dedup + idempotency persistence) and RA-002 (historical-incident store) via
     the orchestrator. Cascade their resets so each eval case starts clean —
     otherwise a repeated alert_id would be idempotency-suppressed across cases."""
+    # Alert Triage's reset_state now cascades the classification-step reset
+    # (historical-incident store + embedding cache), since the one agent owns
+    # both halves — so a single call clears everything RA-008 drives.
     from agents.alert_triage.agent import reset_state as _triage_reset
-    from agents.incident_classifier.agent import reset_state as _classify_reset
 
     _triage_reset()
-    _classify_reset()

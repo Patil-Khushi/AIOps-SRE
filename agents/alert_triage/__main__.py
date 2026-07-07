@@ -43,7 +43,7 @@ def main(
     # Defer agent import until after env is set so the LLM gateway picks up
     # the chosen provider on first call.
     from agents.alert_triage import Alert
-    from agents.alert_triage.agent import reset_dedup_store, triage
+    from agents.alert_triage.agent import reset_state, triage_and_classify
 
     fixtures = _load_fixtures()
     cases = {c["id"]: c for c in fixtures.get("cases", [])}
@@ -69,14 +69,16 @@ def main(
     rprint("\n[bold]Input alert:[/bold]")
     rprint(json.dumps(case["input"], indent=2))
 
-    # Fresh dedup state per CLI invocation so single-fixture runs are reproducible.
-    reset_dedup_store()
+    # Fresh state per CLI invocation so single-fixture runs are reproducible.
+    reset_state()
 
     alert = Alert(**case["input"])
-    verdict, _ = triage(alert)
+    result = triage_and_classify(alert)
 
     rprint("\n[bold]Triage verdict:[/bold]")
-    rprint(json.dumps(verdict.model_dump(mode="json"), indent=2, default=str))
+    rprint(json.dumps(result.verdict.model_dump(mode="json"), indent=2, default=str))
+    rprint("\n[bold]Incident classification:[/bold]")
+    rprint(json.dumps(result.classification.model_dump(mode="json"), indent=2, default=str))
 
 
 if __name__ == "__main__":

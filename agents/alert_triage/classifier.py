@@ -1,18 +1,22 @@
-"""Incident Classifier agent (RA-002) — classification flow.
+"""Incident-classification step of the Alert Triage agent.
 
 Entry point: ``classify(payload: ClassificationInput) -> Classification``.
+
+This runs immediately after the 8-stage triage flow (see ``agent.py``) on the
+same alert. The triage verdict feeds this step; together they are what the one
+agent emits (see ``triage_and_classify``).
 
 Pipeline:
 
     1. Seed-if-empty  (idempotent; bootstraps the similarity store)
-    2. Embed          (sentence-transformers; same model as RA-001)
+    2. Embed          (sentence-transformers; same model as triage dedup)
     3. Search         (brute-force cosine top-K in SQLite, via aiops.state)
     4. Decide tier:
         - Tier 1  (similarity wins, no LLM call)   high similarity + top-3 agree
         - Tier 2  (LLM with retrieved evidence)    some matches, but tier-1 conditions miss
         - Tier 3  (LLM cold, few-shot only)        no matches above threshold
         - Tier 4  (keyword rule)                   LLM unavailable / unparseable
-    5. Re-query CMDB  (RA-002 does NOT trust upstream CMDB fields — see CLAUDE.md #2)
+    5. Re-query CMDB  (does NOT trust upstream CMDB fields — see CLAUDE.md #2)
     6. Assemble       (Classification + AuditMetadata with full decision trace)
     7. Persist        (new classification embedded back into the store so
                        future similar incidents have better matches —
@@ -33,17 +37,17 @@ from typing import Any
 
 # Side-effect: register mock CMDB / on-call / dependencies capabilities.
 import aiops.tools.mock_providers  # noqa: F401
-from agents.incident_classifier._seed import ensure_seeded
-from agents.incident_classifier.models import (
+from agents.alert_triage.classifier_models import (
     AuditMetadata,
     Classification,
     ClassificationInput,
 )
-from agents.incident_classifier.prompts import (
+from agents.alert_triage.classifier_prompts import (
     CLASSIFY_PROMPT_USER,
     FEW_SHOT_EXAMPLES,
     SYSTEM_PROMPT,
 )
+from agents.alert_triage.classifier_seed import ensure_seeded
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
 from aiops.state.repository import (
@@ -132,10 +136,10 @@ def _get_embed_model() -> Any | None:
             from sentence_transformers import SentenceTransformer
 
             _EMBED_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-            logger.info("RA-002 loaded sentence-transformers embedding model")
+            logger.info("classification loaded sentence-transformers embedding model")
         except ImportError:
             logger.info(
-                "sentence-transformers not installed; RA-002 similarity disabled "
+                "sentence-transformers not installed; classification similarity disabled "
                 "(install via 'uv sync --extra embeddings')"
             )
             _EMBED_MODEL = False
@@ -156,7 +160,7 @@ def _embed(text: str) -> list[float] | None:
             return None
         return (vec / norm).tolist()
     except Exception as exc:
-        logger.warning("RA-002 embedding failed: %s", exc)
+        logger.warning("classification embedding failed: %s", exc)
         return None
 
 
@@ -225,7 +229,7 @@ def _parse_llm_classification(text: str) -> dict[str, Any] | None:
 
     rationale = fields.get("rationale", "").strip()
     if not rationale:
-        rationale = "classified by RA-002 LLM"
+        rationale = "classified by Alert Triage classification LLM"
 
     return {
         "incident_type": itype,
@@ -256,7 +260,7 @@ def _llm_classify(
         labels=a.labels or {},
     )
     try:
-        # See RA-001 prompt budgeting note: reasoning models burn tokens
+        # See triage prompt budgeting note: reasoning models burn tokens
         # before emitting text, so we give a generous floor.
         resp = llm_complete(
             messages=[
@@ -375,8 +379,8 @@ def _cmdb_lookup(service: str, trace: list[str]) -> tuple[str, str | None]:
 def _oncall_lookup(team: str, trace: list[str], *, service: str | None = None) -> str | None:
     try:
         # ``service`` lets the DB provider apply sticky assignment, keeping
-        # RA-002's on_call_engineer consistent with the engineer RA-001
-        # already named on the verdict. The mock provider ignores it.
+        # the classification's on_call_engineer consistent with the engineer
+        # triage already named on the verdict. The mock provider ignores it.
         res = get_registry().call("oncall.schedule.lookup", team=team, service=service)
     except KeyError:
         trace.append("oncall.schedule.lookup capability not registered; no engineer assigned")
@@ -435,7 +439,7 @@ def _persist_classification(
             created_at=classification.audit_metadata.created_at,
         )
     except Exception as exc:
-        logger.warning("RA-002 failed to persist classification: %s", exc)
+        logger.warning("failed to persist classification: %s", exc)
 
 
 def reset_for_tests() -> None:
@@ -446,68 +450,15 @@ def reset_for_tests() -> None:
     _SEEDED = False
 
 
-def reset_state() -> None:
-    """Eval-harness hook. Wipes live historical-incident rows from prior cases
-    so each case starts from the seeded baseline, and resets the in-memory
-    seed flag so ``ensure_seeded`` re-runs (idempotent — it sees the existing
-    seed rows and no-ops)."""
+def reset_classifier_state() -> None:
+    """Wipe live historical-incident rows from prior cases so each case starts
+    from the seeded baseline, and reset the in-memory seed flag so
+    ``ensure_seeded`` re-runs (idempotent — it sees the existing seed rows and
+    no-ops). Cascaded from ``agent.reset_state`` (the eval-harness hook)."""
     from aiops.state.repository import delete_live_historical_incidents
 
     delete_live_historical_incidents()
     reset_for_tests()
-
-
-def _synthesize_verdict(alert: Any) -> Any:
-    """Build a minimal deterministic ``TriageVerdict`` from an alert. Used by
-    the eval ``run()`` to feed RA-002 without depending on RA-001's LLM-driven
-    severity classification or summary generation — keeps the classifier eval
-    isolated and fast."""
-    from datetime import datetime
-
-    from agents.alert_triage.models import AuditMetadata as TriageAudit
-    from agents.alert_triage.models import TriageVerdict
-
-    sev = "Sev-2"
-    hint = (alert.severity_hint or "").lower()
-    if any(t in hint for t in ("critical", "p1", "sev-1")):
-        sev = "Sev-1"
-    elif any(t in hint for t in ("warning", "p3", "sev-3")):
-        sev = "Sev-3"
-    elif any(t in hint for t in ("info", "low", "p4", "sev-4")):
-        sev = "Sev-4"
-    elif any(t in hint for t in ("high", "p2", "sev-2")):
-        sev = "Sev-2"
-
-    summary = (
-        alert.annotations.get("description")
-        or alert.annotations.get("summary")
-        or f"{alert.service} {alert.metric} alert"
-    )
-    return TriageVerdict(
-        affected_service=alert.service,
-        severity=sev,  # type: ignore[arg-type]
-        confidence_score=0.8,
-        alert_summary=summary,
-        assigned_team="Platform On-Call",
-        duplicate_alert_count=1,
-        status="Active",
-        audit_metadata=TriageAudit(
-            created_at=datetime.now(UTC),
-            source_alerts=[alert.alert_id],
-        ),
-    )
-
-
-def run(input: dict[str, Any]) -> dict[str, Any]:
-    """Eval-harness contract: dict-in, dict-out. Takes an alert payload,
-    synthesizes a minimal verdict, runs RA-002 ``classify``, returns the
-    classification as a JSON-serializable dict."""
-    from agents.alert_triage.models import Alert
-
-    alert = Alert(**input)
-    verdict = _synthesize_verdict(alert)
-    result = classify(ClassificationInput(alert=alert, triage_verdict=verdict))
-    return result.model_dump(mode="json")
 
 
 # ─── entry point ────────────────────────────────────────────────────────────

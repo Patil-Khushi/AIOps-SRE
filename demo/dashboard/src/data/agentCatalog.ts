@@ -163,30 +163,10 @@ export const AGENTS: AgentCatalogItem[] = [
       { tool: 'LLM provider', detail: 'Configure a model (Anthropic, OpenAI, or local Ollama) through the platform LLM gateway.' },
     ],
   }),
-  agent('Incident Classifier', 'Reactive-Active', 2, 'Classify the verdict using similar historical incidents.', 'Uses similar incidents first, then LLM fallback, then keyword fallback if needed.', {
-    status: 'Shipped', hitl: 'Optional',
-    inputs: ['triage verdict', 'alert payload', 'historical incidents'],
-    outputs: ['incident_type', 'confidence', 'root cause', 'tags'],
-    liveSurface: '/classifier', liveSurfaceLabel: 'Open classifier dashboard', liveSurfaceExternal: true,
-    plainSummary:
-      'Takes the triaged incident and decides what kind of problem it is — infrastructure, application, network, an outside dependency, or a recent change. It does this by comparing the incident to similar past ones, so the incident gets sent to the right team the first time.',
-    benefits: [
-      'Sends incidents to the correct team faster, with fewer wrong hand-offs.',
-      'Learns from history — similar past incidents drive the answer.',
-      'Reports a confidence score so people know when to double-check.',
-    ],
-    howItWorks: [
-      'Reads the incident text and turns it into a searchable form.',
-      'Finds the most similar past incidents from the knowledge store.',
-      'Picks one of five incident types with a confidence score.',
-      'Falls back to an AI model, then keywords, when history is thin.',
-    ],
-    setup: [
-      { tool: 'Vector store (pgvector / Qdrant)', detail: 'Holds past incidents the agent compares against.' },
-      { tool: 'LLM provider', detail: 'Used for the text embeddings and the AI classification fallback.' },
-      { tool: 'Historical incident data', detail: 'Seed the store with labelled past incidents for the best accuracy.' },
-    ],
-  }),
+  // Incident Classifier is folded into Alert Triage (one agent that triages
+  // AND classifies). It is not a separate agent card — its live surface (the
+  // classifier dashboard at /classifier) is reachable from the Alert Triage
+  // console sidebar instead (see components/Sidebar.tsx).
   agent('Auto-Ticketing', 'Reactive-Active', 3, 'Create or update the ITSM incident record.', 'Writes the service desk ticket and attaches the useful operating context.', {
     status: 'Shipped', hitl: 'Optional',
     inputs: ['verdict', 'classification', 'service context'],

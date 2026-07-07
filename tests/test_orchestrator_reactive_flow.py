@@ -26,11 +26,11 @@ from typing import Any
 
 import pytest
 
+from agents.alert_triage.classifier_models import AuditMetadata as ClassAudit
+from agents.alert_triage.classifier_models import Classification
 from agents.alert_triage.models import Alert, TriageVerdict
 from agents.alert_triage.models import AuditMetadata as TriageAudit
 from agents.auto_ticketing.models import TicketRecord
-from agents.incident_classifier.models import AuditMetadata as ClassAudit
-from agents.incident_classifier.models import Classification
 from agents.notification_assembler.models import NotificationOutcome, RoutingDecision
 from aiops import state as state_pkg
 from aiops.runtime import orchestrator as orch

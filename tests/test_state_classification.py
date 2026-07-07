@@ -20,7 +20,7 @@ def _in_memory_db(monkeypatch):
 
 
 def _make_classification(**overrides):
-    from agents.incident_classifier.models import AuditMetadata, Classification
+    from agents.alert_triage.classifier_models import AuditMetadata, Classification
 
     base = dict(
         incident_type="infrastructure",

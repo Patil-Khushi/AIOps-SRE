@@ -35,6 +35,8 @@ import aiops.tools.mock_providers
 # observability registers live Prometheus + Jaeger; mock_providers contributes
 # only the CMDB + on-call lookups (static tables, no live CMDB/PagerDuty wired).
 import aiops.tools.observability  # noqa: F401
+from agents.alert_triage.classifier import classify, reset_classifier_state
+from agents.alert_triage.classifier_models import ClassificationInput, CombinedResult
 from agents.alert_triage.models import (
     Alert,
     AuditMetadata,
@@ -274,10 +276,14 @@ def reset_state() -> None:
     invocations: persistent cluster rows, persistent verdict rows (idempotency
     cache lives there), and the in-memory embedding cache. Each golden case
     must start from a clean slate or stateful behavior (dedup, idempotency)
-    bleeds across cases and produces false passes."""
+    bleeds across cases and produces false passes.
+
+    Also cascades the classification step's reset (live historical-incident rows
+    + its embedding-model cache), since the one agent now owns both halves."""
     state_repo.delete_all_clusters()
     state_repo.delete_all_verdicts()
     reset_dedup_store()
+    reset_classifier_state()
 
 
 # ─── prompt-injection sanitization ──────────────────────────────────────────
@@ -719,9 +725,34 @@ def _generate_summary(
 
 
 def run(input: dict[str, Any]) -> dict[str, Any]:
-    """Eval-harness contract: dict-in, dict-out shim around ``triage``."""
-    verdict, _verdict_id = triage(Alert(**input))
-    return verdict.model_dump(mode="json")
+    """Eval-harness contract: dict-in, dict-out. Runs the full agent — triage
+    then classification — and returns a flat, scoring-friendly dict.
+
+    Top-level keys are the triage verdict (identical to what triage alone
+    emitted, so the triage golden cases keep passing) plus the salient
+    classification fields, so a single ``golden.json`` can assert both halves.
+    The untouched sub-objects are also included under ``verdict`` /
+    ``classification`` for callers that want the full contract."""
+    result = triage_and_classify(Alert(**input))
+    v = result.verdict
+    c = result.classification
+    out = v.model_dump(mode="json")
+    out.update(
+        {
+            # ── classification half (promoted for scoring) ──
+            "incident_type": c.incident_type,
+            "confidence": c.confidence,
+            "routing_team": c.routing_team,
+            "on_call_engineer": c.on_call_engineer,
+            "probable_root_cause": c.probable_root_cause,
+            "tags": list(c.tags),
+            # ── full contracts, unchanged ──
+            "verdict": v.model_dump(mode="json"),
+            "classification": c.model_dump(mode="json"),
+            "verdict_id": result.verdict_id,
+        }
+    )
+    return out
 
 
 def _stage8_persist_line(verdict_id: int | None, cluster_key: str | None) -> str:
@@ -968,3 +999,30 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
             f"verdict persistence failed ({type(exc).__name__}) — verdict returned but not saved"
         )
     return verdict, verdict_id
+
+
+def triage_and_classify(alert: Alert) -> CombinedResult:
+    """Run the full agent on one alert: the 8-stage triage flow followed by
+    incident classification. Returns both results in one ``CombinedResult``.
+
+    This is the agent's one-shot entry point. Each half is identical to what
+    ``triage`` / ``classify`` produce individually for the same input — this
+    just runs them in sequence and staples the results together. The
+    classification step's documented input is the original alert + the triage
+    verdict: the alert carries the technical signal for the embedding, the
+    verdict carries the LLM-cleaned summary + severity.
+
+    Read-only with respect to external systems beyond what the two steps already
+    do (triage persists its verdict + dedup clusters; classification persists
+    back into its similarity store). Opens no tickets, pages no one, applies no
+    HITL gate — those stay downstream concerns.
+    """
+    verdict, verdict_id = triage(alert)
+    classification = classify(ClassificationInput(alert=alert, triage_verdict=verdict))
+    return CombinedResult(
+        alert_id=alert.alert_id,
+        affected_service=verdict.affected_service,
+        verdict=verdict,
+        classification=classification,
+        verdict_id=verdict_id,
+    )

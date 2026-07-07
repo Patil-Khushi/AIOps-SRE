@@ -12,11 +12,11 @@ from typing import Any
 
 import pytest
 
+from agents.alert_triage.classifier_models import AuditMetadata as ClsAudit
+from agents.alert_triage.classifier_models import Classification
 from agents.alert_triage.models import AuditMetadata as TriageAudit
 from agents.alert_triage.models import TriageVerdict
 from agents.auto_ticketing import ticket
-from agents.incident_classifier.models import AuditMetadata as ClsAudit
-from agents.incident_classifier.models import Classification
 
 
 @pytest.fixture(autouse=True)

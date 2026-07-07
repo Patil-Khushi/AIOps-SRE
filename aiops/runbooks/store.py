@@ -22,7 +22,7 @@ Config:
   (created on first use). The shipped baseline lives in a *tracked* seed
   directory and is copied into the live (gitignored) library via
   :func:`seed_from_dir` on first boot — mirroring how
-  ``agents.incident_classifier._seed`` seeds the historical-incident store.
+  ``agents.alert_triage.classifier_seed`` seeds the historical-incident store.
 """
 
 from __future__ import annotations

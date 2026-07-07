@@ -236,6 +236,7 @@ function Invoke-SpaBuild($name, $dir, $missingMsg) {
 $dashDir       = Join-Path $RepoRoot 'demo\dashboard'
 $dashDist      = Join-Path $dashDir 'dist\index.html'
 $classifierDir = Join-Path $RepoRoot 'demo\classifier-ui'
+$combinedDir   = Join-Path $RepoRoot 'demo\combined-ui'
 $hitlDir       = Join-Path $RepoRoot 'demo\hitl-ui'
 
 # Current commit — lets each SPA build detect "the code changed since I was last
@@ -247,6 +248,7 @@ if ($script:GitHead) { $script:GitHead = $script:GitHead.Trim() }
 
 Invoke-SpaBuild 'React dashboard'   $dashDir       '/dashboard/ will 503.'
 Invoke-SpaBuild 'classifier UI'     $classifierDir '/classifier will 503.'
+Invoke-SpaBuild 'combined UI'       $combinedDir   '/combined will 503.'
 Invoke-SpaBuild 'HITL approver UI'  $hitlDir       '/hitl will 503.'
 
 # --- 2c. ensure the right extras are synced into .venv ---

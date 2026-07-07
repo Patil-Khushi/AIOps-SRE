@@ -5,11 +5,11 @@ Run: ``uv run python scripts/preview_description.py``
 
 from datetime import UTC, datetime
 
+from agents.alert_triage.classifier_models import AuditMetadata as CA
+from agents.alert_triage.classifier_models import Classification
 from agents.alert_triage.models import AuditMetadata as TA
 from agents.alert_triage.models import TriageVerdict
 from agents.auto_ticketing.agent import _build_description
-from agents.incident_classifier.models import AuditMetadata as CA
-from agents.incident_classifier.models import Classification
 
 v = TriageVerdict(
     affected_service="payment",

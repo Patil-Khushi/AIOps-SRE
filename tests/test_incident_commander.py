@@ -20,11 +20,11 @@ from datetime import UTC, datetime
 
 import pytest
 
+from agents.alert_triage.classifier_models import AuditMetadata as ClassAudit
+from agents.alert_triage.classifier_models import Classification
 from agents.alert_triage.models import Alert, Severity, TriageVerdict
 from agents.alert_triage.models import AuditMetadata as TriageAudit
 from agents.auto_ticketing.models import TicketRecord
-from agents.incident_classifier.models import AuditMetadata as ClassAudit
-from agents.incident_classifier.models import Classification
 from agents.incident_commander import agent as ic
 from agents.incident_commander import command
 from agents.notification_assembler.models import RoutingDecision

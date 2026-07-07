@@ -4,14 +4,17 @@ Phase 1 is in flight. Shipped agents under `agents/`:
 
 | Dir | Catalog ID | Phase | What it does |
 |---|---|---|---|
-| `alert_triage/` | RA-001 | Reactive-Active | Triages incoming alerts → `TriageVerdict` (service, severity, owning team, dedup). |
-| `incident_classifier/` | RA-002 | Reactive-Active | Assigns each verdict an `IncidentType` (infra / app / network / external_dep / change). |
+| `alert_triage/` | RA-001+002 | Reactive-Active | **One agent** that triages incoming alerts → `TriageVerdict` (service, severity, owning team, dedup) **and** classifies the incident → `Classification` / `IncidentType` (infra / app / network / external_dep / change). `triage_and_classify(alert)` returns both as a `CombinedResult`. Merges the former Incident Classifier (RA-002) into Alert Triage — see the [product decision](#note-ra-001--ra-002-are-one-agent) below. |
 | `auto_ticketing/` | RA-003 | Reactive-Active | Turns a `TriageVerdict` into a ServiceNow PDI ticket via the `aiops.tools.itsm` seam. |
 | `notification_assembler/` | RA-005+006 | Reactive-Active | **One agent** that routes the single notification (page / team channel / noise bucket by severity + time-of-day) **and**, on Sev-1/Sev-2, stands up the war room (channel + on-call SME + context pack + seed timeline) and folds its join link into that same message. Merges the former Notification Router (RA-005) + War-Room Assembler (RA-006) into one unit — see the [product decision](#note-ra-005--ra-006-are-one-agent) below. |
 | `knowledge_synthesizer/` | PRS-007 | Prescriptive-Adaptive | On a resolved incident, drafts a postmortem + runbook suggestion + KB article (`pending_review`); publication is HITL-gated (`knowledge.publish`). |
 | `incident_commander/` | RA-008 (SRE) | Reactive-Active | Coordinates Sev-1/Sev-2 response: chains the reactive flow + RA-007 Log Correlation + RCA via the orchestrator seam, scribes a timeline, posts an IC context pack + human-IC handoff, seeds a postmortem. Takes no destructive action. |
 
 > RA-008 runs on the **orchestrator seam** (`aiops/runtime/orchestrator.py`, INFRA-2 / #74): `run_reactive_flow(alert)` is the single entry point for the RA-001 → RA-002 → RA-003 → RA-005+006 chain that the `/api/triage` route and the auto-triage loop also use. Call it instead of re-wiring the chain.
+
+### Note: RA-001 + RA-002 are one agent
+
+The product ships a **single Alert Triage** agent (`alert_triage/`) that owns both the triage (former RA-001) and incident-classification (former RA-002) responsibilities. On one alert it runs the full 8-step triage flow and then classifies the incident; `triage(alert)` returns just the verdict, `classify(payload)` runs the classification step, and `triage_and_classify(alert)` runs both and returns a `CombinedResult`. The classification code lives in `alert_triage/classifier.py` (+ `classifier_models.py`, `classifier_prompts.py`, `classifier_seed.py`). The former standalone `incident_classifier/` package and the `combined_triage_classifier/` composition wrapper were removed. Its console (triage + classification, with a sidebar for each view) mounts at `/combined`. The vision catalog (`docs/Adaptive_AIOps_Agent_Catalog.xlsx`) still lists them as distinct rows; treat "Alert Triage" as the shipped SKU that fulfils both.
 
 ### Note: RA-005 + RA-006 are one agent
 

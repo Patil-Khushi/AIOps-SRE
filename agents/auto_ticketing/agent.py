@@ -33,9 +33,9 @@ from typing import Any
 import aiops.tools.itsm
 import aiops.tools.mock_providers
 import aiops.tools.observability  # noqa: F401  — registers grafana.render_panel
+from agents.alert_triage.classifier_models import Classification
 from agents.alert_triage.models import TriageVerdict
 from agents.auto_ticketing.models import TicketRecord, TicketSystem
-from agents.incident_classifier.models import Classification
 from aiops.tools import get_registry
 
 logger = logging.getLogger(__name__)

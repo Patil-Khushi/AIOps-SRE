@@ -5,20 +5,23 @@ The full endpoint catalog is served by FastAPI itself — visit ``GET /docs``
 there instead of in a hand-maintained list that drifts every time someone
 adds a route (it last went stale at 12 routes when the file actually had 21).
 
-Roughly, the service hosts: the Alert Triage agent (POST /api/triage*,
-GET /api/fixtures, GET /api/verdicts), the Incident Classifier (RA-002) under
-/api/classifier/*, the failure-injection scenario endpoints under
-/api/scenarios/*, the live cluster mirrors (/api/live-alerts, /api/topology,
-/api/system/pods), and two WebSocket fan-outs (/ws/alerts, /ws/chatops). The
-React dashboard mounts at /dashboard/, the standalone classifier SPA at
-/classifier, and a legacy vanilla UI at /.
+Roughly, the service hosts: the Alert Triage agent, which now runs triage AND
+incident classification (POST /api/triage*, GET /api/fixtures, GET /api/verdicts,
+the classification metrics under /api/classifier/*, plus a combined
+triage+classification surface at POST /api/combined/run), the failure-injection
+scenario endpoints under /api/scenarios/*, the live cluster mirrors
+(/api/live-alerts, /api/topology, /api/system/pods), and two WebSocket fan-outs
+(/ws/alerts, /ws/chatops). The React dashboard mounts at /dashboard/, the
+standalone Incident Classifier SPA at /classifier (linked from the Alert Triage
+console sidebar), the combined triage+classification SPA at /combined, and a
+legacy vanilla UI at /.
 
 The agent runs in-process (single uvicorn worker = single dedup store) so the
 embedding dedup memory persists across triage calls within one server lifetime.
 
 Vendor neutrality: this module uses ``aiops.tools`` capabilities and
-``agents.alert_triage`` / ``agents.incident_classifier`` only — it does not
-import Prometheus / Jaeger / Kubernetes clients directly.
+``agents.alert_triage`` only — it does not import Prometheus / Jaeger /
+Kubernetes clients directly.
 """
 
 from __future__ import annotations
@@ -91,7 +94,12 @@ os.environ.setdefault("AIOPS_LLM_PROVIDER", "stub")
 
 # Importing the agent triggers @tool registration for prometheus, jaeger,
 # and the mock CMDB / on-call providers.
-from agents.alert_triage import Alert, AuditMetadata, TriageVerdict  # noqa: E402
+from agents.alert_triage import (  # noqa: E402
+    Alert,
+    AuditMetadata,
+    TriageVerdict,
+    triage_and_classify,
+)
 from agents.auto_healer_lite import ExecutionRequest  # noqa: E402
 from agents.auto_healer_lite import execute as auto_heal_execute  # noqa: E402
 from agents.incident_commander import command as incident_command  # noqa: E402
@@ -2122,19 +2130,26 @@ async def classifier_evaluate() -> dict[str, Any]:
         # is being queried 5x back-to-back.
         from evals.harness import REPO_ROOT, run_agent
 
-        agent_dir = REPO_ROOT / "agents" / "incident_classifier"
+        # Classification now lives inside the one Alert Triage agent; its golden
+        # set mixes triage-only cases with cases that also assert a
+        # classification (incident_type). Only the latter are meaningful for the
+        # classifier accuracy / misroute metrics, so filter to cases that carry
+        # an ``incident_type`` check.
+        agent_dir = REPO_ROOT / "agents" / "alert_triage"
         run = await asyncio.to_thread(run_agent, agent_dir)
 
-        total = len(run.results)
-        passed = sum(1 for r in run.results if r.passed)
         misroute = 0
         per_case: list[dict[str, Any]] = []
+        classification_results = []
         for r in run.results:
             type_check = next(
                 (c for c in r.details.get("checks", []) if c["check"] == "incident_type"),
                 None,
             )
-            type_ok = bool(type_check and type_check["passed"])
+            if type_check is None:
+                continue  # triage-only case — not a classification eval
+            classification_results.append(r)
+            type_ok = bool(type_check["passed"])
             if not type_ok:
                 misroute += 1
             per_case.append(
@@ -2147,6 +2162,8 @@ async def classifier_evaluate() -> dict[str, Any]:
                 }
             )
 
+        total = len(classification_results)
+        passed = sum(1 for r in classification_results if r.passed)
         _LAST_EVAL = {
             "total_cases": total,
             "passed_cases": passed,
@@ -2159,6 +2176,55 @@ async def classifier_evaluate() -> dict[str, Any]:
         return classifier_metrics()
     finally:
         _EVAL_RUNNING = False
+
+
+# ─── Alert Triage combined surface (triage + classification, one agent) ─────
+#
+# The Alert Triage agent runs the full 8-step triage workflow then classifies
+# the incident, returning both results. This backs the Alert Triage console UI
+# (demo/combined-ui, served at /combined) whose sidebar exposes the triage
+# verdict and the incident-classification views. Read-only: opens no ticket and
+# pages no one.
+
+COMBINED_FIXTURES_PATH = (
+    Path(__file__).parent.parent.parent / "agents" / "alert_triage" / "evals" / "golden.json"
+)
+
+
+@app.get("/api/combined/fixtures")
+def combined_fixtures() -> dict[str, Any]:
+    """Return the combined agent's golden fixtures for the UI's picker."""
+    if not COMBINED_FIXTURES_PATH.exists():
+        raise HTTPException(
+            status_code=500, detail=f"fixtures file not found: {COMBINED_FIXTURES_PATH}"
+        )
+    with COMBINED_FIXTURES_PATH.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+class CombinedRunRequest(BaseModel):
+    alert: dict[str, Any] = Field(..., description="Canonical Alert payload (RA-001 input)")
+
+
+@app.post("/api/combined/run", response_model=None)
+async def combined_run(req: CombinedRunRequest) -> dict[str, Any]:
+    """Run the Alert Triage agent (triage → classification) on one alert.
+
+    Body: ``{"alert": {<Alert payload>}}``. Returns a ``CombinedResult`` dict:
+    ``{alert_id, affected_service, verdict: TriageVerdict,
+    classification: Classification, verdict_id}``. The agent is sync + blocking
+    (embedding search + up to two LLM calls), so it runs in a worker thread to
+    keep the event loop free."""
+    try:
+        alert_obj = Alert(**req.alert)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid alert: {exc}") from exc
+    try:
+        result = await asyncio.to_thread(triage_and_classify, alert_obj)
+    except Exception as exc:
+        logger.exception("Alert Triage agent raised on alert for %s", alert_obj.service)
+        raise HTTPException(status_code=500, detail=f"combined run failed: {exc}") from exc
+    return result.model_dump(mode="json")
 
 
 # ─── RA-006 War-Room Assembler surface (standalone dashboard) ──────────────
@@ -2452,6 +2518,52 @@ def classifier_spa(path: str) -> FileResponse:
     if target.is_file():
         return FileResponse(target)
     return FileResponse(CLASSIFIER_DIST / "index.html")
+
+
+# ─── RA-001+002 Combined UI mount (standalone Vite app under demo/combined-ui) ─
+
+COMBINED_DIST = Path(__file__).parent.parent / "combined-ui" / "dist"
+
+
+@app.get("/combined")
+def combined_root() -> FileResponse:
+    """Serve the standalone RA-001+002 Combined Triage + Classifier UI root."""
+    index = COMBINED_DIST / "index.html"
+    if not index.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "combined dashboard not built — "
+                "run `cd demo/combined-ui && npm install && npm run build`"
+            ),
+        )
+    return FileResponse(index)
+
+
+@app.get("/combined/{path:path}", response_model=None)
+def combined_spa(path: str) -> FileResponse:
+    """SPA-friendly catch-all for the RA-001+002 combined dashboard.
+
+    Serves real files from ``dist/`` when they exist (CSS, JS, images);
+    otherwise falls back to ``index.html`` so the single-page app boots.
+    """
+    if not COMBINED_DIST.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "combined dashboard not built — "
+                "run `cd demo/combined-ui && npm install && npm run build`"
+            ),
+        )
+    root = COMBINED_DIST.resolve()
+    target = (COMBINED_DIST / path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid combined path") from exc
+    if target.is_file():
+        return FileResponse(target)
+    return FileResponse(COMBINED_DIST / "index.html")
 
 
 # ─── HITL Approver UI mount (standalone Vite app under demo/hitl-ui) ──────

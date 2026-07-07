@@ -1,21 +1,22 @@
-"""Prompts for the Incident Classifier agent (RA-002).
+"""Prompts for the Alert Triage agent's incident-classification step.
 
-Versioned by symbol name (matches the RA-001 convention). A prompt change
-is a model change (CLAUDE.md principle #6) — when you change anything
-below, bump the suffix (``SYSTEM_PROMPT`` → ``SYSTEM_PROMPT_V2``) and
-re-run the eval harness before promoting.
+Kept in a separate module from the triage prompts so the two prompt sets don't
+collide on symbol names (both define a ``SYSTEM_PROMPT``). A prompt change is a
+model change (CLAUDE.md principle #6) — when you change anything below, bump the
+suffix (``SYSTEM_PROMPT`` -> ``SYSTEM_PROMPT_V2``) and re-run the eval harness
+before promoting.
 
-Render contract: ``CLASSIFY_PROMPT_USER.format(**fields)`` must succeed
-when the agent supplies every named placeholder. The literal braces in
-the response schema are written as ``<...>``, not ``{...}``, so there are
-no escaping pitfalls.
+Render contract: ``CLASSIFY_PROMPT_USER.format(**fields)`` must succeed when the
+agent supplies every named placeholder. The literal braces in the response
+schema are written as ``<...>``, not ``{...}``, so there are no escaping
+pitfalls.
 """
 
 from __future__ import annotations
 
-SYSTEM_PROMPT = """You are RA-002, the Incident Classifier agent.
+SYSTEM_PROMPT = """You are the incident-classification step of the Alert Triage agent.
 
-Your job: take a triaged incident from RA-001 (Alert Triage) plus any
+Your job: take a triaged incident (severity, ownership, summary) plus any
 retrieved similar past incidents, and classify it into exactly one of
 these five types:
 

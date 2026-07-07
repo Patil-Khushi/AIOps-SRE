@@ -1,7 +1,7 @@
 {
-  "agent": "RA-001",
-  "version": "v1",
-  "description": "Golden fixtures for Alert Triage. Each case has an input alert + expected verdict patterns. The harness checks patterns, not exact strings (LLM output is non-deterministic for non-stub providers).",
+  "agent": "RA-001 (Alert Triage — triage + classification)",
+  "version": "v2",
+  "description": "Golden fixtures for the Alert Triage agent, which now runs the full 8-step triage flow AND incident classification on one alert. run() returns the triage verdict fields at top level (severity/team/ownership/runbook — the original RA-001 checks) plus the promoted classification fields (incident_type/routing_team/confidence). The first 8 cases assert the triage half; the last 5 assert both halves across all classification tiers (Tier-1/2 with a real LLM, Tier-4 keyword fallback under the stub). Classification confidence threshold is lenient (>=0.30) so the keyword fallback stays green under the stub provider.",
   "cases": [
     {
       "id": "payment_cpu_spike",
@@ -193,6 +193,146 @@
         "assigned_engineer_contains": "oncall@order-experience",
         "recommended_runbook_contains": "cart",
         "status": "Active"
+      }
+    },
+    {
+      "id": "payment_oom_infra",
+      "description": "Payment pod OOMKilled repeatedly — triage owns payment, classification calls it infrastructure.",
+      "scenario": "payment-oom-loop",
+      "input": {
+        "alert_id": "ALT-CTC-001",
+        "service": "payment",
+        "metric": "container_memory_usage_bytes",
+        "value": 1960000000,
+        "threshold": 2000000000,
+        "timestamp": "2026-05-13T10:00:00Z",
+        "source": "Prometheus",
+        "labels": {
+          "namespace": "otel-demo",
+          "pod": "payment-7956b8bb6c-xyz"
+        },
+        "annotations": {
+          "description": "pod has been OOMKilled 4 times in 10 minutes; memory at 98%"
+        }
+      },
+      "expected": {
+        "affected_service": "payment",
+        "assigned_team": "Payments Team",
+        "status": "Active",
+        "incident_type": "infrastructure",
+        "routing_team": "Payments Team",
+        "min_confidence": 0.30
+      }
+    },
+    {
+      "id": "checkout_npe_app",
+      "description": "Checkout 5xx spike from a NullPointerException — triage owns checkout, classification calls it application.",
+      "scenario": "checkout-npe-spike",
+      "input": {
+        "alert_id": "ALT-CTC-002",
+        "service": "checkout",
+        "metric": "http_requests_errored_total",
+        "value": 480,
+        "threshold": 50,
+        "timestamp": "2026-05-13T10:01:00Z",
+        "source": "Prometheus",
+        "labels": {
+          "namespace": "otel-demo"
+        },
+        "annotations": {
+          "description": "NullPointerException in OrderProcessor.applyDiscount; stack trace at OrderProcessor.java:142; error rate at 12%"
+        }
+      },
+      "expected": {
+        "affected_service": "checkout",
+        "assigned_team": "Order Experience",
+        "status": "Active",
+        "incident_type": "application",
+        "routing_team": "Order Experience",
+        "min_confidence": 0.30
+      }
+    },
+    {
+      "id": "frontend_dns_network",
+      "description": "Frontend 503s from envoy on DNS failures — triage owns frontend, classification calls it network.",
+      "scenario": "frontend-dns-failures",
+      "input": {
+        "alert_id": "ALT-CTC-003",
+        "service": "frontend",
+        "metric": "envoy_cluster_upstream_cx_connect_fail",
+        "value": 220,
+        "threshold": 10,
+        "timestamp": "2026-05-13T10:02:00Z",
+        "source": "Prometheus",
+        "labels": {
+          "namespace": "otel-demo"
+        },
+        "annotations": {
+          "description": "503 upstream_connect_error from envoy; DNS lookup for cart.otel-demo.svc timing out"
+        }
+      },
+      "expected": {
+        "affected_service": "frontend",
+        "assigned_team": "Web Experience",
+        "status": "Active",
+        "incident_type": "network",
+        "routing_team": "Web Experience",
+        "min_confidence": 0.30
+      }
+    },
+    {
+      "id": "email_sendgrid_external_dep",
+      "description": "Email service hitting SendGrid 429s — triage owns email, classification calls it external_dependency.",
+      "scenario": "email-sendgrid-rate-limit",
+      "input": {
+        "alert_id": "ALT-CTC-004",
+        "service": "email",
+        "metric": "sendgrid_api_response_429_total",
+        "value": 142,
+        "threshold": 5,
+        "timestamp": "2026-05-13T10:03:00Z",
+        "source": "Prometheus",
+        "labels": {
+          "vendor": "sendgrid"
+        },
+        "annotations": {
+          "description": "SendGrid API returning 429 rate-limit responses for 15 minutes; transactional emails queued"
+        }
+      },
+      "expected": {
+        "affected_service": "email",
+        "incident_type": "external_dependency",
+        "routing_team": "Communications",
+        "min_confidence": 0.30
+      }
+    },
+    {
+      "id": "recommendation_deploy_change",
+      "description": "Recommendation errors spiked right after a deploy — triage owns recommendation, classification calls it change_related.",
+      "scenario": "recommendation-deploy-regression",
+      "input": {
+        "alert_id": "ALT-CTC-005",
+        "service": "recommendation",
+        "metric": "http_requests_errored_total",
+        "value": 320,
+        "threshold": 50,
+        "timestamp": "2026-05-13T10:04:00Z",
+        "source": "Prometheus",
+        "labels": {
+          "namespace": "otel-demo",
+          "deploy": "a1f3c2"
+        },
+        "annotations": {
+          "description": "error rate jumped 60x within 90s of deploy a1f3c2; rollback in progress"
+        }
+      },
+      "expected": {
+        "affected_service": "recommendation",
+        "assigned_team": "Personalization Team",
+        "status": "Active",
+        "incident_type": "change_related",
+        "routing_team": "Personalization Team",
+        "min_confidence": 0.30
       }
     }
   ]

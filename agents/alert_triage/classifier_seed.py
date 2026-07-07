@@ -1,12 +1,12 @@
-"""Idempotent seed loader for the RA-002 historical_incidents store.
+"""Idempotent seed loader for the historical_incidents store.
 
 On first call, embeds and inserts ``data/historical_seed.json`` so the
-similarity search has something to match against. On subsequent calls (rows
-already present), it's a no-op.
+classification step's similarity search has something to match against. On
+subsequent calls (rows already present), it's a no-op.
 
-Why this lives next to the agent and not in ``aiops.state``: the seed data
-is the agent's contract (which past-incident shapes it expects), so it
-belongs with the agent. The persistence layer stays vendor-neutral.
+Why this lives next to the agent and not in ``aiops.state``: the seed data is
+the agent's contract (which past-incident shapes it expects), so it belongs with
+the agent. The persistence layer stays vendor-neutral.
 """
 
 from __future__ import annotations
@@ -54,10 +54,10 @@ def ensure_seeded(embed_fn: Any) -> int:
     Returns the number of rows inserted (0 if the store was already seeded
     or the seed file is missing).
 
-    The seed file (``agents/incident_classifier/data/historical_seed.json``)
-    lives in a gitignored ``data/`` directory by repo convention. When it's
-    absent the agent still runs — Tier-3 (LLM cold) and Tier-4 (keyword)
-    cover the no-similarity path.
+    The seed file (``agents/alert_triage/data/historical_seed.json``) lives in a
+    gitignored ``data/`` directory by repo convention. When it's absent the
+    agent still runs — Tier-3 (LLM cold) and Tier-4 (keyword) cover the
+    no-similarity path.
 
     ``embed_fn`` is the agent's ``_embed`` callable. Pass-through (rather than
     importing it here) avoids a circular import.
@@ -67,7 +67,7 @@ def ensure_seeded(embed_fn: Any) -> int:
         return 0
     if not _SEED_PATH.exists():
         logger.info(
-            "RA-002 seed file not found at %s; classifier will operate without "
+            "classification seed file not found at %s; classifier will operate without "
             "historical similarity (Tier 3 / Tier 4 paths still functional)",
             _SEED_PATH,
         )
@@ -79,7 +79,7 @@ def ensure_seeded(embed_fn: Any) -> int:
         embedding = embed_fn(text) or []
         if not embedding:
             logger.warning(
-                "RA-002 seed: embedding unavailable for %s — row inserted without vector "
+                "classification seed: embedding unavailable for %s — row inserted without vector "
                 "(will not be retrievable until re-embedded)",
                 entry["incident_key"],
             )
@@ -97,5 +97,5 @@ def ensure_seeded(embed_fn: Any) -> int:
             source="seed",
         )
         inserted += 1
-    logger.info("RA-002 seeded historical store with %d incidents", inserted)
+    logger.info("seeded historical store with %d incidents", inserted)
     return inserted

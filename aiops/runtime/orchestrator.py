@@ -28,10 +28,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from agents.alert_triage import Alert, TriageVerdict, triage
+from agents.alert_triage import (
+    Alert,
+    Classification,
+    ClassificationInput,
+    TriageVerdict,
+    classify,
+    triage,
+)
 from agents.auto_ticketing import TicketRecord
 from agents.auto_ticketing import ticket as auto_ticket
-from agents.incident_classifier import Classification, ClassificationInput, classify
 from agents.notification_assembler import RoutingDecision, WarRoomAssembly
 from agents.notification_assembler import notify as notify_incident
 from aiops.state import repository as state_repo

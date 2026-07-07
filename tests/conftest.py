@@ -49,8 +49,9 @@ os.environ.setdefault("AIOPS_JAEGER_CONNECT_TIMEOUT", "0.25")
 
 # Disable embeddings in the test suite by default (#113).
 #
-# Multiple agents (``alert_triage``, ``incident_classifier``) lazily
-# load an 80MB ``sentence-transformers`` model the first time a method
+# Several agents (``alert_triage`` — for both its dedup and classification
+# steps — and ``knowledge_synthesizer``) lazily load an 80MB
+# ``sentence-transformers`` model the first time a method
 # that needs embeddings runs. The load is a hefty HTTPS download on
 # cold cache and a multi-second mmap on warm cache, blowing past the
 # 60s pytest-timeout in either case. The eval harness in particular
@@ -64,7 +65,7 @@ os.environ.setdefault("AIOPS_JAEGER_CONNECT_TIMEOUT", "0.25")
 # embeddings extra) but each agent treats ``None`` as "unavailable"
 # and never tries to load. We override the function rather than the
 # ``_EMBED_MODEL`` cache sentinel because ``reset_state()`` paths in
-# incident_classifier reset ``_EMBED_MODEL = None`` between cases and
+# the classification step reset ``_EMBED_MODEL = None`` between cases and
 # would otherwise re-trigger a load.
 #
 # Tests that specifically need to exercise the embeddings path
@@ -72,7 +73,7 @@ os.environ.setdefault("AIOPS_JAEGER_CONNECT_TIMEOUT", "0.25")
 # ``test_alert_triage_embedding_persistence``); ``monkeypatch.setattr``
 # undoes the override per-test without disturbing this default.
 from agents.alert_triage import agent as _alert_triage_agent
-from agents.incident_classifier import agent as _incident_classifier_agent
+from agents.alert_triage import classifier as _alert_triage_classifier
 from agents.knowledge_synthesizer import agent as _knowledge_synthesizer_agent
 from aiops.policy import get_gate
 from aiops.tools.observability import jaeger as _jaeger
@@ -82,8 +83,11 @@ def _no_embed_model() -> None:
     return None
 
 
+# Alert Triage lazily loads an embedding model in two places — the dedup path
+# (agent.py) and the classification path (classifier.py). Pin both to the
+# rule-based / keyword fallback so the test suite never pays the model load.
 _alert_triage_agent._get_embed_model = _no_embed_model
-_incident_classifier_agent._get_embed_model = _no_embed_model
+_alert_triage_classifier._get_embed_model = _no_embed_model
 _knowledge_synthesizer_agent._get_embed_model = _no_embed_model
 
 

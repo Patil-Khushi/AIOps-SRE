@@ -53,12 +53,13 @@ from .scoring import score_case
 REPO_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(REPO_ROOT / ".env")
 
-# v0 (EVAL-1 / #75): only alert_triage takes a bare Alert payload as input.
-# incident_classifier / notification_assembler / auto_ticketing all require
-# prior-step outputs (triage_verdict, alert+verdict, etc.) — they're
-# deferred to v1 once [INFRA-2 #74] orchestrator can chain inputs through
-# the truth-file path. Agents listed in `exercises` but not in this set
-# are recorded as "deferred" rather than failed.
+# v0 (EVAL-1 / #75): only alert_triage takes a bare Alert payload as input —
+# and it now runs triage AND incident classification on that one payload.
+# notification_assembler / auto_ticketing still require prior-step outputs
+# (triage_verdict, alert+verdict, etc.) — they're deferred to v1 once
+# [INFRA-2 #74] orchestrator can chain inputs through the truth-file path.
+# Agents listed in `exercises` but not in this set are recorded as "deferred"
+# rather than failed.
 _TRUTH_FILE_RUNNABLE_AGENTS = frozenset({"alert_triage"})
 
 
