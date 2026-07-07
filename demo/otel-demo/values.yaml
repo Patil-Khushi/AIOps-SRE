@@ -28,10 +28,10 @@ opensearch:
 # automatically when this is on. Costs one extra small pod (~a few hundred MB) —
 # acceptable on the 6 GB k3s VM.
 #
-# UNVERIFIED against a live cluster yet: after bring-up, confirm the
-# grafana-image-renderer pod is Ready, then validate the dashboard UIDs + panel
-# IDs in agents/auto_ticketing/grafana_panels.json (still placeholders — see its
-# _verify entry) before expecting a real attachment.
+# Validated 2026-07-06 against a live OTel demo + ServiceNow PDI (incident
+# INC0011073 carried the ~85 KB Collector-Overview PNG). Dashboard UID + panel
+# mapping live in agents/auto_ticketing/grafana_panels.json — see its _verify
+# entry for the confirmed values.
 grafana:
   imageRenderer:
     enabled: true
