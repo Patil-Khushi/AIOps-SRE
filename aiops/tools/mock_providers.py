@@ -310,6 +310,39 @@ def _maybe_reset_feature_flag(action: str, target: str) -> dict[str, Any] | None
     }
 
 
+# ── Deterministic prediction/observation helpers (RA-004 sim-vs-exec, #213) ──
+# Shared by simulate (prediction) and execute/apply (observation) so a mock run
+# matches by construction; divergence is exercised via test fault providers.
+# All values are deterministic — no wall-clock — so the eval harness stays stable.
+
+_RISKY_ACTION_MARKERS = ("restart", "scale", "rollback", "delete", "reset", "drain")
+
+
+def _side_effects_for(action: str, target: str) -> list[str]:
+    """The side effect(s) a step's action produces, as stable string tokens."""
+    act = (action or "").strip()
+    if not act:
+        return []
+    tgt = (target or "").strip()
+    return [f"{act}:{tgt}"] if tgt else [act]
+
+
+def _warnings_for(action: str) -> list[str]:
+    a = (action or "").lower()
+    if any(m in a for m in _RISKY_ACTION_MARKERS):
+        return [f"{action} may briefly disrupt traffic"]
+    return []
+
+
+def _estimated_duration_ms(action: str) -> int:
+    """A deterministic synthetic duration estimate (ms). Riskier actions are
+    modelled as slower so the demo shows non-uniform predictions."""
+    base = 500
+    if any(m in (action or "").lower() for m in _RISKY_ACTION_MARKERS):
+        base = 1500
+    return base
+
+
 @tool(
     name="mock.automation.runbook.execute",
     capability="automation.runbook.execute",
@@ -350,6 +383,9 @@ def mock_runbook_execute(
         "stdout": (
             f"[dry-run] would {verb} {target or '<unspecified>'} in {namespace or 'default'}"
         ),
+        # Observed outcome for RA-004's sim-vs-execution comparison (#213).
+        "actual_side_effects": _side_effects_for(action, target),
+        "duration_ms": _estimated_duration_ms(action),
     }
     # A real feature-flag reset is performed ONLY here, on the REQUIRED-HITL
     # ``execute`` capability — so the live mutation physically cannot fire
@@ -387,6 +423,7 @@ def mock_runbook_simulate(
     before touching anything. Real Phase-2 swap target: ``ansible --check`` /
     ``kubectl --dry-run=server`` / an Argo workflow lint.
     """
+    preview = f"[dry-run] would run {action or '<step>'} on {target or '<target>'}"
     return ToolResult(
         ok=True,
         data={
@@ -396,7 +433,14 @@ def mock_runbook_simulate(
             "namespace": namespace or "default",
             "dry_run": True,
             "changes": [],
-            "preview": f"[dry-run] would run {action or '<step>'} on {target or '<target>'}",
+            "preview": preview,
+            # Full prediction for RA-004's simulation detail + comparison (#213).
+            # Non-mutating: these are predictions only, no live system is touched.
+            "predicted_actions": [action] if action else [],
+            "warnings": _warnings_for(action),
+            "estimated_duration_ms": _estimated_duration_ms(action),
+            "predicted_side_effects": _side_effects_for(action, target),
+            "summary": preview,
         },
         metadata={"provider": "mock"},
     )
@@ -433,6 +477,9 @@ def mock_runbook_apply(
             "namespace": namespace or "default",
             "applied": True,
             "exit_code": 0,
+            # Observed outcome for RA-004's sim-vs-execution comparison (#213).
+            "actual_side_effects": _side_effects_for(action, target),
+            "duration_ms": _estimated_duration_ms(action),
         },
         metadata={"provider": "mock"},
     )

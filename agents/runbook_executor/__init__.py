@@ -11,6 +11,12 @@ Public surface::
 """
 
 from agents.runbook_executor.agent import execute_runbook, run, run_plan, select
+from agents.runbook_executor.events import (
+    AuditEvent,
+    AuditEventMetadata,
+    AuditEventType,
+    EventLog,
+)
 from agents.runbook_executor.library import ExecutableRunbook, load_runbooks
 from agents.runbook_executor.models import (
     Incident,
@@ -18,13 +24,25 @@ from agents.runbook_executor.models import (
     RunbookStep,
     StepRecord,
 )
+from agents.runbook_executor.simulation import (
+    SimulationComparison,
+    SimulationDetail,
+    compare_simulation,
+)
 
 __all__ = [
+    "AuditEvent",
+    "AuditEventMetadata",
+    "AuditEventType",
+    "EventLog",
     "ExecutableRunbook",
     "Incident",
     "RunbookExecution",
     "RunbookStep",
+    "SimulationComparison",
+    "SimulationDetail",
     "StepRecord",
+    "compare_simulation",
     "execute_runbook",
     "load_runbooks",
     "run",

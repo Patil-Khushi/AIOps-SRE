@@ -12,6 +12,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from agents.runbook_executor.events import AuditEvent
+from agents.runbook_executor.simulation import SimulationComparison, SimulationDetail
+
 # Final resolution of a runbook run. Mirrors the four real outcomes plus the
 # "we had nothing to run" case the selector can produce.
 ResolutionStatus = Literal["resolved", "rolled_back", "denied", "failed", "no_runbook"]
@@ -62,6 +65,15 @@ class StepRecord(BaseModel):
     destructive: bool
     status: StepStatus
     simulate: dict[str, Any] | None = None
+    # Typed view of the dry-run prediction (predicted actions, warnings,
+    # estimated duration, predicted side effects, summary). ``simulate`` above
+    # is kept as the raw provider envelope; ``simulation`` is the structured
+    # extraction used by the audit trail + the comparison below.
+    simulation: SimulationDetail | None = None
+    # Structured diff of the prediction vs. the actual execution result. Set for
+    # executed / failed / rolled_back steps (a rolled-back step carries the
+    # comparison computed when it executed forward). None for skipped / denied.
+    comparison: SimulationComparison | None = None
     executed: dict[str, Any] | None = None
     rolled_back: bool = False
     rollback: dict[str, Any] | None = None
@@ -79,6 +91,14 @@ class RunbookExecution(BaseModel):
     rollback_artifacts: list[dict[str, Any]] = Field(default_factory=list)
     approval_id: str | None = Field(None, description="HITL approval id, if one was opened")
     reason: str = ""
+    # Append-only, ordered stream of what happened during the run (issue #213).
+    # A tuple (immutable) so the serialized result can't be appended-to,
+    # reordered, or cleared post-hoc; combined with the frozen AuditEvent /
+    # AuditEventMetadata, the log is immutable end to end. The run's EventLog is
+    # the authoritative append-only writer; this is its final snapshot. Kept
+    # separate from ``steps`` so it never affects steps_total / steps_executed /
+    # destructive_steps.
+    audit_events: tuple[AuditEvent, ...] = Field(default_factory=tuple)
 
     # ─── convenience views for callers / evals ──────────────────────────────
 

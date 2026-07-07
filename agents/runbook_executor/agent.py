@@ -30,6 +30,7 @@ from typing import Any
 
 # Side-effect import: registers the mock automation.runbook.* providers.
 import aiops.tools.mock_providers  # noqa: F401
+from agents.runbook_executor.events import AuditEventType, EventLog
 from agents.runbook_executor.library import ExecutableRunbook, load_runbooks
 from agents.runbook_executor.models import (
     Incident,
@@ -38,6 +39,7 @@ from agents.runbook_executor.models import (
     StepRecord,
 )
 from agents.runbook_executor.selector import select_runbook
+from agents.runbook_executor.simulation import SimulationDetail, compare_simulation
 from aiops.tools import ToolResult, get_registry
 
 logger = logging.getLogger(__name__)
@@ -51,7 +53,10 @@ def select(incident: Incident, *, runbooks_dir: Any = None) -> ExecutableRunbook
     """Load the library and pick the runbook for ``incident`` (or None)."""
     runbooks = load_runbooks(runbooks_dir)
     return select_runbook(
-        runbooks, service=incident.service, tags=incident.tags, severity=incident.severity
+        runbooks,
+        service=incident.service,
+        tags=incident.tags,
+        severity=incident.severity,
     )
 
 
@@ -91,22 +96,37 @@ def run_plan(
         status="resolved",
         reason="all steps executed",
     )
+    # Append-only audit trail for this run (issue #213). Emitters below only
+    # *observe* — every gate-related event is reconstructed from the ToolResult
+    # the registry already returned; the gate is never re-checked here.
+    log = EventLog(incident_id=incident.incident_id, runbook_id=runbook.id)
 
     # ── Phase 1: dry-run preview (autonomous, zero changes) ──────────────────
     records: dict[str, StepRecord] = {}
     for step in runbook.steps:
         rec = StepRecord(
-            name=step.name, action=step.action, destructive=step.destructive, status="skipped"
+            name=step.name,
+            action=step.action,
+            destructive=step.destructive,
+            status="skipped",
         )
         sim = _call(SIMULATE_CAP, step, incident, action=step.action)
         rec.simulate = sim.data if sim.ok else {"error": sim.error}
+        rec.simulation = SimulationDetail.from_provider(sim.data if sim.ok else None)
         records[step.name] = rec
         execution.steps.append(rec)
+        log.emit(
+            AuditEventType.STEP_SIMULATED,
+            step_id=step.name,
+            reason=rec.simulation.summary,
+            simulated_ok=sim.ok,
+        )
 
     # ── Phase 2: execute in order, gating destructive steps ──────────────────
     executed: list[RunbookStep] = []
     for step in runbook.steps:
         rec = records[step.name]
+        log.emit(AuditEventType.STEP_STARTED, step_id=step.name, destructive=step.destructive)
         if step.destructive:
             result = _call(
                 EXECUTE_CAP,
@@ -119,26 +139,79 @@ def run_plan(
                 hitl_context=ctx,
             )
             execution.approval_id = ctx.get("pending_approval_id") or execution.approval_id
-            if _blocked_by_gate(result):
+            approval_id = ctx.get("pending_approval_id") or ""
+            blocked = _blocked_by_gate(result)
+            log.emit(
+                AuditEventType.GATE_CHECKED,
+                step_id=step.name,
+                gate_type="required",
+                approval_id=approval_id,
+                reason=(result.error or "") if blocked else "allowed",
+            )
+            # An approval was opened iff the gate flow wrote a pending id.
+            if approval_id:
+                log.emit(
+                    AuditEventType.HITL_REQUESTED,
+                    step_id=step.name,
+                    approval_id=approval_id,
+                )
+            if blocked:
                 rec.status = "denied"
                 execution.status = "denied"
                 execution.reason = f"destructive step {step.name!r} blocked at HITL gate"
+                log.emit(
+                    AuditEventType.STEP_BLOCKED,
+                    step_id=step.name,
+                    gate_type="required",
+                    approval_id=approval_id,
+                    reason=result.error or "blocked at HITL gate",
+                )
+                execution.audit_events = log.events
                 return execution
+            # Not blocked ⇒ the gate approved the destructive step (a human, a
+            # pre-authorization, or skip in eval). Record the approval here —
+            # independent of whether the subsequent tool call succeeds — so an
+            # approved-but-then-failed step still shows HITL_APPROVED in the log.
+            log.emit(
+                AuditEventType.HITL_APPROVED,
+                step_id=step.name,
+                approval_id=approval_id,
+                reason=str(ctx.get("approver") or "approved"),
+            )
         else:
             result = _call(APPLY_CAP, step, incident, action=step.action, mode="execute")
+            log.emit(
+                AuditEventType.GATE_CHECKED,
+                step_id=step.name,
+                gate_type="none",
+                reason="autonomous (level=none)",
+            )
+
+        # Sim-vs-execution comparison — computed once here, from the single
+        # forward result, for both executed and failed outcomes. A step later
+        # rolled back keeps this forward comparison.
+        rec.comparison = compare_simulation(rec.simulation, result.data if result.ok else None)
 
         if result.ok:
             rec.status = "executed"
             rec.executed = result.data
             executed.append(step)
+            log.emit(AuditEventType.STEP_EXECUTED, step_id=step.name)
         else:
             rec.status = "failed"
             rec.executed = {"error": result.error}
             rec.error = result.error
             execution.reason = f"step {step.name!r} failed: {result.error}"
-            _rollback(incident, executed, records, execution, ctx)
+            log.emit(
+                AuditEventType.STEP_FAILED,
+                step_id=step.name,
+                reason=result.error or "failed",
+            )
+            _rollback(incident, executed, records, execution, ctx, log)
+            execution.audit_events = log.events
             return execution
 
+    execution.audit_events = log.events
     return execution
 
 
@@ -148,16 +221,26 @@ def _rollback(
     records: dict[str, StepRecord],
     execution: RunbookExecution,
     ctx: dict[str, Any],
+    log: EventLog,
 ) -> None:
     """Undo previously executed steps in reverse order. A step with no
     ``rollback_action`` is considered trivially reverted. The rollback of a
     destructive step is itself routed through the REQUIRED capability; a
-    non-destructive step's rollback runs autonomously."""
+    non-destructive step's rollback runs autonomously.
+
+    Emits ``STEP_ROLLED_BACK`` per successfully reverted step, and
+    ``STEP_FAILED`` (reason ``rollback failed``) when a reverse op itself
+    fails — the emitter observes the reverse ToolResult, it never re-gates."""
     all_ok = True
     for step in reversed(executed):
         rec = records[step.name]
         if not step.rollback_action:
             rec.rolled_back = True
+            log.emit(
+                AuditEventType.STEP_ROLLED_BACK,
+                step_id=step.name,
+                reason="no rollback action; trivially reverted",
+            )
             continue
         cap = EXECUTE_CAP if step.destructive else APPLY_CAP
         extra: dict[str, Any] = {"action": step.rollback_action, "mode": "rollback"}
@@ -191,8 +274,20 @@ def _rollback(
         if result.ok:
             if rec.status == "executed":
                 rec.status = "rolled_back"
+            log.emit(
+                AuditEventType.STEP_ROLLED_BACK,
+                step_id=step.name,
+                gate_type="required" if step.destructive else "none",
+                reason=f"reverted via {step.rollback_action!r}",
+            )
         else:
             all_ok = False
+            log.emit(
+                AuditEventType.STEP_FAILED,
+                step_id=step.name,
+                gate_type="required" if step.destructive else "none",
+                reason=f"rollback failed: {result.error}",
+            )
     execution.status = "rolled_back" if all_ok else "failed"
     if not all_ok:
         execution.reason += " — rollback incomplete (manual intervention required)"
