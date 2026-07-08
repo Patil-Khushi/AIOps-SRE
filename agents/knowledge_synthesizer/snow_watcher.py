@@ -163,6 +163,17 @@ def synthesize_incident_now(number: str) -> dict[str, Any] | None:
         rows = (getattr(res, "data", None) or {}).get("incidents", []) or []
         if not rows:
             return None
+        # Defensive: only synthesize a genuinely closed ticket. Callers (the
+        # verifier's close branch) already guarantee this, but a stray call must
+        # not draft for an open incident and skip the close-ticket approval.
+        state = str(rows[0].get("state") or "")
+        if state not in {"6", "7"}:
+            logger.info(
+                "synthesize_incident_now: %s not Resolved/Closed (state=%r) — skipping",
+                number,
+                state,
+            )
+            return None
         bundle, source = _build_bundle(rows[0])
         logger.info("synthesize_incident_now: %s (source=%s)", number, source)
         return _default_synthesize(bundle)

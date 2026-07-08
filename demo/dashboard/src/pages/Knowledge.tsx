@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import {
   BookOpen,
   Sparkles,
@@ -11,6 +11,10 @@ import {
   ExternalLink,
   Trash2,
   Calendar,
+  Play,
+  ListChecks,
+  Loader2,
+  Gavel,
 } from 'lucide-react';
 import { useFetch } from '@/hooks/useFetch';
 import { api } from '@/lib/api';
@@ -124,6 +128,354 @@ function StatusBadge({ status }: { status: ReviewStatus }) {
   );
 }
 
+type FlowState = 'idle' | 'inject' | 'apply' | 'close' | 'publish' | 'done' | 'error';
+
+const normService = (s: string) =>
+  (s || '').toLowerCase().replace(/[-_ ]/g, '').replace(/service$/, '');
+
+// Drives the real 3-approval incident lifecycle for a scenario:
+//   apply-fix (1st HITL) → verifier close (2nd HITL) → auto-synthesize → publish (3rd HITL).
+// Each Required approval is granted by a human in the HITL console; this just
+// kicks off the chain and tracks its progress by polling the shared outcome
+// stores + the KB list (the draft appears once the ticket is closed).
+function FullFlowRunner({ scenario, onChanged }: { scenario: DemoScenario; onChanged: () => void }) {
+  const [state, setState] = useState<FlowState>('idle');
+  const [applyId, setApplyId] = useState<string | null>(null);
+  const [publishId, setPublishId] = useState<string | null>(null);
+  const [draftId, setDraftId] = useState<number | null>(null);
+  const [failedStep, setFailedStep] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  // Ids of drafts that already existed when the flow started, so step-2→3 latches
+  // onto the NEW draft this flow creates — not a stale/concurrent one, and with no
+  // dependence on comparing a browser clock against a server timestamp.
+  const seenIds = useRef<Set<number>>(new Set());
+
+  const fail = (step: number, msg: string) => {
+    setFailedStep(step);
+    setErr(msg);
+    setState('error');
+  };
+
+  const reset = () => {
+    setState('idle');
+    setApplyId(null);
+    setPublishId(null);
+    setDraftId(null);
+    setFailedStep(null);
+    setErr(null);
+    seenIds.current = new Set();
+  };
+
+  const start = async () => {
+    const b = scenario.bundle() as {
+      rca_verdict?: {
+        ranked_fix_steps?: Array<{ flag?: string; variant?: string; action_type?: string }>;
+      };
+    };
+    const fix = b.rca_verdict?.ranked_fix_steps?.[0] ?? {};
+    if (!fix.flag) {
+      fail(1, 'scenario has no fix flag to apply');
+      return;
+    }
+    setErr(null);
+    setFailedStep(null);
+    setDraftId(null);
+    setPublishId(null);
+    setApplyId(null);
+    setState('inject');
+    try {
+      // Snapshot existing drafts so step-2→3 latches onto the NEW one this flow
+      // creates, not a pre-existing/concurrent draft.
+      try {
+        const existing = await api.listKb({ status: 'pending_review', limit: 100 });
+        seenIds.current = new Set((existing.articles ?? []).map((a) => a.id));
+      } catch {
+        seenIds.current = new Set();
+      }
+      // 0. Inject the REAL failure so triage opens a real ServiceNow incident.
+      const list = await api.scenarios();
+      const match = (list.scenarios ?? []).find((s) => s.flag === fix.flag);
+      if (!match) {
+        fail(1, `no server scenario registered for flag ${fix.flag}`);
+        return;
+      }
+      await api.injectScenario(match.scenario_id);
+      // 0b. Wait (best-effort) for triage to open the incident — apply-fix then
+      // recovers the real open incident by service, so no fake id is passed.
+      for (let i = 0; i < 12; i++) {
+        await new Promise((r) => setTimeout(r, 2500));
+        try {
+          const vs = await api.verdicts({ limit: 10 });
+          const hit = (vs.verdicts ?? []).some(
+            (v) => normService(v.affected_service ?? '') === normService(scenario.service),
+          );
+          if (hit) break;
+        } catch {
+          /* keep waiting */
+        }
+      }
+      // 1. Apply the fix on the REAL incident (recovered by service, not a canned id).
+      setState('apply');
+      const res = await api.applyRcaFix(
+        fix.flag,
+        fix.variant ?? 'off',
+        fix.action_type ?? 'set_flag',
+        'Approve the RCA fix step (1st of 3 HITL approvals).',
+        { service: scenario.service, rca_verdict: b.rca_verdict, timeout_seconds: 600 },
+      );
+      setApplyId(res.approval_id);
+    } catch (e) {
+      fail(1, e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // 1st HITL — apply the fix.
+  useEffect(() => {
+    if (state !== 'apply' || !applyId) return;
+    let alive = true;
+    const t = setInterval(async () => {
+      try {
+        const o = await api.hitlOutcome(applyId);
+        if (!alive) return;
+        if (o.status === 'executed') setState('close');
+        else if (o.status !== 'pending')
+          fail(1, `apply-fix ${o.status}${o.error ? `: ${o.error}` : ''}`);
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 2500);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [state, applyId]);
+
+  // 2nd HITL — the close-ticket card fires in the console; once the ticket is
+  // closed the verifier synthesizes a draft. Watch for it to appear.
+  useEffect(() => {
+    if (state !== 'close') return;
+    let alive = true;
+    const t = setInterval(async () => {
+      try {
+        const res = await api.listKb({ status: 'pending_review', limit: 50 });
+        if (!alive) return;
+        // Match the NEW draft for this service (stable fields, no clock math):
+        // not present at flow start, and same normalized service as the scenario.
+        const fresh = (res.articles ?? []).find(
+          (a) =>
+            !seenIds.current.has(a.id) &&
+            normService(a.service ?? '') === normService(scenario.service),
+        );
+        if (fresh) {
+          setDraftId(fresh.id);
+          setState('publish');
+          onChanged();
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 2500);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+    // onChanged intentionally omitted — refetch identity may change per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, scenario.service]);
+
+  // 3rd HITL — publish the KB article.
+  useEffect(() => {
+    if (state !== 'publish' || !publishId) return;
+    let alive = true;
+    const t = setInterval(async () => {
+      try {
+        const o = await api.kbPublishOutcome(publishId);
+        if (!alive) return;
+        if (o.status === 'published') {
+          setState('done');
+          onChanged();
+        } else if (o.status !== 'pending') {
+          fail(3, `publish ${o.status}${o.error ? `: ${o.error}` : ''}`);
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 2500);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, publishId]);
+
+  const requestPublish = async () => {
+    if (!draftId) return;
+    try {
+      const res = await api.publishKb(draftId);
+      setPublishId(res.approval_id);
+    } catch (e) {
+      fail(3, e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const pos =
+    state === 'inject' || state === 'apply'
+      ? 1
+      : state === 'close'
+        ? 2
+        : state === 'publish'
+          ? 3
+          : state === 'done'
+            ? 4
+            : 0;
+  const statusOf = (idx: number): 'done' | 'active' | 'pending' | 'error' => {
+    if (state === 'error') {
+      if (failedStep === idx) return 'error';
+      if (failedStep !== null && idx < failedStep) return 'done';
+      return 'pending';
+    }
+    if (state === 'done') return 'done';
+    if (idx < pos) return 'done';
+    if (idx === pos) return 'active';
+    return 'pending';
+  };
+
+  const running = state === 'inject' || state === 'apply' || state === 'close' || state === 'publish';
+
+  return (
+    <div className="rounded-lg border border-ink-200 bg-ink-50/50 p-3 dark:border-ink-700 dark:bg-ink-800/30">
+      <div className="flex flex-wrap items-center gap-3">
+        <ListChecks className="h-5 w-5 flex-shrink-0 text-accent" />
+        <span className="text-sm font-medium text-ink-700 dark:text-ink-200">
+          Run the full incident flow — 3 approvals
+        </span>
+        {state === 'idle' || state === 'error' ? (
+          <button
+            onClick={start}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-hover"
+          >
+            <Play className="h-4 w-4" />
+            {state === 'error' ? 'Restart flow' : 'Run full flow'}
+          </button>
+        ) : (
+          <button
+            onClick={reset}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-sm text-ink-600 hover:bg-ink-100 dark:border-ink-700 dark:text-ink-300 dark:hover:bg-ink-800"
+          >
+            Cancel
+          </button>
+        )}
+        {state === 'done' && (
+          <span className="inline-flex items-center gap-1 text-sm font-medium text-emerald-600 dark:text-emerald-400">
+            <CheckCircle2 className="h-4 w-4" /> Published — all 3 approvals granted
+          </span>
+        )}
+        <a
+          href="/hitl"
+          target="_blank"
+          rel="noreferrer"
+          className="ml-auto inline-flex items-center gap-1 text-xs text-accent hover:underline"
+        >
+          <Gavel className="h-3.5 w-3.5" /> HITL console <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+
+      <ol className="mt-3 space-y-2">
+        <FlowStepRow
+          n={1}
+          status={statusOf(1)}
+          title="Apply fix"
+          cap="rca.fix_step.execute"
+          hint={
+            state === 'inject'
+              ? 'Injecting the failure & waiting for triage to open the ticket…'
+              : 'Approve the fix-step card in the HITL console.'
+          }
+        />
+        <FlowStepRow
+          n={2}
+          status={statusOf(2)}
+          title="Close ticket"
+          cap="itsm.ticket.close"
+          hint="Approve the “close ticket?” card; the verifier then synthesizes the draft."
+        />
+        <FlowStepRow
+          n={3}
+          status={statusOf(3)}
+          title="Publish KB article"
+          cap="knowledge.publish"
+          hint={state === 'publish' && !publishId ? undefined : 'Approve the publish card in the HITL console.'}
+        >
+          {state === 'publish' && !publishId && (
+            <button
+              onClick={requestPublish}
+              className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover"
+            >
+              <Gavel className="h-3.5 w-3.5" /> Request publish approval
+            </button>
+          )}
+        </FlowStepRow>
+      </ol>
+
+      {err && <p className="mt-2 text-sm text-red-500">{err}</p>}
+      {running && (
+        <p className="mt-2 text-[11px] text-ink-400 dark:text-ink-500">
+          This runs the real pipeline: it injects the failure, triage opens a real ServiceNow
+          ticket, and each step is a Required HITL approval. Needs the cluster + ServiceNow up. If
+          the close step stalls, the verifier hasn’t seen recovery yet (or no ticket opened) — give
+          it a moment, or use “Synthesize offline” below.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FlowStepRow({
+  n,
+  status,
+  title,
+  cap,
+  hint,
+  children,
+}: {
+  n: number;
+  status: 'done' | 'active' | 'pending' | 'error';
+  title: string;
+  cap: string;
+  hint?: string;
+  children?: ReactNode;
+}) {
+  const Icon =
+    status === 'done'
+      ? CheckCircle2
+      : status === 'error'
+        ? XCircle
+        : status === 'active'
+          ? Loader2
+          : Clock;
+  const tone =
+    status === 'done'
+      ? 'text-emerald-600 dark:text-emerald-400'
+      : status === 'error'
+        ? 'text-red-500'
+        : status === 'active'
+          ? 'text-accent'
+          : 'text-ink-400 dark:text-ink-500';
+  return (
+    <li className="flex items-start gap-2 text-sm">
+      <Icon className={clsx('mt-0.5 h-4 w-4 flex-shrink-0', tone, status === 'active' && 'animate-spin')} />
+      <div>
+        <span className="font-medium text-ink-700 dark:text-ink-200">
+          {n}. {title}
+        </span>{' '}
+        <span className="font-mono text-[11px] text-ink-400 dark:text-ink-500">{cap}</span>
+        {status === 'active' && hint && <p className="text-xs text-ink-500 dark:text-ink-400">{hint}</p>}
+        {children}
+      </div>
+    </li>
+  );
+}
+
 export default function Knowledge() {
   const list = useFetch(() => api.listKb({ limit: 50 }), { intervalMs: 5_000, cacheKey: 'kb-list' });
   const [scenario, setScenario] = useState(SCENARIOS[0].key);
@@ -133,6 +485,8 @@ export default function Knowledge() {
   const [synthError, setSynthError] = useState<string | null>(null);
   const [dayFilter, setDayFilter] = useState('');  // "YYYY-MM-DD"
 
+  const sc = SCENARIOS.find((s) => s.key === scenario) ?? SCENARIOS[0];
+
   const articles = list.data?.articles ?? [];
   const dateFiltered = dayFilter
     ? articles.filter((a) => (a.created_at ?? '').slice(0, 10) === dayFilter)
@@ -140,11 +494,11 @@ export default function Knowledge() {
   const filterActive = Boolean(dayFilter);
 
   async function onSynthesize() {
-    const sc = SCENARIOS.find((s) => s.key === scenario)!;
     setSynthesizing(true);
     setSynthError(null);
     try {
-      const res = await api.synthesize(sc.bundle());
+      // The offline path explicitly bypasses the ticket-closed gate.
+      const res = await api.synthesize(sc.bundle(), true);
       setLastResult(res);
       await list.refetch();
     } catch (e) {
@@ -192,11 +546,11 @@ export default function Knowledge() {
 
       {/* Synthesize panel */}
       <div className="card">
-        <div className="card-body space-y-3">
+        <div className="card-body space-y-4">
           <div className="flex flex-wrap items-center gap-3">
             <Sparkles className="h-5 w-5 flex-shrink-0 text-accent" />
             <span className="text-sm font-medium text-ink-700 dark:text-ink-200">
-              Synthesize a resolved incident
+              Resolved incident
             </span>
             <select
               value={scenario}
@@ -207,14 +561,6 @@ export default function Knowledge() {
                 <option key={s.key} value={s.key}>{s.label}</option>
               ))}
             </select>
-            <button
-              onClick={onSynthesize}
-              disabled={synthesizing || clearing}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Sparkles className="h-4 w-4" />
-              {synthesizing ? 'Synthesizing…' : 'Synthesize'}
-            </button>
             <div className="flex-1" />
             <button
               onClick={onClear}
@@ -226,8 +572,29 @@ export default function Knowledge() {
               {clearing ? 'Clearing…' : 'Clear'}
             </button>
           </div>
-          {synthError && <p className="text-sm text-red-500">{synthError}</p>}
-          {lastResult && <ResultBanner res={lastResult} />}
+
+          {/* Primary path — the real 3-approval lifecycle */}
+          <FullFlowRunner scenario={sc} onChanged={list.refetch} />
+
+          {/* Secondary path — offline draft, skips the first two approvals */}
+          <div className="space-y-2 border-t border-ink-200 pt-3 dark:border-ink-700">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={onSynthesize}
+                disabled={synthesizing || clearing}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-sm text-ink-600 transition-colors hover:bg-ink-100 hover:text-ink-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-700 dark:text-ink-300 dark:hover:bg-ink-800 dark:hover:text-ink-50"
+              >
+                <Sparkles className="h-4 w-4" />
+                {synthesizing ? 'Synthesizing…' : 'Synthesize offline'}
+              </button>
+              <span className="text-xs text-ink-400 dark:text-ink-500">
+                Offline demo — drafts directly, skipping the remediation (1st HITL) and
+                close-ticket (2nd HITL) approvals; only the publish approval remains.
+              </span>
+            </div>
+            {synthError && <p className="text-sm text-red-500">{synthError}</p>}
+            {lastResult && <ResultBanner res={lastResult} />}
+          </div>
         </div>
       </div>
 

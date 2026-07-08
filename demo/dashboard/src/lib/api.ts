@@ -322,8 +322,15 @@ export const api = {
 
   // ─── Knowledge Synthesizer (PRS-007) ──────────────────────────────────────
   // Synthesize a resolved-incident bundle → postmortem + runbook + KB draft.
-  synthesize: (bundle: Record<string, unknown>) =>
-    unwrap<SynthesisResult>(http.post('/api/synthesize', bundle)),
+  // Gated by default: the backend refuses to draft unless the incident's
+  // ServiceNow ticket is Resolved/Closed (the 2nd HITL close approval must have
+  // run). Pass bypassTicketCheck for an offline demo with no live ServiceNow.
+  synthesize: (bundle: Record<string, unknown>, bypassTicketCheck = false) =>
+    unwrap<SynthesisResult>(
+      http.post('/api/synthesize', bundle, {
+        params: { bypass_ticket_check: bypassTicketCheck },
+      }),
+    ),
   listKb: (params?: { status?: string; service?: string; limit?: number }) =>
     unwrap<KbListResponse>(http.get('/api/kb', { params })),
   getKb: (id: number) => unwrap<KBArticleRow>(http.get(`/api/kb/${id}`)),

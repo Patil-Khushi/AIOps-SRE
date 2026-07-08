@@ -50,17 +50,97 @@ _PUBLISH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kb-publish
 _PUBLISH_OUTCOMES: dict[str, dict[str, Any]] = {}
 
 
+# ─── ticket-closed guard ──────────────────────────────────────────────────────
+# Synthesis is the LAST step of the incident lifecycle — it must only run once
+# the incident's ServiceNow ticket has been CLOSED (the 2nd HITL "close ticket?"
+# approval, raised by the Resolution Verifier). In the real pipeline that
+# ordering is guaranteed by the caller (verifier close branch / SNOW watcher's
+# state 6,7 query). The direct ``POST /api/synthesize`` route has no such
+# guarantee, so it enforces the invariant here — otherwise a draft can be created
+# for an OPEN incident, skipping the remediation + close-ticket approvals and
+# leaving only the publish gate. Opt out with ``bypass_ticket_check=true`` for an
+# offline demo with no live ServiceNow (loudly logged).
+
+
+def _extract_incident_id(bundle: dict[str, Any]) -> str:
+    """Best-effort incident id from a synthesis bundle (mirrors the agent's
+    ``_resolve_incident_id`` for the fields ServiceNow can be queried by)."""
+    if bundle.get("incident_id"):
+        return str(bundle["incident_id"])
+    ticket = bundle.get("ticket") if isinstance(bundle.get("ticket"), dict) else {}
+    for key in ("external_id", "id", "number"):
+        if ticket and ticket.get(key):
+            return str(ticket[key])
+    return ""
+
+
+def _ticket_is_closed(incident_id: str) -> bool | None:
+    """Tri-state closure check via the ITSM seam.
+
+    ``True``  — ticket confirmed Resolved(6)/Closed(7).
+    ``False`` — ticket confirmed still open.
+    ``None``  — indeterminate (no id, not found, or ServiceNow unavailable).
+
+    The route treats anything other than ``True`` as "not closed" (fail-closed),
+    so an unreachable ServiceNow can't be used to slip an open ticket through.
+    """
+    if not incident_id:
+        return None
+    try:
+        from aiops.tools import get_registry
+
+        res = get_registry().call("itsm.incident.get", number=incident_id, fields="number,state")
+        if not getattr(res, "ok", False):
+            return None
+        rec = (getattr(res, "data", None) or {}).get("incident") or {}
+        state = str(rec.get("state") or "")
+        if not state:
+            return None
+        return state in {"6", "7"}
+    except Exception:
+        logger.exception("ticket-closed check failed for incident %s", incident_id)
+        return None
+
+
 # ─── synthesize ──────────────────────────────────────────────────────────────
 
 
 @router.post("/api/synthesize", response_model=None)
-async def synthesize_endpoint(bundle: dict[str, Any]) -> dict[str, Any]:
+async def synthesize_endpoint(
+    bundle: dict[str, Any], bypass_ticket_check: bool = False
+) -> dict[str, Any]:
     """Synthesize knowledge from a resolved-incident bundle.
 
     Body: ``{"triage_verdict": {...}, "rca_verdict": {...}, ...}``. Returns the
     SynthesisResult (postmortem + runbook suggestion + KB article persisted as
     ``pending_review``). Synthesis is sync + blocking (LLM), so we run it on a
-    thread to keep the event loop free; failures are isolated to this request."""
+    thread to keep the event loop free; failures are isolated to this request.
+
+    By default this refuses to draft unless the incident's ServiceNow ticket is
+    Resolved/Closed (the 2nd HITL close gate must have run first). Pass
+    ``?bypass_ticket_check=true`` for an offline demo with no live ServiceNow —
+    that skips the remediation, close-ticket, and ticket-closed checks and leaves
+    only the publish approval."""
+    if bypass_ticket_check:
+        logger.warning(
+            "synthesize: ticket-closed check BYPASSED for incident=%r — offline/demo "
+            "path, skipping the remediation + close-ticket approvals",
+            _extract_incident_id(bundle),
+        )
+    else:
+        incident_id = _extract_incident_id(bundle)
+        if _ticket_is_closed(incident_id) is not True:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"refusing to synthesize: incident {incident_id or '(none)'} is not "
+                    "Resolved/Closed in ServiceNow — the close-ticket approval (2nd HITL) "
+                    "hasn't run. Drive the fix → verify → close flow first (apply-fix → "
+                    "'close ticket?' card), or resubmit with bypass_ticket_check=true for "
+                    "an offline demo (which skips the remediation, close-ticket, and "
+                    "ticket-closed checks)."
+                ),
+            )
     try:
         return await asyncio.to_thread(synthesize_run, bundle)
     except Exception as exc:

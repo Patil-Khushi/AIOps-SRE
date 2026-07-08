@@ -28,6 +28,9 @@ def client(monkeypatch, tmp_path):
     state_pkg.reset_engine_for_tests()
     state_pkg.init_db()
     get_gate().reset_approver()
+    # These tests exercise synthesis MECHANICS, not the ticket-closed gate, so
+    # stub the gate to "closed". Gate-specific tests re-override this below.
+    monkeypatch.setattr("demo.ui.knowledge_routes._ticket_is_closed", lambda incident_id: True)
     app = FastAPI()
     app.include_router(router)
     with TestClient(app) as c:
@@ -114,6 +117,33 @@ def test_publish_succeeds_with_approver(client):
 
 def test_publish_missing_article_404(client):
     assert client.post("/api/kb/999999/publish", json={}).status_code == 404
+
+
+# ─── ticket-closed guard (the incident must be Closed before synthesis) ────────
+
+
+def test_synthesize_blocked_when_ticket_open(client, monkeypatch):
+    """Open ticket → 409, and no draft is created (skips the close-ticket gate)."""
+    monkeypatch.setattr("demo.ui.knowledge_routes._ticket_is_closed", lambda _id: False)
+    r = client.post("/api/synthesize", json=_bundle())
+    assert r.status_code == 409
+    assert "not Resolved/Closed" in r.json()["detail"]
+    assert client.get("/api/kb").json()["count"] == 0
+
+
+def test_synthesize_blocked_when_ticket_unknown(client, monkeypatch):
+    """Indeterminate (ServiceNow unreachable / ticket not found) → fail-closed."""
+    monkeypatch.setattr("demo.ui.knowledge_routes._ticket_is_closed", lambda _id: None)
+    assert client.post("/api/synthesize", json=_bundle()).status_code == 409
+    assert client.get("/api/kb").json()["count"] == 0
+
+
+def test_synthesize_bypass_allows_open_ticket(client, monkeypatch):
+    """Explicit bypass (offline demo) drafts even for an open ticket."""
+    monkeypatch.setattr("demo.ui.knowledge_routes._ticket_is_closed", lambda _id: False)
+    r = client.post("/api/synthesize", json=_bundle(), params={"bypass_ticket_check": "true"})
+    assert r.status_code == 200
+    assert r.json()["kb_article_id"] is not None
 
 
 def _poll(client, approval_id: str, tries: int = 60) -> dict:
