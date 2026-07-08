@@ -52,10 +52,35 @@ export interface TicketRecord {
   audit_metadata: string[];
 }
 
+// RA-002 Incident Classifier output — now produced by the Alert Triage agent
+// as part of the same run (mirrors agents/alert_triage/classifier_models.py).
+export type IncidentType =
+  | 'infrastructure'
+  | 'application'
+  | 'network'
+  | 'external_dependency'
+  | 'change_related';
+
+export interface Classification {
+  incident_type: IncidentType;
+  confidence: number;
+  rationale: string;
+  tags: string[];
+  probable_root_cause: string;
+  routing_team: string;
+  on_call_engineer?: string | null;
+  recommended_runbook?: string | null;
+  dependencies: string[];
+  similar_incident_ids: string[];
+}
+
 // Combined response from POST /api/triage and each entry in POST /api/triage/live.
+// The Alert Triage agent triages AND classifies, so the bundle carries both the
+// verdict and the classification.
 export interface TriageResult {
   verdict: TriageVerdict;
   ticket: TicketRecord;
+  classification?: Classification | null;
 }
 
 // RCA Agent (PRS-008 ★) — mirrors agents/rca_agent/models.py.

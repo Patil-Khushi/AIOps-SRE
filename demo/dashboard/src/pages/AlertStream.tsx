@@ -6,13 +6,25 @@ import { SeverityBadge } from '@/components/SeverityBadge';
 import { EmptyState } from '@/components/states';
 import { api } from '@/lib/api';
 import { setConsoleAgent } from '@/lib/consoleScope';
-import type { Severity, PrometheusAlert, TriageVerdict } from '@/types/api';
+import type { Severity, PrometheusAlert, TriageVerdict, Classification, IncidentType } from '@/types/api';
 import { timeAgo, clsx } from '@/lib/format';
 import { makeCache } from '@/lib/persistentCache';
 
 // localStorage-backed: verdict survives page reloads and new tabs so the LLM
-// pipeline isn't re-run when the same alert is clicked again.
+// pipeline isn't re-run when the same alert is clicked again. The Alert Triage
+// agent also classifies the incident, so its Classification is cached alongside
+// the verdict under a sibling namespace.
 const triageCache = makeCache<TriageVerdict>('triage');
+const classCache = makeCache<Classification>('triage-classification');
+
+// Incident-type pill colours — readable on both the light and dark console themes.
+const TYPE_PILL: Record<IncidentType, string> = {
+  infrastructure:      'bg-sky-500/15     text-sky-600     dark:text-sky-300',
+  application:         'bg-violet-500/15  text-violet-600  dark:text-violet-300',
+  network:             'bg-amber-500/15   text-amber-600   dark:text-amber-300',
+  external_dependency: 'bg-rose-500/15    text-rose-600    dark:text-rose-300',
+  change_related:      'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
+};
 
 function inferSeverity(hint: string | null | undefined): Severity {
   const s = (hint || '').toLowerCase();
@@ -34,6 +46,7 @@ export default function AlertStream() {
   const [sortKey, setSortKey] = useState<SortKey>('severity');
   const [picked, setPicked] = useState<PrometheusAlert | null>(null);
   const [verdict, setVerdict] = useState<TriageVerdict | null>(null);
+  const [classification, setClassification] = useState<Classification | null>(null);
   const [triageBusy, setTriageBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,16 +78,24 @@ export default function AlertStream() {
       const cached = triageCache.get(alert.alert_id);
       if (cached) {
         setVerdict(cached);
+        setClassification(classCache.get(alert.alert_id) ?? null);
         return;
       }
     }
 
     setVerdict(null);
+    setClassification(null);
     setTriageBusy(true);
     try {
       const result = await api.triage(alert);
       triageCache.set(alert.alert_id, result.verdict);
       setVerdict(result.verdict);
+      // The Alert Triage agent classifies as part of the same run — surface it
+      // on the verdict rather than a separate page.
+      const cls = result.classification ?? null;
+      setClassification(cls);
+      if (cls) classCache.set(alert.alert_id, cls);
+      else classCache.delete(alert.alert_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -85,6 +106,7 @@ export default function AlertStream() {
   const reRunTriage = () => {
     if (!picked) return;
     triageCache.delete(picked.alert_id);
+    classCache.delete(picked.alert_id);
     runTriage(picked, true);
   };
 
@@ -222,7 +244,7 @@ export default function AlertStream() {
               {error && <p className="text-sm text-bad">{error}</p>}
               {verdict && !triageBusy && (
                 <>
-                  <VerdictView v={verdict} />
+                  <VerdictView v={verdict} c={classification} />
                   <button
                     type="button"
                     onClick={generateRca}
@@ -246,7 +268,7 @@ export default function AlertStream() {
   );
 }
 
-function VerdictView({ v }: { v: TriageVerdict }) {
+function VerdictView({ v, c }: { v: TriageVerdict; c?: Classification | null }) {
   return (
     <dl className="space-y-2.5 text-sm">
       <Row k="Severity">
@@ -255,6 +277,19 @@ function VerdictView({ v }: { v: TriageVerdict }) {
           confidence {(v.confidence_score * 100).toFixed(0)}%
         </span>
       </Row>
+      {c && (
+        <Row k="Type">
+          <span className={clsx(
+            'rounded-md px-2 py-0.5 text-xs font-semibold capitalize',
+            TYPE_PILL[c.incident_type] ?? 'bg-ink-200 text-ink-700 dark:bg-ink-800 dark:text-ink-200',
+          )}>
+            {c.incident_type.replace(/_/g, ' ')}
+          </span>
+          <span className="ml-2 font-mono text-xs text-ink-500 dark:text-ink-400">
+            confidence {(c.confidence * 100).toFixed(0)}%
+          </span>
+        </Row>
+      )}
       <Row k="Service">
         <span className="font-mono text-ink-900 dark:text-ink-50">{v.affected_service}</span>
         {v.customer_facing != null && (

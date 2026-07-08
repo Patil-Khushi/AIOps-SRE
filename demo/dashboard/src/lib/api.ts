@@ -147,76 +147,6 @@ export interface WarRoomMetrics {
   checked_at: string;
 }
 
-// ── Incident Classifier shapes (classification half of Alert Triage) ──
-// Backed by /api/classifier/* — the classification step now lives inside the
-// Alert Triage agent, but keeps its own metrics + persisted-rows surface.
-export type IncidentType =
-  | 'infrastructure'
-  | 'application'
-  | 'network'
-  | 'external_dependency'
-  | 'change_related';
-
-export interface ClassifierSimilarIncident {
-  incident_key: string;
-  incident_type: string;
-  similarity: number;
-  summary?: string;
-}
-export interface ClassifierAuditMetadata {
-  created_at?: string | null;
-  created_by: string;
-  decision_trace: string[];
-  similar_incidents: ClassifierSimilarIncident[];
-}
-export interface PersistedClassification {
-  id: number;
-  incident_type: IncidentType;
-  confidence: number;
-  rationale: string;
-  tags: string[];
-  probable_root_cause: string;
-  routing_team: string;
-  on_call_engineer?: string | null;
-  recommended_runbook?: string | null;
-  dependencies: string[];
-  similar_incident_ids: string[];
-  verdict_id?: number | null;
-  audit_metadata: ClassifierAuditMetadata;
-}
-export interface ClassifierEvalCheck {
-  check: string;
-  passed: boolean;
-  detail: string;
-}
-export interface ClassifierEvalCase {
-  case_id: string;
-  passed: boolean;
-  incident_type_ok: boolean;
-  duration_ms: number;
-  checks: ClassifierEvalCheck[];
-}
-export interface ClassifierEvalResult {
-  total_cases: number;
-  passed_cases: number;
-  accuracy_pct: number;
-  misroute_cases: number;
-  misroute_pct: number;
-  ran_at: string;
-  per_case: ClassifierEvalCase[];
-}
-export interface ClassifierMetricsResponse {
-  eval: ClassifierEvalResult | null;
-  live: { total_classifications: number; avg_confidence: number | null };
-  running: boolean;
-  llm_provider: string | null;
-  checked_at: string;
-}
-export interface ClassificationsListResponse {
-  count: number;
-  classifications: PersistedClassification[];
-}
-
 export const api = {
   health:      () => unwrap<HealthResponse>(http.get('/api/health')),
   liveAlerts:  () => unwrap<LiveAlertsResponse>(http.get('/api/live-alerts')),
@@ -420,21 +350,5 @@ export const api = {
   warRoomSetAttendee: (id: string, handle: string, attendance: string) =>
     unwrap<{ id: string; handle: string; attendance: string }>(
       http.post(`/api/war-room/${id}/attendee`, { handle, attendance }),
-    ),
-
-  // ── Incident Classifier (classification half of Alert Triage) ──
-  classifierMetrics: () =>
-    unwrap<ClassifierMetricsResponse>(http.get('/api/classifier/metrics')),
-  classifications: (limit = 50, incidentType?: string) =>
-    unwrap<ClassificationsListResponse>(
-      http.get('/api/classifier/classifications', {
-        params: { limit, incident_type: incidentType },
-      }),
-    ),
-  // Eval runs ~5 LLM calls back-to-back; override the default 90 s timeout so an
-  // Azure GPT-5 cold-start doesn't abort the run.
-  classifierEvaluate: () =>
-    unwrap<ClassifierMetricsResponse>(
-      http.post('/api/classifier/evaluate', null, { timeout: 300_000 }),
     ),
 };

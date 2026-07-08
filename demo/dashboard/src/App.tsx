@@ -8,7 +8,6 @@ import AgentDetail from '@/pages/AgentDetail';
 import SreOps from '@/pages/SreOps';
 import Integrations from '@/pages/Integrations';
 import AlertStream from '@/pages/AlertStream';
-import Classifier from '@/pages/Classifier';
 import Approvals from '@/pages/Approvals';
 import NotificationAssembler from '@/pages/NotificationAssembler';
 import Reasoning from '@/pages/Reasoning';
@@ -41,7 +40,6 @@ export default function App() {
       <Route path="/console" element={<Layout />}>
         <Route index element={<Overview />} />
         <Route path="alerts" element={<AlertStream />} />
-        <Route path="classifier" element={<Classifier />} />
         <Route path="rca" element={<RcaConsole />} />
         <Route path="incident-commander" element={<IncidentCommander />} />
         <Route path="approvals" element={<Approvals />} />
