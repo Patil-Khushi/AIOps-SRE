@@ -12,6 +12,7 @@ import Approvals from '@/pages/Approvals';
 import NotificationAssembler from '@/pages/NotificationAssembler';
 import Reasoning from '@/pages/Reasoning';
 import RcaConsole from '@/pages/RcaConsole';
+import LogCorrelation from '@/pages/LogCorrelation';
 import IncidentCommander from '@/pages/IncidentCommander';
 import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
@@ -41,6 +42,7 @@ export default function App() {
         <Route index element={<Overview />} />
         <Route path="alerts" element={<AlertStream />} />
         <Route path="rca" element={<RcaConsole />} />
+        <Route path="log-correlation" element={<LogCorrelation />} />
         <Route path="incident-commander" element={<IncidentCommander />} />
         <Route path="approvals" element={<Approvals />} />
         <Route path="notifications" element={<NotificationAssembler />} />

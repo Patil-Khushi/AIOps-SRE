@@ -18,6 +18,45 @@ default:
     value: deployment.environment=poc
 opensearch:
   enabled: false
+
+# RA-007 / #220: free node memory for Loki. The Rancher Desktop k3s node runs
+# ~92% committed with the full demo, and Loki's single-binary pod won't
+# schedule without headroom. image-provider (nginx, 50 Mi) and fraud-detection
+# (JVM, 300 Mi) are the cheapest cuts that don't touch any failure scenario —
+# image-provider only serves storefront product images (cosmetic 404s), and
+# fraud-detection is a leaf Kafka consumer nothing else depends on. Frees
+# ~350 Mi, enough for the lean Loki in infra/loki-values.yaml.
+components:
+  image-provider:
+    enabled: false
+  fraud-detection:
+    enabled: false
+
+# RA-007 / #220: route the Collector logs pipeline to Loki's native OTLP
+# ingest. The chart's default logs exporter is `opensearch`, but OpenSearch is
+# disabled above (too heavy for 16 GB laptops), so logs currently dead-end.
+# We add an otlphttp exporter targeting Loki (http://loki:3100/otlp → Loki
+# appends /v1/logs) and replace the logs pipeline's exporter list so it no
+# longer references the dead opensearch backend. The Loki service resolves
+# in-cluster as `loki` (release name) in this namespace — see
+# infra/bootstrap.ps1. `service.name` resource attributes become Loki
+# `service_name` labels, which is what the loki provider queries on.
+#
+# NOTE: config maps deep-merge but LISTS are REPLACED by the collector
+# sub-chart, so `pipelines.logs.exporters` below fully supersedes the chart
+# default `[opensearch, debug]` — the opensearch exporter stays DEFINED (map
+# merge keeps it) but UNREFERENCED, which the collector tolerates.
+opentelemetry-collector:
+  config:
+    exporters:
+      otlphttp/loki:
+        # http:// already means no TLS; a tls.insecure flag only has meaning for
+        # https:// endpoints, so the scheme alone documents the intent here.
+        endpoint: http://loki:3100/otlp
+    service:
+      pipelines:
+        logs:
+          exporters: [otlphttp/loki, debug]
 # DEMO-8 / #60: server-side panel rendering so RA-003 Auto-Ticketing can attach
 # the breaching Grafana panel as a PNG to the ServiceNow incident (a triager
 # sees the graph without leaving the ticket). Enabled as a SEPARATE renderer pod

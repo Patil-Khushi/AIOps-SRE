@@ -1,0 +1,105 @@
+# Helm values for grafana/loki — RA-007 Log Correlation logs backend (#220).
+# Chart: grafana/loki (tested against 6.24.0, appVersion 3.x).
+#
+# Single-binary, filesystem storage, auth disabled — the same "runs anywhere,
+# no external deps" posture as the OTel demo's in-memory Jaeger. Everything
+# optional (gateway, memcached caches, canary, self-monitoring) is turned OFF
+# because the Rancher Desktop k3s node is memory-constrained (~92% committed
+# before Loki); we free ~350 Mi by cutting image-provider + fraud-detection in
+# demo/otel-demo/values.yaml, and Loki fits in what's left.
+#
+# Installed into the otel-demo namespace so the OTel Collector reaches it as
+# http://loki:3100 (see infra/bootstrap.ps1). Loki 3.x exposes a native OTLP
+# ingest at /otlp/v1/logs and auto-detects log levels (detected_level), which
+# the loki provider (aiops/tools/observability/loki.py) promotes to `level`.
+
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    # Single instance — the chart default of 3 would wedge with one replica.
+    replication_factor: 1
+  storage:
+    type: filesystem
+  # A real (non-test) schema is required; v13 + tsdb is what structured
+  # metadata (OTLP) needs.
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+  limits_config:
+    # Required for OTLP structured metadata (detected_level rides on this).
+    allow_structured_metadata: true
+    volume_enabled: true
+    # The demo emits current logs; keep the default reject-old window generous
+    # so a paused cluster's backlog still ingests on resume.
+    reject_old_samples: false
+    # Policy only — inert until the compactor below is told to enforce it.
+    retention_period: 72h
+  # In Loki 3.x limits_config.retention_period does nothing unless the compactor
+  # enforces it; without this the 2Gi PVC accrues data indefinitely across demo
+  # sessions. delete_request_store is mandatory when retention is enabled (Loki
+  # refuses to start otherwise). The single-binary pod already runs the compactor.
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+
+# One StatefulSet pod. A small PVC gives Loki a writable /var/loki (its
+# path_prefix): the chart runs the container with a read-only root filesystem,
+# so with persistence off there is nowhere for Loki to create its data dir and
+# it crashloops on `mkdir /var/loki: read-only file system`. k3s ships the
+# local-path provisioner as the default StorageClass, so this binds instantly
+# with no cloud volume.
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      # Cap CPU so a log burst can't raise scheduling latency for neighbouring
+      # pods on the ~92%-committed node; generous for the demo's log volume.
+      cpu: 500m
+      memory: 300Mi
+
+# Zero out the SimpleScalable-mode components — SingleBinary uses none of them.
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+# Strip everything optional to fit the 6 GB VM.
+gateway:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+monitoring:
+  selfMonitoring:
+    enabled: false
+    grafanaAgent:
+      installOperator: false
+  serviceMonitor:
+    enabled: false
+  rules:
+    enabled: false
+  dashboards:
+    enabled: false
+  alerts:
+    enabled: false

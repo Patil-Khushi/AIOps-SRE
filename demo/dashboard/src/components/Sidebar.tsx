@@ -6,6 +6,7 @@ import {
   Bell,
   Brain,
   Sparkles,
+  Layers,
   Siren,
   Gavel,
   Network,
@@ -36,6 +37,7 @@ const ITEMS: Record<string, NavItem> = {
   '/console/alerts':        { to: '/console/alerts',        label: 'Alert Stream',  icon: BellRing,        end: false },
   '/console/reasoning':     { to: '/console/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
   '/console/rca':           { to: '/console/rca',           label: 'RCA Agent',     icon: Sparkles,        end: false },
+  '/console/log-correlation': { to: '/console/log-correlation', label: 'Log Correlation', icon: Layers,     end: false },
   '/console/incident-commander': { to: '/console/incident-commander', label: 'Incident Commander', icon: Siren, end: false },
   '/console/war-room':      { to: '/console/war-room',      label: 'War Room',      icon: Users,           end: false },
   '/console/notifications': { to: '/console/notifications', label: 'Notifications', icon: Bell,            end: false },
@@ -80,7 +82,7 @@ const AGENT_SURFACES: Record<string, string[]> = {
 };
 
 const DEFAULT_SURFACES = [
-  '/console', '/console/alerts', '/console/reasoning', '/console/rca', '/console/notifications', ...SHARED_TAIL,
+  '/console', '/console/alerts', '/console/reasoning', '/console/rca', '/console/log-correlation', '/console/notifications', ...SHARED_TAIL,
 ];
 
 export default function Sidebar() {

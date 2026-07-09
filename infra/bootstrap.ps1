@@ -12,6 +12,7 @@
 param(
     [string]$Namespace = 'otel-demo',
     [string]$ChartVersion = '',                # empty = latest
+    [string]$LokiChartVersion = '6.24.0',      # grafana/loki chart pin (RA-007 / #220)
     [string]$Context     = 'rancher-desktop',  # set to '' to use current context
     [switch]$Force                             # skip the already-healthy check and run helm upgrade unconditionally
 )
@@ -62,8 +63,9 @@ if ($probeExit -ne 0) {
     exit 1
 }
 
-Write-Host "==> Adding OpenTelemetry Helm repo"
+Write-Host "==> Adding OpenTelemetry + Grafana Helm repos"
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts 2>$null | Out-Null
+helm repo add grafana https://grafana.github.io/helm-charts 2>$null | Out-Null
 helm repo update | Out-Null
 
 # Skip the install if the demo is already healthy — keeps re-runs fast. The
@@ -113,6 +115,32 @@ if ($alreadyHealthy) {
 Write-Host "==> Waiting for frontend pod to be Ready"
 kubectl -n $Namespace wait --for=condition=Ready pod -l app.kubernetes.io/component=frontend --timeout=300s
 
+# RA-007 / #220: deploy Loki as the Log Correlation logs backend. Runs AFTER the
+# otel-demo upgrade above so the image-provider/fraud-detection cuts have already
+# freed node memory for Loki's single-binary pod. Idempotent (upgrade --install).
+# Pinned chart version so the values schema in infra/loki-values.yaml stays valid.
+Write-Host "==> Installing Loki (single-binary) into namespace '$Namespace'"
+$lokiValues = Join-Path $repoRoot 'infra/loki-values.yaml'
+$lokiArgs = @(
+    'upgrade', '--install', 'loki', 'grafana/loki',
+    '--namespace', $Namespace,
+    '--version', $LokiChartVersion,
+    '--values', $lokiValues,
+    '--wait', '--timeout', '10m'
+)
+helm @lokiArgs
+# Write-Error is non-terminating in PowerShell; without the explicit exit the
+# script would print "Done." with exit 0 even when Loki never came up, and
+# observability.logs.query would silently fall back to synthetic. Match the
+# fail-fast contract of the otel-demo install guard above.
+if ($LASTEXITCODE -ne 0) { Write-Error 'Loki helm install failed.'; exit 1 }
+
+Write-Host "==> Applying the Loki Grafana datasource (Explore access)"
+# -n $Namespace so a parameterised install lands the datasource in the SAME
+# namespace as Loki + Grafana (the ConfigMap YAML intentionally omits a
+# namespace); otherwise Grafana's sidecar never sees it and Explore shows no Loki.
+kubectl apply -n $Namespace -f (Join-Path $repoRoot 'infra/loki-grafana-datasource.yaml') | Out-Null
+
 Write-Host ""
 Write-Host "==> Done." -ForegroundColor Green
 Write-Host ""
@@ -123,6 +151,7 @@ Write-Host "Then browse:"
 Write-Host "    Frontend:  http://localhost:8080/"
 Write-Host "    Grafana:   http://localhost:8080/grafana/   (admin / admin by default)"
 Write-Host "    Jaeger:    http://localhost:8080/jaeger/ui/"
+Write-Host "    Loki:      http://localhost:8080/grafana/explore  (pick the Loki datasource)"
 Write-Host ""
 Write-Host "Trigger a failure:"
 Write-Host "  uv run python -m demo.failure_injection.inject --list"

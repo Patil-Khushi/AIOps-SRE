@@ -131,6 +131,7 @@ Get-Job -Name 'pf-*' -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove
 $forwards = @(
     @{ Name = 'prometheus';     Svc = 'svc/prometheus';     LocalPort = 9090;  RemotePort = 9090  }
     @{ Name = 'jaeger';         Svc = 'svc/jaeger';         LocalPort = 16686; RemotePort = 16686 }
+    @{ Name = 'loki';           Svc = 'svc/loki';           LocalPort = 3100;  RemotePort = 3100  }
     @{ Name = 'frontend-proxy'; Svc = 'svc/frontend-proxy'; LocalPort = 8080;  RemotePort = 8080  }
 )
 foreach ($fwd in $forwards) {
@@ -360,6 +361,7 @@ Write-Host "  Jaeger UI:    http://localhost:8080/jaeger/ui/"
 Write-Host "  flagd UI:     http://localhost:8080/feature/"
 Write-Host "  Prometheus:   http://localhost:9090/"
 Write-Host "  Jaeger (raw): http://localhost:16686/"
+Write-Host "  Loki (raw):   http://localhost:3100/"
 Write-Host ''
 Write-Host "Manage background jobs:"
 Write-Host "  Get-Job -Name 'pf-*'                       # see what's running"

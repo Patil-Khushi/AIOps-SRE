@@ -60,7 +60,7 @@ import uuid
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any
@@ -103,6 +103,8 @@ from agents.alert_triage import (  # noqa: E402
 from agents.auto_healer_lite import ExecutionRequest  # noqa: E402
 from agents.auto_healer_lite import execute as auto_heal_execute  # noqa: E402
 from agents.incident_commander import command as incident_command  # noqa: E402
+from agents.log_correlation import CorrelationInput  # noqa: E402
+from agents.log_correlation import correlate as correlate_signals  # noqa: E402
 from agents.notification_assembler import (  # noqa: E402
     assemble_war_room,
     decide_war_room,
@@ -840,6 +842,66 @@ async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
         )
         raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
     return verdict.model_dump(mode="json")
+
+
+class CorrelateRequest(BaseModel):
+    service: str = Field(
+        ..., description="Affected service (e.g. 'product-catalog') to correlate signals for."
+    )
+    window_minutes: int = Field(
+        15,
+        ge=1,
+        le=1440,
+        description="Look-back window (minutes, ending now) used when start/end are omitted.",
+    )
+    start: str | None = Field(None, description="ISO-8601 window start; overrides window_minutes.")
+    end: str | None = Field(None, description="ISO-8601 window end; defaults to now (UTC).")
+    triage_verdict: dict[str, Any] | None = Field(
+        None, description="Optional upstream RA-001 verdict dict — enriches the evidence summary."
+    )
+    classification: dict[str, Any] | None = Field(
+        None, description="Optional upstream RA-002 classification dict."
+    )
+    topology: dict[str, list[str]] | None = Field(
+        None, description="Optional service -> [downstream deps] map for topology-aware suspects."
+    )
+
+
+@app.post("/api/correlate", response_model=None)
+async def correlate_endpoint(req: CorrelateRequest) -> dict[str, Any]:
+    """Run Log Correlation (RA-007) for a service + time window.
+
+    Body: ``{"service": "product-catalog", "window_minutes"?: 15, "start"?,
+    "end"?, "triage_verdict"?, "classification"?, "topology"?}``. Returns a
+    ``CorrelationResult`` — the correlated evidence pack (timeline, top
+    signatures, suspected components, confidence) plus ``audit_metadata`` whose
+    ``signal_source`` is ``live`` when the observability backends (Loki / Jaeger
+    / Prometheus) were reachable, or ``synthetic`` when they weren't.
+
+    Unlike the eval-harness ``run()`` shim, this does NOT force the synthetic
+    path — it attempts the live fan-out so the dashboard reflects real cluster
+    state. The agent is read-only (HITL None) and sync + blocking (parallel
+    fan-out + an LLM summary), so we wrap it in ``asyncio.to_thread``.
+    """
+    end = datetime.fromisoformat(req.end.replace("Z", "+00:00")) if req.end else datetime.now(UTC)
+    start = (
+        datetime.fromisoformat(req.start.replace("Z", "+00:00"))
+        if req.start
+        else end - timedelta(minutes=req.window_minutes)
+    )
+    try:
+        payload = CorrelationInput(
+            service=req.service,
+            window={"start": start.isoformat(), "end": end.isoformat()},
+            triage_verdict=req.triage_verdict,
+            classification=req.classification,
+            topology=req.topology,
+        )
+        result = await asyncio.to_thread(correlate_signals, payload)
+    except Exception as exc:
+        logger.exception("Log Correlation raised for %s", req.service)
+        raise HTTPException(status_code=500, detail=f"Correlation failed: {exc}") from exc
+    return result.model_dump(mode="json")
 
 
 class IncidentCommandRequest(BaseModel):

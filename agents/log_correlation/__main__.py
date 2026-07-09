@@ -38,12 +38,28 @@ def main(
     provider: str = typer.Option(
         "stub", "--provider", "-p", help="LLM provider: stub | anthropic | openai | ollama."
     ),
+    window_minutes: int = typer.Option(
+        15,
+        "--window-minutes",
+        "-w",
+        help="Trailing window (minutes, ending now) to correlate over. Live logs "
+        "only exist for recent time, so the CLI queries now-W..now by default.",
+    ),
+    exact_window: bool = typer.Option(
+        False,
+        "--exact-window",
+        help="Use the fixture's literal (historical) window instead of now-W..now. "
+        "Offline this still demos via the synthetic fallback; against live Loki it "
+        "will find no logs for a past window.",
+    ),
 ) -> None:
     """Run Log Correlation against a golden fixture."""
     os.environ["AIOPS_LLM_PROVIDER"] = provider
 
     # Defer agent import until after env is set so the LLM gateway picks up the
     # chosen provider on first call.
+    from datetime import UTC, datetime, timedelta
+
     from agents.log_correlation import CorrelationInput
     from agents.log_correlation.agent import correlate, reset_state
 
@@ -70,12 +86,24 @@ def main(
         raise typer.Exit(code=1)
 
     case = cases[fixture]
+    payload = dict(case["input"])
+    # Live logs only exist for recent time. Default to a trailing window ending
+    # now so a live run against Loki actually finds lines; --exact-window keeps
+    # the fixture's historical window (offline synthetic still works either way).
+    if not exact_window:
+        end = datetime.now(UTC)
+        start = end - timedelta(minutes=window_minutes)
+        payload["window"] = {"start": start.isoformat(), "end": end.isoformat()}
+
     rprint(f"[bold]Fixture:[/bold] {fixture}  —  {case.get('description', '')}")
     rprint(f"[bold]LLM provider:[/bold] {provider}")
+    rprint(
+        f"[bold]Window:[/bold] {'fixture (exact)' if exact_window else f'now-{window_minutes}m..now'}"
+    )
     rprint("\n[bold]Input:[/bold]")
-    rprint(json.dumps(case["input"], indent=2))
+    rprint(json.dumps(payload, indent=2))
 
-    result = correlate(CorrelationInput(**case["input"]))
+    result = correlate(CorrelationInput(**payload))
 
     rprint("\n[bold]Correlation result:[/bold]")
     rprint(json.dumps(result.model_dump(mode="json"), indent=2, default=str))

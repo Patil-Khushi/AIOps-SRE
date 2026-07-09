@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 import type {
   ApprovalRecord,
   ApprovalsResponse,
+  CorrelationResult,
   ExecuteRunResponse,
   ExecutionVerdict,
   HealthResponse,
@@ -166,6 +167,14 @@ export const api = {
   rca: (triageVerdict: TriageVerdict, scenarioId?: string) =>
     unwrap<RCAVerdict>(
       http.post('/api/rca', { triage_verdict: triageVerdict, scenario_id: scenarioId ?? null }),
+    ),
+  // RA-007 Log Correlation — pulls logs (Loki) + traces (Jaeger) + metrics
+  // (Prometheus) for a service/window and returns a correlated evidence pack.
+  // signal_source on the result is 'live' when the backends were reachable,
+  // 'synthetic' when the deterministic fallback ran.
+  correlate: (service: string, windowMinutes = 15) =>
+    unwrap<CorrelationResult>(
+      http.post('/api/correlate', { service, window_minutes: windowMinutes }),
     ),
   // RA-008 Incident Commander — chains the reactive flow + RCA into one
   // coordinated Sev-1/Sev-2 response. Takes the firing alert (it re-runs the

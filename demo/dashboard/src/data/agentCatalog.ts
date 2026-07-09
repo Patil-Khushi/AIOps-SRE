@@ -228,6 +228,10 @@ export const AGENTS: AgentCatalogItem[] = [
   }),
   agent('Log Correlation', 'Reactive-Active', 7, 'Correlate logs, traces, and alerts.', 'Builds the evidence bundle that helps a human see the same incident from multiple angles.', {
     status: 'Shipped',
+    // No liveSurface: the agent-browser detail page shows "Dashboard coming
+    // soon" like the other not-yet-wired agents. Its live evidence-pack page
+    // still lives in the ops console at /console/log-correlation — we just
+    // don't give it a dedicated per-agent dashboard link here.
     howItWorks: [
       'Collects logs, traces, and metrics around the incident window.',
       'Aligns them on a common timeline and service map.',

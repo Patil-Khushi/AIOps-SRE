@@ -21,6 +21,7 @@ if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {
 $forwards = @(
     @{ Name = 'prometheus'; Svc = 'svc/prometheus'; LocalPort = 9090;  RemotePort = 9090  }
     @{ Name = 'jaeger';     Svc = 'svc/jaeger';     LocalPort = 16686; RemotePort = 16686 }
+    @{ Name = 'loki';       Svc = 'svc/loki';       LocalPort = 3100;  RemotePort = 3100  }
 )
 
 Get-Job -Name 'pf-*' -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job | Out-Null
@@ -38,6 +39,7 @@ Write-Host ''
 Write-Host 'Backends:'
 Write-Host '  Prometheus  http://localhost:9090'
 Write-Host '  Jaeger      http://localhost:16686'
+Write-Host '  Loki        http://localhost:3100'
 Write-Host ''
 Write-Host "Manage: Get-Job -Name 'pf-*'           # see status"
 Write-Host "        Get-Job -Name 'pf-*' | Receive-Job -Keep   # tail logs"

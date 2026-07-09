@@ -115,6 +115,42 @@ export interface RCAVerdict {
   audit_metadata: RCAAuditMetadata;
 }
 
+// Log Correlation (RA-007) — mirrors agents/log_correlation/models.py.
+// One observation on the shared timeline (a log line, trace-span summary, or
+// metric reading reduced to an error signature + the raw sample).
+export type SignalSource = 'logs' | 'traces' | 'metrics';
+
+// Provenance: 'live' = pulled from Loki/Jaeger/Prometheus; 'synthetic' =
+// deterministic fallback when those backends were unreachable; 'mixed' = both.
+export type EvidenceProvenance = 'live' | 'synthetic' | 'mixed';
+
+export interface CorrelatedSignal {
+  source: SignalSource;
+  signature: string;
+  timestamp: string;
+  severity: string;
+  sample: string;
+}
+
+export interface CorrelationAuditMetadata {
+  created_at: string;
+  created_by: string;
+  signal_source: EvidenceProvenance;
+  decision_trace: string[];
+}
+
+// The correlated evidence pack RA-007 emits. suspected_dependencies is the
+// catalog's "suspect components"; the whole object is the "evidence pack".
+export interface CorrelationResult {
+  service: string;
+  summary: string;
+  timeline: CorrelatedSignal[];
+  top_signatures: string[];
+  suspected_dependencies: string[];
+  confidence: number;
+  audit_metadata: CorrelationAuditMetadata;
+}
+
 // RA-008 Incident Commander — mirrors agents/incident_commander/models.py.
 // Chains the reactive flow + RCA into one coordinated Sev-1/Sev-2 response.
 export interface IcTimelineEntry {
