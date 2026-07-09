@@ -8,8 +8,7 @@ Alert Triage (RA-001) → Incident Classifier (RA-002) → Auto-Ticketing (RA-00
 ```
 
 Takes a triaged/classified incident (service + time window), pulls **logs**
-(OpenSearch — the OTel demo's built-in log store; Loki also supported),
-**traces** (Jaeger), and **metrics** (Prometheus) for that window, correlates
+(Loki), **traces** (Jaeger), and **metrics** (Prometheus) for that window, correlates
 them on a shared timeline, fingerprints recurring errors, and names the most
 likely failing component(s). Output is the catalog's **"correlated
 evidence pack"** + **"suspect components"** — designed to drop straight into the
@@ -52,10 +51,10 @@ from agents.log_correlation import (
    dependencies via the `itsm.cmdb.dependencies` capability.
 2. **Fan-out fetch** — logs / traces / metrics queries run in parallel in a
    `ThreadPoolExecutor` (same pattern as RA-001's metric correlation). Every
-   call goes through `get_registry().call(...)`; no direct SDKs. The logs
-   backend is provider-swappable via `AIOPS_LOGS_PROVIDER` (`opensearch`
-   default, `loki` alternate) — the agent passes `service` + window, never a
-   backend-specific query, so the swap needs no code change.
+   call goes through `get_registry().call(...)`; no direct SDKs. Logs come from
+   Loki (`observability.logs.query`, provider `loki`) — the agent passes
+   `service` + window, never a backend-specific query, so swapping Loki for
+   Splunk / Elastic needs no agent code change.
 3. **Synthetic fallback** — when the backends are unreachable (no cluster, the
    default for `--fixture` and CI), deterministic signals keyed by service are
    synthesized so the demo is still meaningful. `audit_metadata.signal_source`
@@ -77,11 +76,11 @@ uv run python -m evals.harness --agent log_correlation
 ```
 
 No cluster required — the synthetic fallback makes every fixture demoable
-offline. Point at a live stack by setting `AIOPS_OPENSEARCH_URL` (or
-`AIOPS_LOKI_URL`) / `AIOPS_PROMETHEUS_URL` / `AIOPS_JAEGER_URL` (defaults are
-the `start.ps1` port-forwards) and the agent uses real signals automatically.
-Browse the underlying logs in Grafana Explore (`:8080/grafana/explore`) once the
-OpenSearch datasource is applied (`kubectl apply -f infra/opensearch-grafana-datasource.yaml`).
+offline. Point at a live stack by setting `AIOPS_LOKI_URL` /
+`AIOPS_PROMETHEUS_URL` / `AIOPS_JAEGER_URL` (defaults are the `start.ps1`
+port-forwards) and the agent uses real signals automatically. Browse the
+underlying logs in Grafana Explore (`:8080/grafana/explore`) once the Loki
+datasource is applied (`kubectl apply -f infra/loki-grafana-datasource.yaml`).
 
 ## Feeding RCA
 

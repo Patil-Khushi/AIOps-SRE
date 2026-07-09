@@ -153,12 +153,12 @@ def _resolve_topology(payload: CorrelationInput, trace: list[str]) -> list[str]:
 
 
 def _fetch_logs(payload: CorrelationInput, trace: list[str]) -> tuple[list[CorrelatedSignal], bool]:
-    """Query the active logs provider (OpenSearch or Loki) for the service's
-    log lines in the window. Returns (signals, reachable).
+    """Query the logs provider (Loki) for the service's log lines in the
+    window. Returns (signals, reachable).
 
     Provider-agnostic: passes ``service`` + window, not a backend-specific
-    query string — each provider translates internally. Swapping OpenSearch ↔
-    Loki is a registry/config change, not an agent change."""
+    query string — the provider translates internally. Swapping Loki for
+    Splunk / Elastic is a registry/config change, not an agent change."""
     svc = payload.service.lower().strip()
     try:
         res = get_registry().call(

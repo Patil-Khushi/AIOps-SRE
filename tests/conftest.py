@@ -46,6 +46,9 @@ os.environ.setdefault("AIOPS_PROMETHEUS_TIMEOUT", "0.25")
 os.environ.setdefault("AIOPS_JAEGER_URL", "http://127.0.0.1:1")
 os.environ.setdefault("AIOPS_JAEGER_TIMEOUT", "0.25")
 os.environ.setdefault("AIOPS_JAEGER_CONNECT_TIMEOUT", "0.25")
+os.environ.setdefault("AIOPS_LOKI_URL", "http://127.0.0.1:1")
+os.environ.setdefault("AIOPS_LOKI_TIMEOUT", "0.25")
+os.environ.setdefault("AIOPS_LOKI_CONNECT_TIMEOUT", "0.25")
 
 # Disable embeddings in the test suite by default (#113).
 #
@@ -77,6 +80,7 @@ from agents.alert_triage import classifier as _alert_triage_classifier
 from agents.knowledge_synthesizer import agent as _knowledge_synthesizer_agent
 from aiops.policy import get_gate
 from aiops.tools.observability import jaeger as _jaeger
+from aiops.tools.observability import loki as _loki
 
 
 def _no_embed_model() -> None:
@@ -222,21 +226,23 @@ def _hermetic_slack_user_map_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_jaeger_circuit():
-    """Reset the Jaeger circuit breaker around every test (#113).
+def _hermetic_observability_circuits():
+    """Reset the Jaeger + Loki circuit breakers around every test (#113).
 
-    The breaker is module-level process state that survives test
-    boundaries. A test that trips it (real socket failure or a mocked
-    one) would otherwise short-circuit Jaeger calls in the next 30s of
-    tests — including any test that monkeypatches ``httpx.get`` to
-    succeed. Reset at both ends so the breaker can't leak in either
+    Both breakers are module-level process state that survives test
+    boundaries. A test that trips one (real socket failure or a mocked
+    one) would otherwise short-circuit that provider's calls in the next
+    30s of tests — including any test that monkeypatches ``httpx.get`` to
+    succeed. Reset at both ends so a breaker can't leak in either
     direction.
     """
     _jaeger._reset_circuit_for_tests()
+    _loki._reset_circuit_for_tests()
     try:
         yield
     finally:
         _jaeger._reset_circuit_for_tests()
+        _loki._reset_circuit_for_tests()
 
 
 @pytest.fixture(autouse=True)
