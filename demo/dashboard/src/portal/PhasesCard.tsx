@@ -1,6 +1,8 @@
 // The phases card — a glassmorphism panel listing the four AIOps maturity
 // phases. Mirrors the agent-catalog phase summary (see CLAUDE.md):
-// Reactive-Active (8) → Proactive (7) → Predictive (7) → Prescriptive (8).
+// Reactive-Active (8) → Proactive (7) → Predictive (7) → Prescriptive (6).
+// Prescriptive is 6: Remediation Recommender + Auto-Healer are merged into the
+// RCA Agent (RCA now generates, recommends, and applies the fix end to end).
 
 const PHASES = [
   {
@@ -23,9 +25,9 @@ const PHASES = [
   },
   {
     name: 'Prescriptive-Adaptive',
-    count: 8,
+    count: 6,
     swatch: '#db2777',
-    examples: 'RCA Agent ★ · Remediation Recommender · Auto-Healer',
+    examples: 'RCA Agent ★ · Chaos Orchestrator · Policy Optimizer',
   },
 ] as const;
 

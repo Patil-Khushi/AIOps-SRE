@@ -100,6 +100,20 @@ export default function RcaConsole() {
     }
   };
 
+  // An approved fix flipped the flagd flag off — this incident is resolved.
+  // Drop its cached RCA and re-pull the (now-cleared) incident list so the
+  // failure disappears from the RCA page too, matching how Alert Stream and the
+  // dashboard clear automatically. Brief delay so POST /api/triage/live reflects
+  // the flag flip before we re-pull.
+  const handleResolved = () => {
+    const v = resultsRef.current[selectedIdx]?.verdict;
+    if (v) rcaCache.delete(rcaKey(v, selectedIdx));
+    setRca(null);
+    setRcaIncidentId(null);
+    setSelectedIdx(0);
+    setTimeout(() => verdicts.refetch(), 1500);
+  };
+
   // When arriving from Alert Triage (or from an approved fix on the Approvals
   // console), preselect the matching incident. If we already have a cached RCA
   // for it, just select it — the selection effect restores the verdict, so the
@@ -226,7 +240,9 @@ export default function RcaConsole() {
                   </div>
                 )}
                 {rcaError && <p className="text-sm text-bad">{rcaError}</p>}
-                {rca && !rcaBusy && <RcaView v={rca} incidentId={rcaIncidentId} />}
+                {rca && !rcaBusy && (
+                  <RcaView v={rca} incidentId={rcaIncidentId} onResolved={handleResolved} />
+                )}
               </div>
             </div>
           </aside>

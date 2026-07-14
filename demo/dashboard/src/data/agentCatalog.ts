@@ -368,35 +368,10 @@ export const AGENTS: AgentCatalogItem[] = [
       'Guides where to invest reliability effort next.',
     ],
   }),
-  agent('Remediation Recommender', 'Prescriptive-Adaptive', 23, 'Recommend the best fix and why it should work.', 'Produces ranked, safe actions with rollback awareness.', {
-    status: 'Shipped',
-    hitl: 'Required',
-    inputs: ['RCA verdict', 'triage context', 'environment'],
-    outputs: ['ranked options', 'blast radius', 'rollback plan', 'tool capability'],
-    // Merged into the RCA console — the ranked fix steps and human selection +
-    // approval now live on the RCA surface (see RcaView). Its live surface opens
-    // there rather than a standalone page.
-    liveSurface: '/console/rca', liveSurfaceLabel: 'Open RCA & remediation console',
-    howItWorks: [
-      'Takes the incident verdict and root-cause context.',
-      'Generates candidate fixes, each with a rollback.',
-      'Ranks them by likely effectiveness and blast radius.',
-      'Presents the ranked steps in the RCA console for human selection and approval.',
-    ],
-  }),
-  agent('Auto-Healer', 'Prescriptive-Adaptive', 24, 'Apply safe automated recovery.', 'Runs contained automation to restore service when allowed.', {
-    status: 'Shipped',
-    hitl: 'Required',
-    inputs: ['chosen remediation option', 'affected service', 'approval state'],
-    outputs: ['execution verdict', 'gate decision', 'tool result', 'audit trace'],
-    liveSurface: '/console/rca', liveSurfaceLabel: 'Open in RCA console',
-    howItWorks: [
-      'Receives an approved, low-risk remediation.',
-      'Runs the contained recovery action (dry-run first).',
-      'Watches the service to confirm it recovers.',
-      'Rolls back automatically if the fix does not hold.',
-    ],
-  }),
+  // Remediation Recommender (PRS-001) and Auto-Healer (PRS-002) are MERGED into
+  // the RCA Agent (below) — RCA now generates the root cause, presents ranked
+  // remediation options, and applies the human-approved fix (auto-heal) with
+  // rollback, all on one surface. They no longer have standalone catalog cards.
   agent('Policy Optimizer', 'Prescriptive-Adaptive', 25, 'Tune policy using operational outcomes.', 'Learns which guardrails are too strict or too loose.', {
     hitl: 'Required',
     howItWorks: [
@@ -444,29 +419,30 @@ export const AGENTS: AgentCatalogItem[] = [
       'Reports findings and reverts safely after approval.',
     ],
   }),
-  agent('RCA Agent', 'Prescriptive-Adaptive', 30, 'Produce the root-cause analysis and fix plan.', 'Returns executable remediation steps with rollback awareness.', {
+  agent('RCA Agent', 'Prescriptive-Adaptive', 30, 'Diagnose, recommend, and apply the fix — end to end.', 'Finds the root cause, ranks remediation options, and applies the approved fix with rollback.', {
     hitl: 'Required',
     liveSurface: '/console/rca', liveSurfaceLabel: 'Open RCA console',
     inputs: ['incident verdict', 'metrics & traces', 'recent changes', 'runbooks'],
-    outputs: ['root cause', 'ranked fix steps', 'rollback plan', 'confidence'],
+    outputs: ['root cause', 'ranked remediation options', 'rollback plan', 'execution result', 'confidence'],
     plainSummary:
-      'The headline agent. Most tools hand you a ranked list of likely causes and stop. The RCA Agent goes further — it works out the real root cause and produces executable fix steps, each with a tested rollback, gated by human approval. Root-cause analysis ends in a resolved incident, not a longer to-do list.',
+      'The headline agent, and now the whole prescriptive loop in one. Most tools hand you a ranked list of likely causes and stop. The RCA Agent works out the real root cause, presents a set of ranked remediation options (each with a tested rollback), and — once a human approves one on the same page — applies it (auto-heal), turning the fix off at the source. Root-cause analysis ends in a resolved incident, not a longer to-do list. This absorbs the former Remediation Recommender and Auto-Healer.',
     benefits: [
-      'Turns analysis into action — concrete fix steps, not just suspicions.',
-      'Every fix step ships with a tested rollback, so it is safe to apply.',
-      'Each step is human-approved before it runs — nothing destructive is automatic.',
+      'Turns analysis into action — ranked, applicable options, not just suspicions.',
+      'Every option ships with a tested rollback, so it is safe to apply.',
+      'Approve or deny each option in place — nothing destructive runs without a human.',
+      'Applies the approved fix itself and clears the failure — no separate agent to hand off to.',
     ],
     howItWorks: [
       'Takes the incident verdict plus its metrics, traces, and recent changes.',
       'Reasons over the evidence to find the most probable root cause.',
-      'Proposes ranked fix steps, each with a rollback and a blast-radius estimate.',
-      'Waits for human approval on every step before anything executes.',
+      'Presents ranked remediation options, each with a rollback and a blast-radius estimate.',
+      'Waits for human approve/deny on the chosen option — then applies it and confirms recovery.',
     ],
     setup: [
       { tool: 'Observability (Prometheus / Jaeger)', detail: 'Supplies the metrics and traces the analysis reasons over.' },
       { tool: 'LLM provider', detail: 'Powers the root-cause reasoning over the collected evidence.' },
-      { tool: 'Policy gate (OPA / HITL)', detail: 'Enforces human approval on every fix step before it runs.' },
-      { tool: 'Automation / runbooks', detail: 'The safe actions a fix step can execute, each with a rollback.' },
+      { tool: 'Policy gate (OPA / HITL)', detail: 'Enforces human approval on every option before it runs.' },
+      { tool: 'Automation / runbooks / flags', detail: 'The safe actions an approved option applies, each with a rollback.' },
     ],
   }),
 ];
