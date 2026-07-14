@@ -137,10 +137,17 @@ def _get_embed_model() -> Any | None:
 
             _EMBED_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
             logger.info("classification loaded sentence-transformers embedding model")
-        except ImportError:
+        except Exception as exc:
+            # Optional feature: any failure loading the embedding stack must
+            # disable similarity gracefully, never break classification. Covers
+            # ImportError (extra not installed) and OSError/others — e.g. a torch
+            # native DLL that can't load because the MSVC++ runtime is missing on
+            # Windows ([WinError 126] loading c10.dll).
             logger.info(
-                "sentence-transformers not installed; classification similarity disabled "
-                "(install via 'uv sync --extra embeddings')"
+                "classification embedding model unavailable (%s: %s); similarity disabled "
+                "(install via 'uv sync --extra embeddings')",
+                exc.__class__.__name__,
+                exc,
             )
             _EMBED_MODEL = False
     return _EMBED_MODEL if _EMBED_MODEL else None
