@@ -841,7 +841,34 @@ async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
             "RCA agent raised on payload for %s", req.triage_verdict.get("affected_service")
         )
         raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
-    return verdict.model_dump(mode="json")
+
+    payload = verdict.model_dump(mode="json")
+
+    # The RCA Agent now also drives remediation: it presents the operator a ranked
+    # set of executable options (formerly the standalone PRS-001 Remediation
+    # Recommender), each REQUIRED-HITL-gated, so the RCA surface is the single
+    # place a human sees the root cause AND picks + approves the fix. Compose the
+    # options here. Best-effort: a remediation failure never blocks the RCA
+    # verdict — the UI falls back to rendering ``ranked_fix_steps`` directly.
+    try:
+        remediation = await asyncio.to_thread(
+            remediate,
+            RemediationInput.model_validate(
+                {"rca_verdict": payload, "triage_verdict": req.triage_verdict}
+            ),
+        )
+        rem = remediation.model_dump(mode="json")
+        payload["remediation_options"] = rem.get("options", [])
+        payload["recommended_option_id"] = rem.get("recommended_option_id")
+    except Exception:
+        logger.exception(
+            "remediation options failed for %s; returning RCA verdict only",
+            payload.get("affected_service"),
+        )
+        payload["remediation_options"] = []
+        payload["recommended_option_id"] = None
+
+    return payload
 
 
 class CorrelateRequest(BaseModel):

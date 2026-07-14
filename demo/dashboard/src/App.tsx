@@ -18,7 +18,6 @@ import Topology from '@/pages/Topology';
 import SystemHealth from '@/pages/SystemHealth';
 import Knowledge from '@/pages/Knowledge';
 import RunbookExecutor from '@/pages/RunbookExecutor';
-import AutoHealer from '@/pages/AutoHealer';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 export default function App() {
@@ -68,9 +67,12 @@ export default function App() {
           path="remediation-recommender"
           element={<Navigate to="/console/rca" replace />}
         />
+        {/* Auto-Healer is merged into the RCA console — RCA now owns generate +
+            recommend + apply/execute end to end. The standalone page is retired;
+            any old link redirects to the combined surface. */}
         <Route
           path="auto-healer"
-          element={<ErrorBoundary><AutoHealer /></ErrorBoundary>}
+          element={<Navigate to="/console/rca" replace />}
         />
       </Route>
 

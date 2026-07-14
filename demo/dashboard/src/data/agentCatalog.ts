@@ -389,7 +389,7 @@ export const AGENTS: AgentCatalogItem[] = [
     hitl: 'Required',
     inputs: ['chosen remediation option', 'affected service', 'approval state'],
     outputs: ['execution verdict', 'gate decision', 'tool result', 'audit trace'],
-    liveSurface: '/agents/auto-healer', liveSurfaceLabel: 'Open auto-healer console',
+    liveSurface: '/console/rca', liveSurfaceLabel: 'Open in RCA console',
     howItWorks: [
       'Receives an approved, low-risk remediation.',
       'Runs the contained recovery action (dry-run first).',

@@ -14,7 +14,6 @@ import type {
   PrometheusAlert,
   RCAVerdict,
   RemediationOption,
-  RemediationVerdict,
   RunbookLibraryResponse,
   RunbookOutcome,
   RunbookRunResponse,
@@ -231,27 +230,13 @@ export const api = {
       error?: string | null;
     }>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
 
-  // ─── Remediation Recommender (PRS-001) ────────────────────────────────────
-  // Rank remediation options for a diagnosed incident. Pure data, no tool
-  // dispatch — the operator picks one and hands it to Auto-Healer to execute.
-  remediation: (
-    rcaVerdict: RCAVerdict,
-    triageVerdict?: TriageVerdict,
-    environment: 'production' | 'staging' | 'dev' = 'production',
-  ) =>
-    unwrap<RemediationVerdict>(
-      http.post('/api/remediation', {
-        rca_verdict: rcaVerdict,
-        triage_verdict: triageVerdict ?? null,
-        environment,
-        operator_preferences: {},
-      }),
-    ),
-
-  // ─── Auto-Healer Lite (PRS-002) ───────────────────────────────────────────
-  // Execute a chosen RemediationOption through the REQUIRED-HITL gate. Async:
-  // returns an approval id immediately; the agent blocks at the gate on a pool
-  // thread until a human resolves it. Poll autoHealOutcome for the verdict.
+  // ─── Remediation execution (RCA-merged: former PRS-001 + PRS-002) ─────────
+  // Execute a chosen remediation OPTION (from the RCA verdict's
+  // remediation_options) through the REQUIRED-HITL gate. Async: returns an
+  // approval id immediately; the executor blocks at the gate on a pool thread
+  // until a human resolves it. Poll hitlOutcome for the verdict. RcaView uses
+  // this for options whose action is not a one-click flag flip (the flag-flip
+  // options go through applyRcaFix, which also fires the resolution verifier).
   executeOption: (
     option: RemediationOption,
     affectedService: string,
@@ -266,25 +251,9 @@ export const api = {
         dry_run: opts?.dryRun ?? true,
       }),
     ),
-  // Poll the shared HITL outcome store for an Auto-Healer execution. Returns
-  // { status: 'pending' } until the agent thread finishes, then the verdict.
+  // Poll the shared HITL outcome store for an option execution → ExecutionVerdict.
   autoHealOutcome: (approvalId: string) =>
     unwrap<ExecutionVerdict>(http.get(`/api/demo/auto-heal/outcome/${approvalId}`)),
-  // Legacy HITL-1 narrow path: recommend + execute a deployment restart. Same
-  // async approval-id + poll shape (poll autoHealOutcome).
-  autoHealRestart: (req?: {
-    deployment?: string;
-    namespace?: string;
-    reason?: string;
-    timeout_seconds?: number;
-  }) =>
-    unwrap<{
-      approval_id: string;
-      deployment: string;
-      namespace: string;
-      status: string;
-      timeout_seconds: number;
-    }>(http.post('/api/demo/auto-heal/restart', req ?? {})),
 
   // ── HITL approval loop ──────────────────────────────────────────────────
   approvals: (includeResolved = false) =>

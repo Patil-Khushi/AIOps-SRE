@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Brain, Check, ChevronDown, Clock, Gavel, HeartPulse, ShieldCheck, X } from 'lucide-react';
+import { Brain, Check, ChevronDown, Clock, Gavel, ShieldCheck, X } from 'lucide-react';
 import { api, ApiError } from '@/lib/api';
 import { useFetch } from '@/hooks/useFetch';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
@@ -8,19 +8,20 @@ import { setConsoleAgent } from '@/lib/consoleScope';
 import { clsx, timeAgo } from '@/lib/format';
 import type { ApprovalRecord, ApprovalStatus } from '@/types/api';
 
-// Where an approval originated, from its gated capability — decides which
-// "continue" button is highlighted after the human approves it.
-function originOf(action: string): 'rca' | 'auto-healer' | null {
+// Where an approval originated, from its gated capability. RCA now drives every
+// remediation action (flag-flip fixes AND the gated auto-heal execute path), so
+// both continue back to the RCA console.
+function originOf(action: string): 'rca' | null {
   if (action === 'rca.fix_step.execute') return 'rca';
-  if (action.startsWith('auto_heal')) return 'auto-healer';
+  if (action.startsWith('auto_heal')) return 'rca';
   return null;
 }
 
 const ACTION_LABEL: Record<string, string> = {
   'rca.fix_step.execute': 'RCA fix step',
   'automation.runbook.execute': 'Runbook execution',
-  'auto_heal.execute': 'Auto-heal',
-  'remediation.recommend': 'Remediation',
+  'auto_heal.lite.execute': 'RCA remediation option',
+  'auto_heal.execute': 'RCA remediation option',
   'capacity.recommend': 'Capacity change',
   'policy.optimize': 'Policy change',
   'chaos.experiment.run': 'Chaos experiment',
@@ -57,14 +58,9 @@ export default function Approvals() {
   // and deep-link. For RCA we forward the affected service so the RCA console
   // opens on THAT failure (not the full list) — the handoff restores the cached
   // verdict, so it's instant and doesn't re-run the analysis.
-  const goTo = (target: 'rca' | 'auto-healer', service: string | null) => {
-    if (target === 'rca') {
-      setConsoleAgent('rca-agent');
-      navigate('/console/rca', service ? { state: { service } } : {});
-    } else {
-      setConsoleAgent('auto-healer');
-      navigate('/agents/auto-healer');
-    }
+  const goTo = (service: string | null) => {
+    setConsoleAgent('rca-agent');
+    navigate('/console/rca', service ? { state: { service } } : {});
   };
 
   const { data, loading, error, refetch } = useFetch(() => api.approvals(showResolved), { intervalMs: 3000, cacheKey: `approvals-${showResolved}` });
@@ -199,7 +195,7 @@ function Row({
   busy: boolean;
   onApprove: () => void;
   onDeny: () => void;
-  onGoTo: (target: 'rca' | 'auto-healer', service: string | null) => void;
+  onGoTo: (service: string | null) => void;
 }) {
   const pending = status === 'pending';
   const label = ACTION_LABEL[r.action] ?? r.action;
@@ -250,25 +246,16 @@ function Row({
         {pending ? (
           <ActionDropdown busy={busy} onApprove={onApprove} onDeny={onDeny} />
         ) : status === 'approved' ? (
-          // After approval, continue the flow — back to RCA (deep-linked to THIS
-          // failure) or over to the Auto-Healer. The origin capability decides
-          // which is highlighted as the primary next step.
+          // After approval, continue the flow back to the RCA console, deep-linked
+          // to THIS failure (RCA now owns remediation + apply end to end).
           <div className="flex items-center justify-end gap-1.5">
             <button
               type="button"
-              onClick={() => onGoTo('rca', service)}
+              onClick={() => onGoTo(service)}
               title={service ? `Open RCA for ${service}` : 'Open the RCA console'}
               className={clsx('btn !py-1 !text-xs', origin === 'rca' ? 'btn-primary' : 'btn-ghost')}
             >
-              <Brain className="h-3.5 w-3.5" /> RCA
-            </button>
-            <button
-              type="button"
-              onClick={() => onGoTo('auto-healer', service)}
-              title="Open the Auto-Healer console"
-              className={clsx('btn !py-1 !text-xs', origin === 'auto-healer' ? 'btn-primary' : 'btn-ghost')}
-            >
-              <HeartPulse className="h-3.5 w-3.5" /> Auto-Heal
+              <Brain className="h-3.5 w-3.5" /> Continue in RCA
             </button>
           </div>
         ) : (

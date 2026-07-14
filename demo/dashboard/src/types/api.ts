@@ -113,6 +113,13 @@ export interface RCAVerdict {
   ranked_fix_steps: RankedFixStep[];
   confidence_score: number;
   audit_metadata: RCAAuditMetadata;
+  // The RCA Agent now also drives remediation (the former standalone PRS-001
+  // Remediation Recommender folded in): a ranked set of executable options the
+  // operator picks + approves, each REQUIRED-HITL-gated. Present when the verdict
+  // came from POST /api/rca; absent on the Incident Commander path, where the UI
+  // falls back to rendering ranked_fix_steps.
+  remediation_options?: RemediationOption[];
+  recommended_option_id?: string | null;
 }
 
 // Log Correlation (RA-007) — mirrors agents/log_correlation/models.py.
