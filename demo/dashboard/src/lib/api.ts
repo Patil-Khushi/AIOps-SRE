@@ -28,13 +28,13 @@ import type {
 } from '@/types/api';
 
 // Axios instance — uses Vite proxy in dev, same-origin in prod (served from /dashboard).
-// Default timeout is generous (90 s) because /api/triage/live runs the agent's
-// 8-stage pipeline (including LLM calls) for every firing alert. Even with the
-// backend parallelizing per-alert triage via asyncio.gather, a worst-case
-// Azure OpenAI cold-start can still take 10–20 s.
+// Default timeout is generous (600 s / 10 min) because /api/triage/live runs the agent's
+// 8-stage pipeline (including LLM calls + embedding inference) for every firing alert.
+// First run: embedding model load ~120s, subsequent runs ~10–30s. Even with backend
+// parallelizing per-alert triage via asyncio.gather, first-run can exceed 90s.
 export const http = axios.create({
   baseURL: '',
-  timeout: 90_000,
+  timeout: 600_000,  // 10 minutes — first run embedding load + LLM cold-start
   headers: { 'Content-Type': 'application/json' },
 });
 
