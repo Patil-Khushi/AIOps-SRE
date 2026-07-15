@@ -4,6 +4,18 @@
 // (Agents / AgentDetail / SreOps) and the per-agent console scoping in the
 // Sidebar. It can drift from the xlsx — when the catalog changes there,
 // update this file to match. Not a source of truth; a render layer.
+//
+// Consolidated to 19 agents (6 + 3 + 5 + 5). Several agents were merged into
+// combined, product-named agents; the folded members no longer have cards:
+//   Reactive-Active (6): Alert Triage + Incident Classifier → Alert Intelligence;
+//     Notification Router + War-Room Assembler → Incident Mobilization.
+//   Proactive (3): Anomaly Detector + Drift Monitor + Noise Reducer + Early
+//     Warning → Proactive Sensing; Topology Discovery + Dependency Mapper →
+//     Service Graph.
+//   Predictive (5): Failure Forecaster + SLO Breach Predictor + Reliability
+//     Forecaster → Reliability Prediction.
+//   Prescriptive-Adaptive (5): RCA absorbs Remediation Recommender + Auto-Healer;
+//     Feedback Learner + Policy Optimizer → Closed-Loop Learning.
 
 export type AgentPhase =
   | 'Reactive-Active'
@@ -37,7 +49,7 @@ export interface AgentCatalogItem {
   // navigation rather than React Router.
   liveSurfaceExternal?: boolean;
   // True for the one SRE-specialised agent in each phase (Incident Commander,
-  // Toil Detector, Reliability Forecaster, Chaos Orchestrator).
+  // Toil Detector, Reliability Prediction, Chaos Orchestrator).
   sre?: boolean;
   // ── Introduction-page content (non-technical-friendly). Optional; the
   //    intro page falls back to summary / tools when these are absent. ──
@@ -108,10 +120,13 @@ function agent(
   position: number,
   role: string,
   summary: string,
-  options: Partial<Pick<AgentCatalogItem, 'inputs' | 'outputs' | 'tools' | 'hitl' | 'status' | 'liveSurface' | 'liveSurfaceLabel' | 'liveSurfaceExternal' | 'sre' | 'plainSummary' | 'benefits' | 'howItWorks' | 'setup'>> = {},
+  options: Partial<Pick<AgentCatalogItem, 'id' | 'inputs' | 'outputs' | 'tools' | 'hitl' | 'status' | 'liveSurface' | 'liveSurfaceLabel' | 'liveSurfaceExternal' | 'sre' | 'plainSummary' | 'benefits' | 'howItWorks' | 'setup'>> = {},
 ): AgentCatalogItem {
   return {
-    id: slugify(name),
+    // id defaults to the name slug, but can be pinned so a display-name change
+    // (e.g. "Alert Triage" → "Alert Intelligence Agent") keeps a stable route +
+    // Sidebar/console-scope key. See components/Sidebar.tsx AGENT_SURFACES.
+    id: options.id ?? slugify(name),
     name,
     phase,
     position,
@@ -139,23 +154,25 @@ export const AGENT_PHASES = PHASE_ORDER;
 export const PHASE_DETAILS = PHASE_META;
 
 export const AGENTS: AgentCatalogItem[] = [
-  agent('Alert Triage', 'Reactive-Active', 1, 'Convert live alerts into a structured incident verdict.', 'Normalizes alerts, deduplicates them, enriches them with context, and writes the first verdict.', {
+  // ── Reactive-Active (6) ────────────────────────────────────────────────────
+  agent('Alert Intelligence Agent', 'Reactive-Active', 1, 'Turn live alerts into a classified incident verdict.', 'Normalizes and deduplicates alerts, enriches them with context, writes the first verdict, AND classifies the incident type — triage and classification in one agent.', {
+    id: 'alert-triage',
     status: 'Shipped', hitl: 'Optional',
     inputs: ['Prometheus alert', 'service labels', 'metric context'],
-    outputs: ['triage verdict', 'severity', 'ownership', 'summary'],
-    liveSurface: '/console', liveSurfaceLabel: 'Open triage console',
+    outputs: ['triage verdict', 'severity', 'ownership', 'incident type', 'summary'],
+    liveSurface: '/console', liveSurfaceLabel: 'Open alert intelligence console',
     plainSummary:
-      'When a monitoring alarm goes off, Alert Triage reads it for you. It removes duplicate and flapping alerts, adds context about which service is affected, and writes a clear first verdict — what is wrong, how serious it is, and who owns it — so the on-call engineer does not start from a wall of raw alerts.',
+      'When a monitoring alarm goes off, Alert Intelligence reads it for you. It removes duplicate and flapping alerts, adds context about which service is affected, writes a clear first verdict — what is wrong, how serious it is, and who owns it — and classifies the incident type so the right playbook is picked. It answers both "why am I getting this noisy alert?" and "what does it actually mean?" in one step. (Absorbs the former Alert Triage and Incident Classifier.)',
     benefits: [
-      'Cuts the time to understand an alert — the first read is done for you.',
+      'Cuts the time to understand an alert — the first read AND the classification are done for you.',
       'Hides duplicate and repeating alerts so people see one incident, not fifty.',
-      'Every verdict is consistent, explainable, and saved for audit.',
+      'Every verdict is consistent, explainable, classified, and saved for audit.',
     ],
     howItWorks: [
       'Receives an alert from the monitoring system.',
       'Removes duplicates and adds service + metric context.',
       'Judges how severe it is and who should own it.',
-      'Writes a structured verdict to the triage console.',
+      'Classifies the incident type and maps it to a playbook.',
     ],
     setup: [
       { tool: 'Prometheus / Alertmanager', detail: 'Point the agent at your alert source so it receives firing alerts.' },
@@ -163,11 +180,7 @@ export const AGENTS: AgentCatalogItem[] = [
       { tool: 'LLM provider', detail: 'Configure a model (Anthropic, OpenAI, or local Ollama) through the platform LLM gateway.' },
     ],
   }),
-  // Incident Classifier is folded into Alert Triage (one agent that triages
-  // AND classifies). It is not a separate agent card — its live surface (the
-  // classifier dashboard at /classifier) is reachable from the Alert Triage
-  // console sidebar instead (see components/Sidebar.tsx).
-  agent('Auto-Ticketing', 'Reactive-Active', 3, 'Create or update the ITSM incident record.', 'Writes the service desk ticket and attaches the useful operating context.', {
+  agent('Auto-Ticketing', 'Reactive-Active', 2, 'Create or update the ITSM incident record.', 'Writes the service desk ticket and attaches the useful operating context.', {
     status: 'Shipped', hitl: 'Optional',
     inputs: ['verdict', 'classification', 'service context'],
     outputs: ['ticket id', 'ticket state', 'audit trail'],
@@ -189,7 +202,7 @@ export const AGENTS: AgentCatalogItem[] = [
       { tool: 'Field mapping', detail: 'Map incident fields (severity, assignment group) onto your ITSM form.' },
     ],
   }),
-  agent('Runbook Executor', 'Reactive-Active', 4, 'Execute a safe runbook when policy allows it.', 'Turns approved runbook steps into controlled actions with rollback awareness.', {
+  agent('Runbook Executor', 'Reactive-Active', 3, 'Execute a safe runbook when policy allows it.', 'Turns approved runbook steps into controlled actions with rollback awareness.', {
     hitl: 'Required',
     howItWorks: [
       'Receives an approved remediation step from the policy gate.',
@@ -198,16 +211,14 @@ export const AGENTS: AgentCatalogItem[] = [
       'Verifies the outcome and keeps a tested rollback ready.',
     ],
   }),
-  // One agent owns both responsibilities: route the single notification AND, on
-  // Sev-1/Sev-2, stand up the war room and fold its join link into that same
-  // message. Implemented in agents/notification_assembler/.
-  agent('Notification Assembler', 'Reactive-Active', 5, 'Send one notification per incident — and stand up the war room for major ones.', 'Routes the message to the right people and channel and, on Sev-1/Sev-2, opens the war room and folds its join link into that same message.', {
+  agent('Incident Mobilization Agent', 'Reactive-Active', 4, 'Notify the right people and mobilize the war room for major incidents.', 'Routes one notification to the right people and channel and, on Sev-1/Sev-2, stands up the war room and folds its join link into that same message.', {
+    id: 'notification-assembler',
     status: 'Shipped', hitl: 'Optional',
     inputs: ['triage verdict', 'CMDB / on-call', 'live telemetry'],
     outputs: ['one notification', 'war-room link', 'invited SMEs', 'context pack', 'timeline'],
-    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open notifications console',
+    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open mobilization console',
     plainSummary:
-      'Merges notification routing and war-room setup into one step. It decides who needs to hear about an incident and on which channel, writes a single clear message, and sends it. For a major incident (Sev-1/Sev-2) it also spins up a shared war room — channel, on-call expert, live context, and a join link — and folds that link straight into the same notification, so the right people get one message with everything they need instead of two separate pings. Lower severities get the notification only.',
+      'Gets the right people into the right place, fast. It decides who needs to hear about an incident and on which channel, writes a single clear message, and sends it. For a major incident (Sev-1/Sev-2) it also spins up a shared war room — channel, on-call expert, live context, and a join link — and folds that link straight into the same notification, so the right people get one message with everything they need instead of two separate pings. Lower severities get the notification only. (Absorbs the former Notification Router and War-Room Assembler.)',
     benefits: [
       'One notification per incident — no duplicate pings to chase.',
       'Right person, right channel, right wording — automatically.',
@@ -226,12 +237,10 @@ export const AGENTS: AgentCatalogItem[] = [
       { tool: 'Routing rules', detail: 'Define which teams or channels receive which kinds of incident.' },
     ],
   }),
-  agent('Log Correlation', 'Reactive-Active', 7, 'Correlate logs, traces, and alerts.', 'Builds the evidence bundle that helps a human see the same incident from multiple angles.', {
+  agent('Log Correlation', 'Reactive-Active', 5, 'Correlate logs, traces, and alerts.', 'Builds the evidence bundle that helps a human see the same incident from multiple angles.', {
     status: 'Shipped',
-    // No liveSurface: the agent-browser detail page shows "Dashboard coming
-    // soon" like the other not-yet-wired agents. Its live evidence-pack page
-    // still lives in the ops console at /console/log-correlation — we just
-    // don't give it a dedicated per-agent dashboard link here.
+    // No liveSurface: its live evidence-pack page lives in the ops console at
+    // /console/log-correlation; no dedicated per-agent dashboard link here.
     howItWorks: [
       'Collects logs, traces, and metrics around the incident window.',
       'Aligns them on a common timeline and service map.',
@@ -239,7 +248,7 @@ export const AGENTS: AgentCatalogItem[] = [
       'Bundles the evidence for the on-call engineer to review.',
     ],
   }),
-  agent('Incident Commander', 'Reactive-Active', 8, 'Orchestrate the response end-to-end.', 'Keeps the incident moving, assigns ownership, and coordinates the response.', {
+  agent('Incident Commander', 'Reactive-Active', 6, 'Orchestrate the response end-to-end.', 'Keeps the incident moving, assigns ownership, and coordinates the response.', {
     status: 'Shipped',
     sre: true,
     liveSurface: '/console/incident-commander', liveSurfaceLabel: 'Open incident command console',
@@ -250,56 +259,31 @@ export const AGENTS: AgentCatalogItem[] = [
       'Drives the incident to resolution and hands off the postmortem.',
     ],
   }),
-  agent('Anomaly Detector', 'Proactive', 9, 'Spot unusual behavior before an incident starts.', 'Finds signals that are deviating from their normal baseline.', {
+
+  // ── Proactive (3) ──────────────────────────────────────────────────────────
+  agent('Proactive Sensing Agent', 'Proactive', 7, 'Sense anomalies, drift, and weak signals before they become incidents.', 'Watches live telemetry for anomalies and slow drift, filters out noise, and raises early warnings.', {
+    plainSummary:
+      "The platform's early-warning sense. It continuously watches live metrics for anomalies and slow drift, groups and suppresses duplicate/flapping noise so the real signal stands out, and turns weak precursors into actionable heads-up warnings — before any of it becomes an incident. (Combines the former Anomaly Detector, Drift Monitor, Noise Reducer, and Early Warning.)",
     howItWorks: [
-      'Continuously reads live metrics for each service.',
-      'Compares them against a learned normal baseline.',
-      'Flags statistically unusual behavior as it emerges.',
-      'Raises an early signal before it becomes an incident.',
+      'Reads live metrics and signals for every service against a learned baseline.',
+      'Flags anomalies and slow drift as they emerge.',
+      'Groups duplicates and suppresses flapping so only meaningful signals pass.',
+      'Raises an early, actionable warning before health drops.',
     ],
   }),
-  agent('Drift Monitor', 'Proactive', 10, 'Watch for slow change in behavior.', 'Detects gradual degradation and config drift before a hard outage.', {
-    howItWorks: [
-      'Tracks configuration and behavior over time.',
-      'Compares the current state against a known-good baseline.',
-      'Detects slow degradation and configuration drift.',
-      'Warns before the drift turns into a hard outage.',
-    ],
-  }),
-  agent('Dependency Mapper', 'Proactive', 11, 'Track service and component dependencies.', 'Builds the dependency picture that explains blast radius.', {
-    howItWorks: [
-      'Observes live traffic between services.',
-      'Builds and maintains the service dependency graph.',
-      'Calculates the blast radius for each component.',
-      'Feeds the map to triage, RCA, and change-impact agents.',
-    ],
-  }),
-  agent('Noise Reducer', 'Proactive', 12, 'Reduce duplicate and low-value signals.', 'Cuts down on the noise that hides the real issue.', {
-    howItWorks: [
-      'Ingests the raw alert and signal stream.',
-      'Groups duplicates and suppresses flapping signals.',
-      'Scores each signal for value and relevance.',
-      'Forwards only the meaningful signals downstream.',
-    ],
-  }),
-  agent('Early Warning', 'Proactive', 13, 'Raise heads-up signals before health drops.', 'Turns weak precursors into actionable warnings.', {
-    howItWorks: [
-      'Watches weak precursor signals across the platform.',
-      'Correlates them into a developing risk picture.',
-      'Estimates how likely a problem is to materialize.',
-      'Raises an actionable heads-up before health drops.',
-    ],
-  }),
-  agent('Topology Discovery', 'Proactive', 14, 'Discover the live platform topology.', 'Keeps a current map of services and relationships.', {
-    liveSurface: '/console/topology', liveSurfaceLabel: 'Open topology map',
+  agent('Service Graph Agent', 'Proactive', 8, 'Map services and their dependencies, and keep it current.', 'Discovers the live service topology and dependency graph that explains blast radius.', {
+    id: 'topology-discovery',
+    liveSurface: '/console/topology', liveSurfaceLabel: 'Open service graph',
+    plainSummary:
+      'Keeps a live map of the platform — every service, instance, and the dependencies between them — so triage, RCA, and change-impact always know what talks to what and what the blast radius of a fault is. (Combines the former Topology Discovery and Dependency Mapper.)',
     howItWorks: [
       'Reads live telemetry and service-to-service traffic.',
       'Discovers services, instances, and their relationships.',
-      'Keeps the topology map current as the platform changes.',
-      'Publishes the map for other agents and the console.',
+      'Builds the dependency graph and computes blast radius per component.',
+      'Keeps the map current and publishes it for other agents and the console.',
     ],
   }),
-  agent('Toil Detector', 'Proactive', 15, 'Find repetitive manual work to automate.', 'Identifies routine tasks that should not stay manual.', {
+  agent('Toil Detector', 'Proactive', 9, 'Find repetitive manual work to automate.', 'Identifies routine tasks that should not stay manual.', {
     sre: true,
     howItWorks: [
       'Mines operational logs, tickets, and on-call actions.',
@@ -308,15 +292,21 @@ export const AGENTS: AgentCatalogItem[] = [
       'Recommends the best candidates to automate.',
     ],
   }),
-  agent('Failure Forecaster', 'Predictive', 16, 'Predict the next likely failure area.', 'Ranks where the next outage is most likely to appear.', {
+
+  // ── Predictive (5) ─────────────────────────────────────────────────────────
+  agent('Reliability Prediction Agent', 'Predictive', 10, 'Forecast failures, SLO breaches, and the reliability trend.', 'Predicts where and when reliability will slip — failure risk, SLO-breach timing, and the overall trajectory.', {
+    hitl: 'Required',
+    sre: true,
+    plainSummary:
+      'Looks ahead so you fix things before they page. It ranks where the next failure is most likely, projects error-budget burn to estimate when an SLO will breach, and models the forward-looking reliability trend so you know where to invest. (Combines the former Failure Forecaster, SLO Breach Predictor, and Reliability Forecaster.)',
     howItWorks: [
-      'Learns from historical failures and current trends.',
+      'Learns from historical failures, SLIs, and current trends.',
       'Scores each service for near-term failure risk.',
-      'Ranks where the next outage is most likely.',
-      'Surfaces the top risks for proactive attention.',
+      'Projects error-budget burn to estimate SLO-breach timing.',
+      'Models the reliability trajectory and raises approved early alerts.',
     ],
   }),
-  agent('Capacity Planner', 'Predictive', 17, 'Forecast headroom and scaling needs.', 'Estimates when the platform will need more capacity.', {
+  agent('Capacity Planner', 'Predictive', 11, 'Forecast headroom and scaling needs.', 'Estimates when the platform will need more capacity.', {
     hitl: 'Required',
     howItWorks: [
       'Analyzes usage trends and growth patterns.',
@@ -325,16 +315,7 @@ export const AGENTS: AgentCatalogItem[] = [
       'Holds the recommendation for human approval.',
     ],
   }),
-  agent('SLO Breach Predictor', 'Predictive', 18, 'Estimate when an SLO is likely to miss.', 'Calculates the chance of breaching an SLO before it happens.', {
-    hitl: 'Required',
-    howItWorks: [
-      'Tracks SLIs against their SLO targets and error budget.',
-      'Projects the error-budget burn rate forward in time.',
-      'Estimates the probability and timing of a breach.',
-      'Raises an approved alert before the budget is spent.',
-    ],
-  }),
-  agent('Seasonality Learner', 'Predictive', 19, 'Learn time-based behavior patterns.', 'Separates normal recurring demand from true anomalies.', {
+  agent('Seasonality Learner', 'Predictive', 12, 'Learn time-based behavior patterns.', 'Separates normal recurring demand from true anomalies.', {
     howItWorks: [
       'Studies historical demand across days, weeks, and seasons.',
       'Learns the recurring time-based patterns.',
@@ -342,7 +323,7 @@ export const AGENTS: AgentCatalogItem[] = [
       'Feeds the baseline to detection and forecasting agents.',
     ],
   }),
-  agent('Root-Cause Predictor', 'Predictive', 20, 'Predict likely root cause ahead of time.', 'Ranks probable causes before the incident is fully known.', {
+  agent('Root-Cause Predictor', 'Predictive', 13, 'Predict likely root cause ahead of time.', 'Ranks probable causes before the incident is fully known.', {
     howItWorks: [
       'Reads early incident signals as they arrive.',
       'Matches them against past incident patterns.',
@@ -350,7 +331,7 @@ export const AGENTS: AgentCatalogItem[] = [
       'Gives responders a head start before full RCA.',
     ],
   }),
-  agent('Change Impact Predictor', 'Predictive', 21, 'Estimate blast radius for a change.', 'Predicts what the rollout is likely to affect.', {
+  agent('Change Impact Predictor', 'Predictive', 14, 'Estimate blast radius for a change.', 'Predicts what the rollout is likely to affect.', {
     hitl: 'Required',
     howItWorks: [
       'Reads a proposed change or deployment.',
@@ -359,67 +340,9 @@ export const AGENTS: AgentCatalogItem[] = [
       'Returns a risk assessment for approval before rollout.',
     ],
   }),
-  agent('Reliability Forecaster', 'Predictive', 22, 'Forecast the platform reliability trend.', 'Turns history into a forward-looking reliability view.', {
-    sre: true,
-    howItWorks: [
-      'Aggregates reliability history and current trends.',
-      'Models the forward-looking reliability trajectory.',
-      'Flags where SLOs are trending out of bounds.',
-      'Guides where to invest reliability effort next.',
-    ],
-  }),
-  // Remediation Recommender (PRS-001) and Auto-Healer (PRS-002) are MERGED into
-  // the RCA Agent (below) — RCA now generates the root cause, presents ranked
-  // remediation options, and applies the human-approved fix (auto-heal) with
-  // rollback, all on one surface. They no longer have standalone catalog cards.
-  agent('Policy Optimizer', 'Prescriptive-Adaptive', 25, 'Tune policy using operational outcomes.', 'Learns which guardrails are too strict or too loose.', {
-    hitl: 'Required',
-    howItWorks: [
-      'Reviews the outcomes of past gated actions.',
-      'Finds guardrails that are too strict or too loose.',
-      'Proposes tuned policy changes as code.',
-      'Submits them for human review before promotion.',
-    ],
-  }),
-  agent('Feedback Learner', 'Prescriptive-Adaptive', 26, 'Learn from fix outcomes.', 'Feeds post-action results back into the system.', {
-    hitl: 'Required',
-    howItWorks: [
-      'Collects the outcome of every applied fix.',
-      'Scores what worked and what did not.',
-      'Updates models, prompts, and rankings accordingly.',
-      'Promotes improvements only after shadow evaluation.',
-    ],
-  }),
-  agent('Cost-Aware Scaler', 'Prescriptive-Adaptive', 27, 'Balance cost and reliability when scaling.', 'Chooses the cheapest action that still keeps risk acceptable.', {
-    hitl: 'Required',
-    howItWorks: [
-      'Reads load, reliability targets, and cost signals.',
-      'Weighs scaling options against risk and spend.',
-      'Chooses the cheapest action that keeps risk acceptable.',
-      'Applies it within the approved guardrails.',
-    ],
-  }),
-  agent('Knowledge Synthesizer', 'Prescriptive-Adaptive', 28, 'Turn incident learning into reusable knowledge.', 'Summarizes what happened into useful operational guidance.', {
-    status: 'Shipped', hitl: 'Required',
-    liveSurface: '/console/knowledge', liveSurfaceLabel: 'Open knowledge console',
-    howItWorks: [
-      'Gathers the incident timeline, actions, and outcome.',
-      'Drafts a clear postmortem and the lessons learned.',
-      'Turns them into reusable runbooks and knowledge.',
-      'Publishes for the team after human review.',
-    ],
-  }),
-  agent('Chaos Orchestrator', 'Prescriptive-Adaptive', 29, 'Run controlled chaos experiments.', 'Validates assumptions and resilience safely.', {
-    hitl: 'Required',
-    sre: true,
-    howItWorks: [
-      'Defines a controlled experiment with a clear hypothesis.',
-      'Sets blast-radius caps and automatic abort conditions.',
-      'Injects the failure and observes how the system responds.',
-      'Reports findings and reverts safely after approval.',
-    ],
-  }),
-  agent('RCA Agent', 'Prescriptive-Adaptive', 30, 'Diagnose, recommend, and apply the fix — end to end.', 'Finds the root cause, ranks remediation options, and applies the approved fix with rollback.', {
+
+  // ── Prescriptive-Adaptive (5) ──────────────────────────────────────────────
+  agent('RCA Agent', 'Prescriptive-Adaptive', 15, 'Diagnose, recommend, and apply the fix — end to end.', 'Finds the root cause, ranks remediation options, and applies the approved fix with rollback.', {
     hitl: 'Required',
     liveSurface: '/console/rca', liveSurfaceLabel: 'Open RCA console',
     inputs: ['incident verdict', 'metrics & traces', 'recent changes', 'runbooks'],
@@ -445,6 +368,46 @@ export const AGENTS: AgentCatalogItem[] = [
       { tool: 'Automation / runbooks / flags', detail: 'The safe actions an approved option applies, each with a rollback.' },
     ],
   }),
+  agent('Knowledge Synthesizer', 'Prescriptive-Adaptive', 16, 'Turn incident learning into reusable knowledge.', 'Summarizes what happened into useful operational guidance.', {
+    status: 'Shipped', hitl: 'Required',
+    liveSurface: '/console/knowledge', liveSurfaceLabel: 'Open knowledge console',
+    howItWorks: [
+      'Gathers the incident timeline, actions, and outcome.',
+      'Drafts a clear postmortem and the lessons learned.',
+      'Turns them into reusable runbooks and knowledge.',
+      'Publishes for the team after human review.',
+    ],
+  }),
+  agent('Cost-Aware Scaler', 'Prescriptive-Adaptive', 17, 'Balance cost and reliability when scaling.', 'Chooses the cheapest action that still keeps risk acceptable.', {
+    hitl: 'Required',
+    howItWorks: [
+      'Reads load, reliability targets, and cost signals.',
+      'Weighs scaling options against risk and spend.',
+      'Chooses the cheapest action that keeps risk acceptable.',
+      'Applies it within the approved guardrails.',
+    ],
+  }),
+  agent('Closed-Loop Learning Agent', 'Prescriptive-Adaptive', 18, 'Learn from outcomes and tune the guardrail policy.', 'Feeds fix outcomes back into models and prompts, and tunes the policies that gate actions.', {
+    hitl: 'Required',
+    plainSummary:
+      'Closes the loop so the platform gets better with every incident. It collects the outcome of every applied fix, scores what worked, and updates models, prompts, and rankings — then tunes the guardrail policies that decide what can run automatically, promoting changes only after shadow evaluation and human review. (Combines the former Feedback Learner and Policy Optimizer.)',
+    howItWorks: [
+      'Collects the outcome of every applied fix and gated action.',
+      'Scores what worked and what did not.',
+      'Updates models, prompts, and rankings from the results.',
+      'Proposes tuned guardrail policy — promoted only after shadow eval + review.',
+    ],
+  }),
+  agent('Chaos Orchestrator', 'Prescriptive-Adaptive', 19, 'Run controlled chaos experiments.', 'Validates assumptions and resilience safely.', {
+    hitl: 'Required',
+    sre: true,
+    howItWorks: [
+      'Defines a controlled experiment with a clear hypothesis.',
+      'Sets blast-radius caps and automatic abort conditions.',
+      'Injects the failure and observes how the system responds.',
+      'Reports findings and reverts safely after approval.',
+    ],
+  }),
 ];
 
 export function getAgentById(agentId: string): AgentCatalogItem | undefined {
@@ -459,4 +422,3 @@ export function agentsByPhase(phase: AgentPhase): AgentCatalogItem[] {
 export function sreAgents(): AgentCatalogItem[] {
   return AGENTS.filter((item) => item.sre);
 }
- 

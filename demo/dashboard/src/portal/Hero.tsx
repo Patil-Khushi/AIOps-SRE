@@ -59,7 +59,7 @@ function Hero({ revealed: revealStarted, onExplore }: HeroProps) {
               className="font-body text-base font-medium uppercase text-white/40"
               style={{ letterSpacing: '0.18em' }}
             >
-              30 Agents · 4 Phases · Vendor-Neutral
+              19 Agents · 4 Phases · Vendor-Neutral
             </p>
             <p className="max-w-lg font-body text-base font-normal leading-relaxed text-white/70 md:text-lg">
               Vendor-neutral, modular, governed agent-based AIOps. From the
