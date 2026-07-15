@@ -46,6 +46,12 @@ const SERVICE_FLAG: Record<string, string> = {
   adservice: 'adFailure',
   recommendation: 'recommendationCacheFailure',
   recommendationservice: 'recommendationCacheFailure',
+  email: 'emailMemoryLeak',
+  emailservice: 'emailMemoryLeak',
+  checkout: 'kafkaQueueProblems',
+  checkoutservice: 'kafkaQueueProblems',
+  frontend: 'imageSlowLoad',
+  'frontend-proxy': 'imageSlowLoad',
 };
 
 function flagForService(service: string): string | null {

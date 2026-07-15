@@ -1808,6 +1808,67 @@ class RcaApplyFixRequest(BaseModel):
     )
 
 
+def _live_variants() -> dict[str, str]:
+    """Current flagd variants ({flag: variant}) via the feature-flags seam, or {}."""
+    try:
+        res = get_registry().call("feature_flags.list_variants")
+        return (res.data or {}).get("variants", {}) if getattr(res, "ok", False) else {}
+    except Exception:
+        return {}
+
+
+def _norm_service(service: str | None) -> str:
+    s = (service or "").lower().strip()
+    for sep in ("-", "_", " "):
+        s = s.replace(sep, "")
+    if s.endswith("service") and len(s) > len("service"):
+        s = s[: -len("service")]
+    return s
+
+
+def _resolve_apply_flag(
+    requested_flag: str | None, service: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve the flag an RCA apply should ACTUALLY flip.
+
+    The LLM sometimes emits a flag that isn't in flagd (e.g. 'emailGatewayProvider'
+    for 'email', whose real flag is 'emailMemoryLeak'), and cached verdicts carry
+    stale flags. Rather than fail with FlagNotFound — or flip the wrong flag on a
+    service with several scenarios (payment: paymentFailure vs paymentUnreachable) —
+    resolve to the flag CURRENTLY FIRING for the affected service, using the
+    scenario catalog (SCENARIOS) as the source of truth. Returns
+    ``(flag_to_flip, trace_note)``. Fails open: with flagd unreachable it returns
+    the requested flag unchanged.
+    """
+    variants = _live_variants()
+    if not variants:
+        return requested_flag, None
+    req = (requested_flag or "").strip() or None
+    # Requested flag is real AND currently firing → honor it.
+    if req and variants.get(req, "off") != "off":
+        return req, None
+    # Otherwise flip whatever flag is firing for this service.
+    norm = _norm_service(service)
+    firing = [
+        s["flag"]
+        for s in SCENARIOS.values()
+        if _norm_service(s.get("service")) == norm and variants.get(s["flag"], "off") != "off"
+    ]
+    if firing:
+        chosen = firing[0]
+        if chosen != req:
+            return chosen, (
+                f"requested flag {req!r} is not the active failure for service "
+                f"{service!r}; flipping the firing flag {chosen!r} instead"
+            )
+        return chosen, None
+    # Nothing firing for this service. Keep a real (already-off) flag for an
+    # idempotent no-op; else pass through so the executor reports cleanly.
+    if req and req in variants:
+        return req, None
+    return req, f"no active failure flag for service {service!r} (requested {req!r})"
+
+
 @app.post("/api/demo/rca/apply-fix")
 async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
     """Kick off the gated RCA fix-step remediation and return the approval id.
@@ -1821,19 +1882,28 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
     from aiops.tools.rca_remediation import request_fix_step
 
     approval_id = _uuid_hex()
+    # Resolve the flag to the one actually FIRING for this service — the LLM can
+    # emit a non-existent flag (e.g. 'emailGatewayProvider'), and cached verdicts
+    # carry stale ones. This makes apply flip the REAL failure regardless of what
+    # the verdict guessed, and picks the right flag on multi-scenario services.
+    resolved_flag = req.flag
+    if req.action_type == "set_flag":
+        resolved_flag, resolve_note = _resolve_apply_flag(req.flag, req.service)
+        if resolve_note:
+            logger.info("apply-fix flag resolution (service=%s): %s", req.service, resolve_note)
     ctx: dict[str, Any] = {
         "approval_id": approval_id,
         "approval_timeout_seconds": req.timeout_seconds,
         "reason": req.reason,
         "action_type": req.action_type,
-        "flag": req.flag,
+        "flag": resolved_flag,
         "variant": req.variant,
     }
 
     def _run_executor() -> None:
         outcome = request_fix_step(
             action_type=req.action_type,
-            flag=req.flag,
+            flag=resolved_flag,
             variant=req.variant,
             hitl_context=ctx,
         )
@@ -1862,7 +1932,7 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
     return {
         "approval_id": approval_id,
         "action_type": req.action_type,
-        "flag": req.flag,
+        "flag": resolved_flag,
         "variant": req.variant,
         "status": "pending",
         "timeout_seconds": req.timeout_seconds,
