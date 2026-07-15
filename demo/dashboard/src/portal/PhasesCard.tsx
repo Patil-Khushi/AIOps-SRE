@@ -1,33 +1,34 @@
 // The phases card — a glassmorphism panel listing the four AIOps maturity
 // phases. Mirrors the agent-catalog phase summary (see CLAUDE.md):
-// Reactive-Active (8) → Proactive (7) → Predictive (7) → Prescriptive (6).
-// Prescriptive is 6: Remediation Recommender + Auto-Healer are merged into the
-// RCA Agent (RCA now generates, recommends, and applies the fix end to end).
+// Reactive-Active (6) → Proactive (3) → Predictive (5) → Prescriptive (5) = 19.
+// Consolidated from 30: several agents merged into combined, product-named
+// agents (Alert Intelligence, Incident Mobilization, Proactive Sensing, Service
+// Graph, Reliability Prediction, RCA, Closed-Loop Learning).
 
 const PHASES = [
   {
     name: 'Reactive-Active',
-    count: 8,
+    count: 6,
     swatch: '#4f46e5',
-    examples: 'Alert Triage · Incident Classifier · Auto-Ticketing',
+    examples: 'Alert Intelligence · Incident Mobilization · Incident Commander',
   },
   {
     name: 'Proactive',
-    count: 7,
+    count: 3,
     swatch: '#7c3aed',
-    examples: 'Anomaly Detector · Drift Monitor · Toil Detector',
+    examples: 'Proactive Sensing · Service Graph · Toil Detector',
   },
   {
     name: 'Predictive',
-    count: 7,
+    count: 5,
     swatch: '#f59e0b',
-    examples: 'Failure Forecaster · SLO Breach Predictor · Capacity Planner',
+    examples: 'Reliability Prediction · Capacity Planner · Root-Cause Predictor',
   },
   {
     name: 'Prescriptive-Adaptive',
-    count: 6,
+    count: 5,
     swatch: '#db2777',
-    examples: 'RCA Agent ★ · Chaos Orchestrator · Policy Optimizer',
+    examples: 'RCA Agent ★ · Knowledge Synthesizer · Chaos Orchestrator',
   },
 ] as const;
 
@@ -54,7 +55,7 @@ export default function PhasesCard() {
               Platform Map
             </p>
             <p className="font-mono text-[10px] text-white/60">
-              30 agents · 4 phases
+              19 agents · 4 phases
             </p>
           </div>
 

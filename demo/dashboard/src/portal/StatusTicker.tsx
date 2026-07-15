@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react';
 
 const LINES = [
   'SYSTEM · ADAPTIVE AIOPS v2.0 · INITIALISING',
-  'LOADING 30 AGENT DEFINITIONS ·········',
+  'LOADING 19 AGENT DEFINITIONS ·········',
   'PHASE REGISTRY · OK',
   'AGENTIC RUNTIME · STANDBY',
   'SCROLL OR CLICK TO BOOT',

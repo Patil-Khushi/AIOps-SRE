@@ -59,7 +59,7 @@ function PhaseGrid({ onSelect }: { onSelect: (phase: AgentPhase) => void }) {
           className="font-mono text-[11px] uppercase text-white/50"
           style={{ letterSpacing: '0.35em' }}
         >
-          Platform Map · 30 Agents · 4 Phases
+          Platform Map · 19 Agents · 4 Phases
         </p>
         <h1
           className="font-display text-5xl font-black uppercase text-white md:text-6xl"
