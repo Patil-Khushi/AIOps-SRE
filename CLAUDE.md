@@ -4,7 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-As of 2026-05-21 the repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness, the OPA policy starter, smoke tests, and CI in place. **Phase 1 is mid-flight**: four Reactive-Active agents have shipped under `agents/` — `alert_triage/` (RA-001), `incident_classifier/` (RA-002), `auto_ticketing/` (RA-003), and `notification_router/` (RA-005). The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket sinks today; Slack/Teams post-POC), the standalone classifier dashboard under `demo/classifier-ui/`, and the React dashboard under `demo/dashboard/`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+
+### Agent mergers in the shipped product
+
+The **vision catalog** (`docs/Adaptive_AIOps_Agent_Catalog.xlsx`) lists 30 agents as separate rows. The **shipped product** has consolidated some into single deployable units:
+
+- **RA-001 + RA-002 merged** → `agents/alert_triage/` owns both triage + incident classification. Call `triage(alert)` for verdict-only, `classify(payload)` for classification-only, or `triage_and_classify(alert)` for both in a `CombinedResult`. The UI is at `/combined`.
+- **RA-005 + RA-006 merged** → `agents/notification_assembler/` owns both routing + war-room assembly. One agent emits one message per incident with the war-room join link folded in for Sev-1/2, plain notification for lower severities.
+
+When the catalog says "RA-001," treat "Alert Triage" (the merged `alert_triage/` agent) as the shipped SKU; same for "RA-005+006" → "Notification Assembler." Catalog rows and agent directory names may not match 1:1, so always check `agents/README.md` for the authoritative shipped inventory.
 
 Source-of-truth documents (binary Office files):
 
@@ -80,11 +89,11 @@ When picking a tool for a new component, default to the choice in this table unl
 
 The onboarding guide specifies five phases. Use this to judge what's in scope at any given moment:
 
-- **Phase 0 — Setup (W0–2):** repo skeleton, demo app deployed with OTel→Prom/Loki/Tempo flowing, Grafana dashboards, failure-injection library v0 (≥3 scenarios), truth-file template, LLM API access. *Out of scope: any agent.*
-- **Phase 1 — Reactive backbone (W3–5):** Alert Triage v1, Auto-Ticketing v1 (ServiceNow PDI), Notification Router v1 (Slack), Log Correlation v1, eval harness, demo UI v0. First internal demo. *Out of scope: predictive, RCA, autonomous-destructive, polished UI.*
-- **Phase 2 — RCA backbone (W6–8):** RCA Agent v1, HITL UI v1, Incident Commander v1, Knowledge Synthesizer v0 (postmortem skeleton only), audit trail. *Out of scope: predictive, prescriptive autonomy, chaos, multi-tenant.*
-- **Phase 3 — Proactive + first prediction (W9–10):** Anomaly Detector v1, Dependency Mapper v1 (live OTel service map), Early Warning v1, SLO Breach Predictor v1 on synthetic SLOs, Reliability Forecaster v0. *Out of scope: full predictive suite, chaos.*
-- **Phase 4 — Polish + demo (W11–12):** rehearsed scenarios, narrative, recorded demo, post-POC backlog written.
+- **Phase 0 — Setup (W0–2):** ✅ *Shipped.* Repo skeleton, demo app deployed with OTel→Prom/Loki/Tempo flowing, failure-injection library, truth-file template, LLM API access.
+- **Phase 1 — Reactive backbone (W3–5):** ✅ *Shipped.* Alert Triage v1 (RA-001+002 merged), Auto-Ticketing v1 (ServiceNow PDI), Notification Assembler v1 (RA-005+006 merged), Log Correlation v1, eval harness, demo UI, dashboard. *Out of scope: predictive, full RCA, prescriptive autonomy.*
+- **Phase 2 — RCA backbone (W6–8):** ✅ *Mostly shipped.* RCA Agent v1, HITL UI, Incident Commander v1, Knowledge Synthesizer v0 (postmortem drafting + HITL-gated KB publish), audit trail. *Out of scope: predictive, prescriptive autonomy, chaos.*
+- **Phase 3 — Proactive + first prediction (W9–10):** *In progress / planned.* Anomaly Detector, Dependency Mapper (live OTel service map), Early Warning, SLO Breach Predictor, Reliability Forecaster. *Out of scope: full predictive suite, chaos.*
+- **Phase 4 — Polish + demo (W11–12):** *Planned.* Rehearsed scenarios, recorded demo, postmortems, post-POC backlog.
 
 ## Concept cheat sheet (so you can read the docs without rereading them)
 
@@ -100,34 +109,43 @@ The onboarding guide specifies five phases. Use this to judge what's in scope at
 - **MCP / A2A / OpenAPI** — the three open contracts third-party tools and agents plug in through.
 - **PDI** — ServiceNow Personal Developer Instance (free full ServiceNow tenant for dev).
 
-## Repository layout (Phase 0)
+## Repository layout
 
 ```
 aiops/                     # platform seams — never call vendor SDKs outside this package
 ├── llm/                   # provider-agnostic LLM gateway (anthropic / openai / ollama / stub)
 ├── tools/                 # tool registry — every external integration registers here
-│   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket adapters (RA-005 sink)
+│   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket + Slack adapters
 │   ├── feature_flags/     # flagd adapter (replaces the kubectl-patch shell-out, ARCH-1)
-│   └── itsm/              # ServiceNow PDI client (incident.create/update, cmdb.lookup)
-└── policy/                # platform-enforced HITL gate (None / Optional / Required)
-agents/                    # Phase-1 Reactive-Active agents shipped (see agents/README.md)
-├── alert_triage/          # RA-001
-├── incident_classifier/   # RA-002
-├── auto_ticketing/        # RA-003
-└── notification_router/   # RA-005
+│   ├── itsm/              # ServiceNow PDI client (incident.create/update, cmdb.lookup)
+│   ├── observability/     # read-only Prometheus + Jaeger queries (autonomy NONE)
+│   └── alerts/            # alert normalization (Prometheus → canonical Alert)
+├── policy/                # platform-enforced HITL gate (None / Optional / Required)
+├── state/                 # SQLModel persistence (sqlite default; Postgres via URL swap post-POC)
+├── runtime/               # orchestrator seam — run_reactive_flow() chains RA-001→003→005+006
+└── runbooks/              # runbook definitions used by auto_healer_lite / runbook_executor
+agents/                    # Shipped agents (see agents/README.md for the authoritative inventory)
+├── alert_triage/          # RA-001+002 combined: triage + incident classification
+├── auto_ticketing/        # RA-003: ServiceNow ticketing
+├── notification_assembler/# RA-005+006 combined: notification routing + war-room assembly
+├── incident_commander/    # RA-008 (SRE): coordinates Sev-1/2, orchestrates the flow + RCA
+├── rca_agent/             # PRS-008 ★: ranked fix steps + blast radius + rollback (recommend-only)
+├── knowledge_synthesizer/ # PRS-007: postmortem + KB draft (publish is HITL-gated)
+├── log_correlation/       # RA-007: cross-service log correlation
+├── auto_healer_lite/      # HITL demo: requests automation.runbook.execute (REQUIRED)
+└── ...                    # remediation_recommender, resolution_verifier, runbook_executor (stubs/support)
 evals/                     # hand-rolled JSON test harness; CI gates pass-rate
 demo/
 ├── otel-demo/             # Helm values for the upstream OpenTelemetry Demo chart
 ├── failure_injection/     # one-command failure scenario runner + starter scenarios
 ├── truth_files/           # ground truth per scenario (cause + expected fix)
 ├── load/                  # k6 baseline load script
-├── audit/                 # chatops.jsonl — RA-005 audit log (gitignored, kept by .gitkeep)
+├── audit/                 # chatops.jsonl — audit log of notifications + approvals (gitignored, kept by .gitkeep)
 ├── ui/                    # FastAPI demo server (uv extra: ui) — served at :8765
-├── dashboard/             # React + Vite + Tailwind dashboard (built into dist/, mounted at /dashboard/)
-└── classifier-ui/         # standalone RA-002 SPA (built into dist/, mounted at /classifier)
+└── dashboard/             # React + Vite + Tailwind dashboard (dist/ mounted at /dashboard/, combined UI at /combined)
 infra/                     # Rancher Desktop k3s bootstrap (PowerShell + bash) + Prometheus rules
-policies/                  # OPA policies (hitl.rego); reference-only in Phase 0
-scripts/                   # ops helpers (github_bulk runner, verify_snow_creds.ps1)
+policies/                  # OPA policies (hitl.rego) — enforces Required-HITL actions
+scripts/                   # ops helpers (github_bulk runner, seed_oncall, verify_snow_creds.ps1)
 tests/                     # repo-level smoke + integration tests
 start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-forwards + UI
 .github/workflows/         # CI: ruff + pytest + eval gate + opa check
@@ -199,14 +217,17 @@ uv run ruff format .
 ### Constraints code review will catch
 
 - **No direct vendor SDK imports.** `import anthropic` / `import openai` outside `aiops/llm/` fails the smoke test (`test_no_direct_llm_sdk_imports_outside_aiops_llm`).
-- **No HITL checks inside agent logic.** Use `aiops.policy.get_gate().enforce(...)` at the action boundary.
+- **No HITL checks inside agent logic.** Use `aiops.policy.get_gate().enforce(...)` at the action boundary; don't gate-check inside agents.
+- **No direct flagd mutation via kubectl.** Use the `feature_flags.set_variant` capability — `test_no_kubectl_for_flagd` catches direct `kubectl patch` (ARCH-1).
 - **Every new failure scenario ships with a truth file.** The smoke test `test_every_scenario_has_a_truth_file` enforces it.
-- **Every new agent ships with `evals/golden.json`.** The eval harness will discover it automatically.
+- **Every new agent ships with `agents/<dir>/evals/golden.json`.** The eval harness discovers it automatically.
 
 ### The seams to use, not bypass
 
 | Want to... | Use... | Don't... |
 |---|---|---|
-| Call an LLM | `aiops.llm.complete` / `acomplete` | `import anthropic` |
-| Call ServiceNow / Splunk / Slack / kubectl | `aiops.tools.get_registry().call(capability, ...)` | `httpx.post("https://servicenow...")` |
+| Call an LLM | `aiops.llm.complete` / `acomplete` | `import anthropic` / `import openai` |
+| Call ServiceNow / Slack / flagd / Prom / Jaeger | `aiops.tools.get_registry().call(capability, ...)` | `httpx.post(...)` / `kubectl patch` |
 | Gate a destructive action | `aiops.policy.get_gate().enforce(action, ctx)` | `if user_confirmed:` inside the agent |
+| Persist verdicts / classifications / state | `aiops.state.repository.save_*` / `load_*` | raw SQLAlchemy / SQL |
+| Chain the Reactive-Active flow | `aiops.runtime.orchestrator.run_reactive_flow(alert)` | re-wiring the agent calls inline |
