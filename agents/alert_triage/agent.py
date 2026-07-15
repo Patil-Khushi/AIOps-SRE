@@ -98,8 +98,17 @@ def _get_embed_model() -> Any | None:
 
             _EMBED_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
             logger.info("loaded sentence-transformers embedding model")
-        except ImportError:
-            logger.info("sentence-transformers not installed; using rule-based dedup only")
+        except Exception as exc:
+            # Optional feature: any failure loading the embedding stack must
+            # degrade to rule-based dedup, never break triage. Covers both
+            # ImportError (extra not installed) and OSError/others — e.g. a
+            # torch native DLL that can't load because the MSVC++ runtime is
+            # missing on Windows ([WinError 126] loading c10.dll).
+            logger.info(
+                "embedding model unavailable (%s: %s); using rule-based dedup only",
+                exc.__class__.__name__,
+                exc,
+            )
             _EMBED_MODEL = False
     return _EMBED_MODEL if _EMBED_MODEL else None
 
