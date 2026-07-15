@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   BookOpen,
   Users,
-  ListChecks,
   FileText,
 } from 'lucide-react';
 import { clsx } from '@/lib/format';
@@ -48,8 +47,6 @@ const ITEMS: Record<string, NavItem> = {
   // Per-agent live surfaces (their own pages, not /console). Listed here so an
   // agent's focused sidebar can link back to its own console.
   '/agents/runbook-executor':       { to: '/agents/runbook-executor',       label: 'Runbook Executor', icon: FileText,   end: false },
-  '/agents/remediation-recommender':{ to: '/agents/remediation-recommender',label: 'Remediation',      icon: ListChecks, end: false },
-  '/agents/auto-healer':            { to: '/agents/auto-healer',            label: 'Auto-Healer',      icon: HeartPulse, end: false },
 };
 
 // Shared infra surfaces every agent's console carries.
@@ -70,11 +67,9 @@ const AGENT_SURFACES: Record<string, string[]> = {
   'notification-assembler': ['/console', '/console/notifications', ...SHARED_TAIL],
   // Knowledge Synthesizer's console IS the knowledge base (postmortems + KB).
   'knowledge-synthesizer': ['/console/knowledge', '/console/approvals', '/console/health'],
-  // Remediation Recommender's own page, the Auto-Healer it hands off to, plus
-  // the approval gate + health. (No Alert-Triage / RCA surfaces — keep it focused.)
-  'remediation-recommender': ['/agents/remediation-recommender', '/agents/auto-healer', '/console/approvals', '/console/health'],
-  // Auto-Healer: its own page + the approval gate it blocks on + health.
-  'auto-healer': ['/agents/auto-healer', '/console/approvals', '/console/health'],
+  // Remediation Recommender + Auto-Healer are merged into the RCA Agent — RCA
+  // owns generate → recommend → apply/execute. They have no standalone surface;
+  // their catalog cards deep-link to the RCA console.
   // Runbook Executor: its own page + the approval gate + health.
   'runbook-executor': ['/agents/runbook-executor', '/console/approvals', '/console/health'],
   // Topology Discovery's live surface IS the topology map (existing page).
