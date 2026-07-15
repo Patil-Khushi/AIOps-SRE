@@ -75,47 +75,61 @@ interface DisplayOption {
   raw: RemediationOption | null;
 }
 
-function optionsFromVerdict(v: RCAVerdict): DisplayOption[] {
-  const service = v.affected_service;
-  if (v.remediation_options && v.remediation_options.length > 0) {
-    return v.remediation_options.map((o) => {
-      const isFlag = o.action_type === 'set_flag';
-      const flag = isFlag ? (str(o.tool_args?.flag) ?? flagForService(service)) : null;
-      const variant = str(o.tool_args?.variant) ?? 'off';
-      return {
-        id: o.option_id,
-        title: o.title,
-        description: o.description,
-        blast_radius: o.blast_radius,
-        action_type: o.action_type,
-        rollback: o.rollback,
-        mttrMinutes: o.estimated_mttr_minutes,
-        toolCapability: o.tool_capability,
-        recommended: o.option_id === v.recommended_option_id,
-        flag,
-        variant,
-        raw: o,
-      };
-    });
+// The active failure flag for THIS incident — the flag whose flip to 'off'
+// actually clears the failure. Prefer a set_flag option's OWN flag (grounded
+// against the firing scenario, so it's the right flag even for a service with
+// several scenarios, e.g. payment → paymentFailure vs paymentUnreachable), then
+// a set_flag step's flag, then the per-service default. EVERY option applies
+// this flag, so approving any of them really remediates — no silent dry-runs.
+function primaryFlagFor(v: RCAVerdict): string | null {
+  for (const o of v.remediation_options ?? []) {
+    if (o.action_type === 'set_flag') {
+      const f = str(o.tool_args?.flag);
+      if (f) return f;
+    }
   }
-  return v.ranked_fix_steps.map((s: RankedFixStep, i: number) => {
-    const isFlag = s.action_type === 'set_flag';
-    const flag = isFlag ? (s.flag ?? flagForService(service)) : null;
-    return {
-      id: `step-${i}`,
-      title: `Fix step ${i + 1}`,
-      description: s.description,
-      blast_radius: s.blast_radius,
-      action_type: s.action_type,
-      rollback: s.rollback,
-      mttrMinutes: null,
-      toolCapability: isFlag ? 'feature_flags.set_variant' : null,
-      recommended: i === 0,
-      flag,
-      variant: s.variant ?? 'off',
-      raw: null,
-    };
-  });
+  for (const s of v.ranked_fix_steps) {
+    if (s.action_type === 'set_flag' && s.flag) return s.flag;
+  }
+  return flagForService(v.affected_service);
+}
+
+function optionsFromVerdict(v: RCAVerdict): DisplayOption[] {
+  // Every option resolves to the incident's real failure flag (variant → off),
+  // so approving ANY option flips it off — the actual, safe remediation in this
+  // demo. Only options on a service we can't map to a flag fall back to the
+  // gated execute seam (opt.raw + flag=null).
+  const primaryFlag = primaryFlagFor(v);
+  if (v.remediation_options && v.remediation_options.length > 0) {
+    return v.remediation_options.map((o) => ({
+      id: o.option_id,
+      title: o.title,
+      description: o.description,
+      blast_radius: o.blast_radius,
+      action_type: o.action_type,
+      rollback: o.rollback,
+      mttrMinutes: o.estimated_mttr_minutes,
+      toolCapability: o.tool_capability,
+      recommended: o.option_id === v.recommended_option_id,
+      flag: primaryFlag,
+      variant: 'off',
+      raw: o,
+    }));
+  }
+  return v.ranked_fix_steps.map((s: RankedFixStep, i: number) => ({
+    id: `step-${i}`,
+    title: `Fix step ${i + 1}`,
+    description: s.description,
+    blast_radius: s.blast_radius,
+    action_type: s.action_type,
+    rollback: s.rollback,
+    mttrMinutes: null,
+    toolCapability: s.action_type === 'set_flag' ? 'feature_flags.set_variant' : null,
+    recommended: i === 0,
+    flag: primaryFlag,
+    variant: 'off',
+    raw: null,
+  }));
 }
 
 // Local status (not just backend outcome). 'opening' = firing the apply request;

@@ -1838,10 +1838,20 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
             hitl_context=ctx,
         )
         _HITL_OUTCOMES[approval_id] = outcome
-        # Fire-and-forget resolution verification after a successful apply.
-        # Wrapped so it can never affect the fix-apply outcome (CLAUDE.md:
-        # the verifier is fully decoupled).
         if isinstance(outcome, dict) and outcome.get("status") == "executed":
+            # The approved flip landed in the flagd ConfigMap, but the running
+            # flagd pod only re-reads its mounted ConfigMap on kubelet's sync
+            # (~60-120s). Kick it now so the fix actually takes effect in seconds
+            # — parity with scenario inject/reset (_toggle_flagd_flag). Skip a
+            # no-op flip (flag already at target) and non-set_flag actions, which
+            # don't touch flagd. Best-effort: _kick_flagd never raises.
+            result = outcome.get("result")
+            noop = bool(result.get("noop")) if isinstance(result, dict) else False
+            if req.action_type == "set_flag" and not noop:
+                _kick_flagd()
+            # Fire-and-forget resolution verification after a successful apply.
+            # Wrapped so it can never affect the fix-apply outcome (CLAUDE.md:
+            # the verifier is fully decoupled).
             try:
                 _post_fix_verify(req)
             except Exception:

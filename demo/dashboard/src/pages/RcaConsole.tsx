@@ -107,11 +107,17 @@ export default function RcaConsole() {
   // the flag flip before we re-pull.
   const handleResolved = () => {
     const v = resultsRef.current[selectedIdx]?.verdict;
-    if (v) rcaCache.delete(rcaKey(v, selectedIdx));
-    setRca(null);
-    setRcaIncidentId(null);
-    setSelectedIdx(0);
-    setTimeout(() => verdicts.refetch(), 1500);
+    // Let the operator SEE the success ("flag set to off — failure clearing") in
+    // RcaView for a moment, THEN drop the resolved incident and re-pull the
+    // now-cleared list. Alert Stream + the dashboard clear on their own once the
+    // flag is off and flagd is kicked (~5s).
+    setTimeout(() => {
+      if (v) rcaCache.delete(rcaKey(v, selectedIdx));
+      setRca(null);
+      setRcaIncidentId(null);
+      setSelectedIdx(0);
+      verdicts.refetch();
+    }, 2800);
   };
 
   // When arriving from Alert Triage (or from an approved fix on the Approvals
