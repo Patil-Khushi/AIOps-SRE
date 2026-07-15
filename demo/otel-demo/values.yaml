@@ -101,21 +101,6 @@ prometheus:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
-  # Scrape the AIOps demo UI server's /metrics endpoint. The UI runs on the
-  # host (out of cluster) and exposes ``aiops_scenario_active`` — a synthetic
-  # gauge that flips to 1 whenever a scenario flag is in a non-off variant.
-  # ``host.docker.internal`` is Rancher Desktop's host-loopback alias and was
-  # verified reachable from inside the prometheus pod via ``kubectl exec``.
-  extraScrapeConfigs: |
-    - job_name: aiops-ui
-      # 5s (vs the global 15s): this job scrapes one tiny /metrics endpoint, so
-      # the extra load is negligible, and it shaves up to 10s off how fast the
-      # aiops_scenario_active gauge flip reaches Prometheus after an inject.
-      scrape_interval: 5s
-      static_configs:
-        - targets: ['host.docker.internal:8765']
-          labels:
-            origin: aiops-platform
   serverFiles:
     alerting_rules.yml:
       groups:
@@ -285,28 +270,3 @@ prometheus:
             description: service={{ $labels.service_name }} rss_bytes={{ $value }}
             runbook_url: https://runbooks.example.com/email
             flag_hint: toggle emailMemoryLeak=100x at http://localhost:8080/feature/
-        # Plan B (Tier 1) — synthetic signal from demo/ui/server.py's /metrics
-        # endpoint. Fires for every scenario the dashboard's Failure Injection
-        # panel can inject, including those whose application instrumentation
-        # never tags spans as STATUS_CODE_ERROR (paymentFailure et al.).
-        # Coexists with the *ErrorRateHigh rules above — those still fire when
-        # real error data is present; this fires unconditionally on flag flip.
-        - alert: ScenarioActive
-          expr: aiops_scenario_active > 0
-          # for: 0s — fire on the first evaluation where the gauge is set. The
-          # gauge is a stable binary signal driven by an explicit inject (no
-          # flapping), so there's no reason to hold it pending. Removes 15s of
-          # latency on the demo's fast-path alert.
-          for: 0s
-          labels:
-            # Per-scenario severity carried on the aiops_scenario_active gauge
-            # (demo/ui/server.py) and sourced from demo/scenarios/*.yaml. RA-001
-            # maps it generically (critical->Sev-1, high->Sev-2, warning->Sev-3)
-            # via severity_hint — no flag-name lookup in the agent.
-            severity: '{{ $labels.severity }}'
-            alert_type: scenario_active
-          annotations:
-            summary: 'Scenario {{ $labels.scenario_id }} active on {{ $labels.service }}'
-            description: 'flag={{ $labels.flag }} is in a non-off variant; the UI surfaced this via /metrics'
-            flag_hint: 'reset via .\reset.ps1 or the dashboard Reset All button'
-            runbook_url: 'https://runbooks.example.com/scenario-active'

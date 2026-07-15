@@ -73,11 +73,9 @@ from fastapi import (
     FastAPI,
     HTTPException,
     Request,
-    Response,
 )
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from pydantic import BaseModel, Field
 
 # Load .env explicitly. ``uv run`` does NOT auto-load .env files, so without
@@ -371,17 +369,6 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.get("/metrics")
-def metrics() -> Response:
-    """Prometheus scrape endpoint. Currently exposes ``aiops_scenario_active``
-    only — the gauge that Plan B's ScenarioActive alert rule keys on. Refresh
-    is synchronous (re-reads flagd configmap) so every scrape reflects current
-    truth, not cached state. If flagd is unreachable the gauge is left as-is
-    rather than 500ing the scrape."""
-    _refresh_scenario_gauge()
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
 @app.get("/api/fixtures")
 def list_fixtures() -> dict[str, Any]:
     """Return the contents of ``evals/golden.json`` for the UI's fixture pane."""
@@ -549,18 +536,13 @@ def triage_fixture(fixture_id: str) -> dict[str, Any]:
 def _synthetic_alerts_for_active_scenarios() -> list[dict[str, Any]]:
     """Canonical-alert payloads for every scenario whose flagd flag is non-off.
 
-    The cluster-side bridge (``aiops_scenario_active`` gauge + ``ScenarioActive``
-    Prometheus rule in values.yaml) only fires if Prometheus can scrape the UI's
-    ``/metrics`` AND the rule is loaded in the running prom-server. On dev
-    machines where Rancher Desktop's ``host.docker.internal`` doesn't resolve or
-    ``helm upgrade`` hasn't been re-run after editing values.yaml, the rule
-    never fires and Inject looks like a no-op in AlertStream.
-
-    Emitting the same alert directly from the UI guarantees AlertStream sees an
-    alert within one broadcaster tick of Inject, regardless of cluster state.
-    The ``alert_id`` matches the canonical Prom shape ``PROM-<alertname>-na`` so
-    a real Prometheus alert with the same alertname overrides the synthetic
-    one in dedup.
+    The UI emits these directly so AlertStream reflects an Inject within one
+    broadcaster tick, regardless of cluster state. This is the bridge from a
+    flag flip to a firing alert on dev machines, where the OTel demo's
+    ``STATUS_CODE_UNSET`` spans keep the upstream ``*ErrorRateHigh`` rules from
+    firing on their own. The ``alert_id`` matches the canonical Prom shape
+    ``PROM-<alertname>-na`` so a real Prometheus alert with the same alertname
+    overrides the synthetic one in dedup.
     """
     try:
         res = get_registry().call("feature_flags.list_variants")
@@ -589,8 +571,12 @@ def _synthetic_alert_for_scenario(sid: str, s: dict[str, Any]) -> dict[str, Any]
     the canonical Prom shape ``PROM-<alertname>-na`` so a real Prometheus
     alert of the same name dedups against it.
     """
-    alertname = s.get("alert") or "ScenarioActive"
     service = s.get("service") or "unknown"
+    # Every flag-bearing scenario in demo/scenarios/*.yaml declares its own
+    # ``alert:`` name (inject_scenario reads s["alert"] directly), so this
+    # fallback only guards a malformed scenario — it never surfaces a generic
+    # catch-all alert name.
+    alertname = s.get("alert") or f"{service}-alert"
     flag = s.get("flag") or ""
     # Per-scenario severity (declared in demo/scenarios/*.yaml) so injected
     # failures classify across the full Sev-1..Sev-3 range instead of all
@@ -2833,46 +2819,6 @@ def _load_scenarios() -> dict[str, dict[str, Any]]:
 SCENARIOS: dict[str, dict[str, Any]] = _load_scenarios()
 
 
-# Synthetic gauge surfaced at /metrics so Prometheus has a signal that fires
-# the moment a scenario is injected — bypasses the upstream OTel-demo gap where
-# payment/product-catalog spans stay STATUS_CODE_UNSET even when the failure
-# flag is on. Labels match what the existing alert-rule machinery expects so
-# the agent chain's CMDB lookup has a usable `service` to route on.
-_SCENARIO_ACTIVE = Gauge(
-    "aiops_scenario_active",
-    "1 when the scenario's flag is in a non-off variant per flagd; 0 otherwise.",
-    ["scenario_id", "flag", "service", "severity"],
-)
-
-
-def _refresh_scenario_gauge() -> None:
-    """Re-derive ``aiops_scenario_active`` from the live flagd configmap.
-
-    Called on every ``/metrics`` scrape so the gauge tracks reality without
-    needing the UI to push on every inject/reset. Failure to reach flagd
-    leaves the gauge at its last-known state (no exception bubbles up — a
-    scrape that 500s is worse than a scrape that's slightly stale)."""
-    try:
-        res = get_registry().call("feature_flags.list_variants")
-    except Exception:
-        return
-    if not res.ok:
-        return
-    current: dict[str, str] = (res.data or {}).get("variants", {})
-    for sid, s in SCENARIOS.items():
-        variant = current.get(s["flag"], "off")
-        # severity travels on the gauge so the ScenarioActive Prometheus rule
-        # can template it ({{ $labels.severity }}) instead of hard-coding one
-        # value for every scenario. Same source-of-truth as the UI synthetic
-        # alert (_synthetic_alert_for_scenario) — demo/scenarios/*.yaml.
-        _SCENARIO_ACTIVE.labels(
-            scenario_id=sid,
-            flag=s["flag"],
-            service=s.get("service", "unknown"),
-            severity=str(s.get("severity") or "high"),
-        ).set(1 if variant != "off" else 0)
-
-
 def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
     """Invoke kubectl. Returns stdout. Raises HTTPException on non-zero exit."""
     try:
@@ -2901,12 +2847,11 @@ def _kick_flagd() -> None:
 
     flagd watches its mounted configmap *file*, but the mount inside the
     running pod doesn't refresh until kubelet's ConfigMap sync (~60-120s).
-    Without this kick, a flag flip lands in the configmap right away (so the
-    Overview's ``aiops_scenario_active`` gauge — which reads the configmap
-    directly — flips instantly), but the running flagd pod keeps serving the
-    old variant for up to ~2 minutes. That means no real service degradation,
-    no Prometheus alert, and therefore nothing on the Alert Stream / Integrated
-    Tools feeds (both driven by /api/live-alerts → real firing alerts).
+    Without this kick, a flag flip lands in the configmap right away, but the
+    running flagd pod keeps serving the old variant for up to ~2 minutes. That
+    means no real service degradation and no upstream Prometheus alert, so the
+    Alert Stream / Integrated Tools feeds show only the UI's synthetic alert
+    until the real ``*ErrorRateHigh`` rule catches up.
 
     Restarting the deployment remounts the configmap in seconds. This mirrors
     the CLI's ``inject.py:_flagd_set`` behavior so UI and CLI injects propagate
