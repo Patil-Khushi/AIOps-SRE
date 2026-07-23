@@ -1,0 +1,20 @@
+{
+  "job_name": "sample-incremental-load",
+  "total_runtime_minutes": 2160,
+  "note": "Synthetic sample mimicking an Azure Databricks incremental load. Runtimes are illustrative. Replace with a live Databricks provider for real numbers.",
+  "assets": [
+    {
+      "path": "incremental_load",
+      "file": "incremental_load.py",
+      "runtime_minutes": 300,
+      "is_child": false
+    },
+    {
+      "path": "transforms_child",
+      "file": "transforms_child.py",
+      "runtime_minutes": 1800,
+      "is_child": true,
+      "called_by": "incremental_load"
+    }
+  ]
+}

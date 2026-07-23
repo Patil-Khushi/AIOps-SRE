@@ -1,0 +1,54 @@
+{
+  "agent": "perf_reliability",
+  "catalog_id": "UC3",
+  "version": "v0",
+  "description": "Recommend-only code/runtime optimizer. v0 covers the offline heuristic scanner (coalesce/collect/loop anti-patterns). Grow with LLM-path cases once a live provider is wired; keep the deterministic cases so CI stays green offline.",
+  "cases": [
+    {
+      "id": "coalesce_single_partition_write",
+      "description": "Flags a coalesce(1) single-partition write in a child notebook and recommends repartition/partitionBy.",
+      "tags": ["v0", "heuristic", "partitioning"],
+      "input": {
+        "job_name": "sample-incremental-load",
+        "total_runtime_minutes": 2160,
+        "notebooks": [
+          {
+            "path": "transforms_child",
+            "is_child": true,
+            "called_by": "incremental_load",
+            "runtime_minutes": 1800,
+            "source": "df = spark.read.parquet(in_path)\nresult = df.groupBy('customer_id').agg(sum('amount').alias('total'))\nresult.coalesce(1).write.mode('overwrite').parquet(out_path)\n"
+          }
+        ]
+      },
+      "expected": {
+        "job_name": "sample-incremental-load",
+        "primary_recommendation_contains": "partition",
+        "min_confidence_score": 0.5,
+        "min_analyzed_assets": 1
+      }
+    },
+    {
+      "id": "collect_driver_bottleneck",
+      "description": "Flags a driver-side collect() loop as an anti-pattern.",
+      "tags": ["v0", "heuristic", "driver"],
+      "input": {
+        "job_name": "sample-driver-loop",
+        "total_runtime_minutes": 90,
+        "notebooks": [
+          {
+            "path": "aggregate_child",
+            "is_child": true,
+            "runtime_minutes": 70,
+            "source": "rows = df.collect()\ntotal = 0\nfor r in rows:\n    total += r['amount']\n"
+          }
+        ]
+      },
+      "expected": {
+        "job_name": "sample-driver-loop",
+        "min_confidence_score": 0.5,
+        "min_analyzed_assets": 1
+      }
+    }
+  ]
+}

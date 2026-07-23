@@ -126,6 +126,10 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "observability.traces.services": AutonomyLevel.NONE,
     "itsm.cmdb.lookup": AutonomyLevel.NONE,
     "oncall.schedule.lookup": AutonomyLevel.NONE,
+    # UC3 perf_reliability: read a job's notebook source + runtimes. Read-only
+    # (sample files today, Databricks Jobs/Workspace APIs live later) — nothing
+    # is mutated, so no human gate.
+    "code.assets.fetch": AutonomyLevel.NONE,
     # RA-006 War-Room Assembler: create a Slack war-room channel + invite SMEs.
     # Non-destructive (a channel/invite, reversible) — agent acts by default;
     # a tenant can switch on a human gate (matches the agent's HITL=Optional).
