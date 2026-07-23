@@ -28,6 +28,10 @@ class LLMRequest:
     temperature: float = 0.2
     stop: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
+    # Optional hint for reasoning models (Azure gpt-5 / o-series):
+    # "minimal" | "low" | "medium" | "high". Providers that don't support it
+    # ignore it. Lower effort = fewer billed reasoning tokens, faster, cheaper.
+    reasoning_effort: str | None = None
 
 
 @dataclass

@@ -104,6 +104,10 @@ class OpenAIProvider(LLMProvider):
         if _is_reasoning_model(model):
             # GPT-5 / o-series: only max_completion_tokens; no temperature.
             kwargs["max_completion_tokens"] = req.max_tokens
+            # Optional reasoning-effort hint ("minimal".."high"). Lower = fewer
+            # billed reasoning tokens. Only reasoning models accept the param.
+            if req.reasoning_effort:
+                kwargs["reasoning_effort"] = req.reasoning_effort
         else:
             kwargs["max_tokens"] = req.max_tokens
             kwargs["temperature"] = req.temperature

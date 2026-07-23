@@ -26,6 +26,7 @@ def complete(
     temperature: float = 0.2,
     provider: str | None = None,
     metadata: dict[str, str] | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMResponse:
     """Synchronous LLM call. Use for scripts and Phase-0 smoke tests."""
     msgs = _coerce(messages)
@@ -35,6 +36,7 @@ def complete(
         max_tokens=max_tokens,
         temperature=temperature,
         metadata=metadata or {},
+        reasoning_effort=reasoning_effort,
     )
     req = _enforce_caps(req)
     return get_provider(provider).complete(req)
@@ -48,6 +50,7 @@ async def acomplete(
     temperature: float = 0.2,
     provider: str | None = None,
     metadata: dict[str, str] | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMResponse:
     """Async LLM call. Use from agent code."""
     msgs = _coerce(messages)
@@ -57,6 +60,7 @@ async def acomplete(
         max_tokens=max_tokens,
         temperature=temperature,
         metadata=metadata or {},
+        reasoning_effort=reasoning_effort,
     )
     req = _enforce_caps(req)
     return await get_provider(provider).acomplete(req)

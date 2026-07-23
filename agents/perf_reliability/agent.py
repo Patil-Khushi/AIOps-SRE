@@ -58,6 +58,12 @@ _LLM_MODEL = os.environ.get("AIOPS_UC3_LLM_MODEL") or None
 # multi-notebook jobs must raise it too, or these requests are silently capped.
 _MAX_TOKENS = int(os.environ.get("AIOPS_UC3_MAX_TOKENS", "16000"))
 _RETRY_TOKENS = int(os.environ.get("AIOPS_UC3_RETRY_TOKENS", "28000"))
+# Reasoning effort for gpt-5/o-series: "minimal"|"low"|"medium"|"high". This is
+# structured code review, not deep multi-step reasoning, so "low" cuts the
+# (billed) reasoning tokens — cheaper + faster — with little quality loss. Set
+# AIOPS_UC3_REASONING_EFFORT="" to disable the hint (provider default). Ignored
+# by non-reasoning models/providers.
+_REASONING_EFFORT = os.environ.get("AIOPS_UC3_REASONING_EFFORT", "low") or None
 
 
 # ─── deterministic heuristic fallback ───────────────────────────────────────
@@ -319,6 +325,7 @@ def analyze(perf_input: dict[str, Any] | PerfInput) -> PerfVerdict:
                 model=_LLM_MODEL,
                 temperature=0.2,
                 max_tokens=budget,
+                reasoning_effort=_REASONING_EFFORT,
             )
         except Exception as exc:
             logger.warning("perf_reliability: LLM call failed (%s); using heuristic", exc)
