@@ -50,11 +50,14 @@ _LLM_MODEL = os.environ.get("AIOPS_UC3_LLM_MODEL") or None
 
 # Token budget for the analysis call. Must be generous: the platform default
 # model is a *reasoning* model (Azure gpt-5), whose budget covers reasoning +
-# output. Too small and the reasoning consumes it all and the visible content
-# comes back empty. NOTE: the gateway also clamps to AIOPS_LLM_MAX_TOKENS_PER_CALL
-# (default 4096) — raise that env too for the live LLM path over multi-notebook
-# jobs, or the request below is silently capped.
-_MAX_TOKENS = int(os.environ.get("AIOPS_UC3_MAX_TOKENS", "12000"))
+# output, and reasoning-token usage VARIES per call — so a fixed budget
+# occasionally leaves nothing for output (empty/truncated). We try a normal
+# budget, then retry once at a larger one before falling back to the heuristic.
+# NOTE: the gateway also clamps to AIOPS_LLM_MAX_TOKENS_PER_CALL (.env pins
+# 4096) — the CLI raises that ceiling; any other entry point running this over
+# multi-notebook jobs must raise it too, or these requests are silently capped.
+_MAX_TOKENS = int(os.environ.get("AIOPS_UC3_MAX_TOKENS", "16000"))
+_RETRY_TOKENS = int(os.environ.get("AIOPS_UC3_RETRY_TOKENS", "28000"))
 
 
 # ─── deterministic heuristic fallback ───────────────────────────────────────
@@ -166,6 +169,7 @@ def _fallback_verdict(
         bottleneck_assets=bottlenecks,
         findings=findings,
         primary_recommendation=findings[0].recommendation if findings else "",
+        total_runtime_minutes=parsed.total_runtime_minutes,
         confidence_score=confidence,
         audit_metadata=PerfAuditMetadata(
             created_at=datetime.now(UTC),
@@ -253,6 +257,7 @@ def _coerce_verdict(
             bottleneck_assets=bottlenecks,
             findings=findings,
             primary_recommendation=findings[0].recommendation if findings else "",
+            total_runtime_minutes=parsed.total_runtime_minutes,
             confidence_score=float(raw.get("confidence_score", 0.5)),
             audit_metadata=PerfAuditMetadata(
                 created_at=datetime.now(UTC),
@@ -300,48 +305,53 @@ def analyze(perf_input: dict[str, Any] | PerfInput) -> PerfVerdict:
         ),
         assets_block=_render_assets_block(ranked),
     )
-    try:
-        resp = llm_complete(
-            messages=[
-                Message(role="system", content=SYSTEM_PROMPT_V1),
-                Message(role="user", content=user_prompt),
-            ],
-            provider=_LLM_PROVIDER,
-            model=_LLM_MODEL,
-            temperature=0.2,
-            max_tokens=_MAX_TOKENS,
-        )
+    # Try a normal budget, then retry once at a larger one. A reasoning model's
+    # per-call reasoning cost varies, so a single fixed budget is flaky.
+    budgets = [_MAX_TOKENS] + ([_RETRY_TOKENS] if _RETRY_TOKENS > _MAX_TOKENS else [])
+    for attempt, budget in enumerate(budgets, start=1):
+        try:
+            resp = llm_complete(
+                messages=[
+                    Message(role="system", content=SYSTEM_PROMPT_V1),
+                    Message(role="user", content=user_prompt),
+                ],
+                provider=_LLM_PROVIDER,
+                model=_LLM_MODEL,
+                temperature=0.2,
+                max_tokens=budget,
+            )
+        except Exception as exc:
+            logger.warning("perf_reliability: LLM call failed (%s); using heuristic", exc)
+            decision_trace.append(f"LLM call raised {type(exc).__name__}; falling back")
+            return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
+
         text = (resp.text or "").strip()
         if text.startswith("[stub]"):
             decision_trace.append("LLM provider is the offline stub; using deterministic heuristic")
             return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
-        if not text:
-            # Empty (not stub): a reasoning model (gpt-5) whose token budget was
-            # consumed by reasoning returns no visible content. Raise
-            # AIOPS_UC3_MAX_TOKENS and AIOPS_LLM_MAX_TOKENS_PER_CALL.
+
+        verdict = None
+        if text:
+            raw = _extract_json_object(text)
+            if raw is not None:
+                verdict = _coerce_verdict(raw, parsed, decision_trace=decision_trace)
+        if verdict is not None:
             decision_trace.append(
-                "LLM returned an empty response (reasoning model likely out of token "
-                "budget — raise AIOPS_UC3_MAX_TOKENS / AIOPS_LLM_MAX_TOKENS_PER_CALL); "
-                "using deterministic heuristic"
+                f"LLM produced {len(verdict.findings)} finding(s) at budget={budget}, "
+                f"confidence={verdict.confidence_score:.2f}"
             )
-            return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
-        raw = _extract_json_object(text)
-        if raw is None:
-            decision_trace.append("LLM response not parseable JSON; falling back")
-            return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
-        verdict = _coerce_verdict(raw, parsed, decision_trace=decision_trace)
-        if verdict is None:
-            decision_trace.append("LLM JSON failed validation; falling back")
-            return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
-        decision_trace.append(
-            f"LLM produced {len(verdict.findings)} finding(s), "
-            f"confidence={verdict.confidence_score:.2f}"
-        )
-        return verdict
-    except Exception as exc:
-        logger.warning("perf_reliability: LLM call failed (%s); using heuristic", exc)
-        decision_trace.append(f"LLM call raised {type(exc).__name__}; falling back")
-        return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
+            return verdict
+
+        # Empty/truncated output (reasoning model out of budget) or unparseable
+        # JSON — record and let the loop retry at a larger budget if one is left.
+        reason = "empty response" if not text else "unparseable/invalid JSON"
+        decision_trace.append(f"attempt {attempt} (budget={budget}) -> {reason}")
+
+    decision_trace.append(
+        "LLM did not return usable JSON after retry (reasoning model likely out of "
+        "token budget); using deterministic heuristic"
+    )
+    return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
 
 
 def run(input: dict[str, Any]) -> dict[str, Any]:

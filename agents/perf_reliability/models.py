@@ -102,6 +102,7 @@ class PerfVerdict(BaseModel):
 
     job_name: str
     summary: str = Field(min_length=1)
+    total_runtime_minutes: float | None = None
     analyzed_assets: int = 0
     bottleneck_assets: list[str] = Field(default_factory=list)
     findings: list[OptimizationFinding] = Field(default_factory=list)
