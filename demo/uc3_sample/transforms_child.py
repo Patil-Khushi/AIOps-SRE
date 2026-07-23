@@ -1,27 +1,33 @@
 # Databricks notebook source
 # ---------------------------------------------------------------------------
-# SAMPLE (synthetic) CHILD notebook for UC3. This is the runtime hog (~1800 min
-# of the 2160-min job). It carries two textbook anti-patterns the agent should
-# catch. NOT client code.
+# SAMPLE (synthetic) CHILD notebook — sales aggregation. THE RUNTIME HOG (~1440
+# min of the 2160-min job). Multiple stacked anti-patterns. NOT client code.
 # ---------------------------------------------------------------------------
 
-staging_path = dbutils.widgets.get("staging_path")
-out_path = dbutils.widgets.get("out_path")
+from pyspark.sql import functions as F
 
-df = spark.read.parquet(staging_path)
+staging = dbutils.widgets.get("staging")
 
-# Wide aggregation.
-result = df.groupBy("customer_id").agg({"amount": "sum"}).withColumnRenamed("sum(amount)", "total")
+orders = spark.read.parquet(staging)
+line_items = spark.read.parquet(staging + "line_items/")
 
-# Anti-pattern #1: coalesce(1) collapses the write to a single task — the whole
-# curated write serializes onto one executor. This is the dominant bottleneck.
-result.coalesce(1).write.mode("overwrite").parquet(out_path)
+# Anti-pattern: repeated actions — each .count() recomputes `orders` from scratch
+# because it is never cached.
+print("orders", orders.count())
+print("active", orders.filter(F.col("status") == "ACTIVE").count())
+print("distinct customers", orders.select("customer_id").distinct().count())
 
-# Anti-pattern #2: pulling the full result to the driver and looping in Python
-# to compute a grand total, instead of a distributed aggregation.
-rows = result.collect()
+# Anti-pattern: exploding cross-style join with no join key narrowing — the
+# shuffle blows up to O(orders x line_items) before the aggregation collapses it.
+joined = orders.join(line_items, orders.order_id == line_items.order_id)
+agg = joined.groupBy("customer_id", "product_id").agg(F.sum("amount").alias("total"))
+
+# Anti-pattern: pull the whole aggregation to the driver and loop in Python to
+# compute a grand total, instead of a distributed .agg(F.sum(...)).
+rows = agg.collect()
 grand_total = 0
 for r in rows:
     grand_total += r["total"]
-
 print("grand_total", grand_total)
+
+agg.write.mode("overwrite").parquet(staging + "sales_agg/")

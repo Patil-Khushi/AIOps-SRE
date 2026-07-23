@@ -1,18 +1,26 @@
 # Databricks notebook source
 # ---------------------------------------------------------------------------
-# SAMPLE (synthetic) parent notebook for UC3 — an Azure Databricks incremental
-# load orchestrator. NOT client code. Used so the perf_reliability agent has a
-# realistic, offline job to analyze before live Databricks access is available.
+# SAMPLE (synthetic) PARENT notebook — "orders_incremental_load" job orchestrator.
+# Mirrors a real Azure Databricks incremental load that has drifted into a >24h
+# runtime. NOT client code. Used so perf_reliability has a believable job to
+# analyze offline / on the demo LLM.
 # ---------------------------------------------------------------------------
 
-in_path = "abfss://raw@datalake.dfs.core.windows.net/orders/"
-staging_path = "abfss://staging@datalake.dfs.core.windows.net/orders/"
-out_path = "abfss://curated@datalake.dfs.core.windows.net/orders_agg/"
+from pyspark.sql import functions as F
 
-# Full reload every run — even though only yesterday's partition changed.
-# (Opportunity: switch to an incremental/merge on the watermark column.)
-orders = spark.read.parquet(in_path)
-orders.write.mode("overwrite").parquet(staging_path)
+RAW = "abfss://raw@datalake.dfs.core.windows.net/orders/"
+STAGING = "abfss://staging@datalake.dfs.core.windows.net/orders/"
+CURATED = "abfss://curated@datalake.dfs.core.windows.net/orders_curated/"
 
-# Hand off the heavy aggregation to the child notebook.
-dbutils.notebook.run("transforms_child", timeout_seconds=7200, arguments={"staging_path": staging_path, "out_path": out_path})
+# Anti-pattern: FULL reload every run. The upstream only appends yesterday's
+# partition, but we re-read and overwrite the entire history each night.
+orders = spark.read.parquet(RAW)
+orders.write.mode("overwrite").parquet(STAGING)
+
+# Orchestrate the three child notebooks in sequence. Each is a separate asset
+# with its own runtime — the child call tree the agent should drill into.
+dbutils.notebook.run("enrich_customers", 7200, {"staging": STAGING})
+dbutils.notebook.run("transforms_child", 14400, {"staging": STAGING})
+dbutils.notebook.run("write_curated", 7200, {"staging": STAGING, "curated": CURATED})
+
+print("orders_incremental_load complete")

@@ -10,19 +10,33 @@ Swap the provider to ``databricks`` later and this same command runs live.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-import aiops.tools.databricks  # noqa: F401  — registers the sample provider
-from agents.perf_reliability.agent import analyze
+# Load .env BEFORE importing anything that resolves an LLM provider, so the CLI
+# uses the configured (Azure) provider instead of falling back to the stub.
+# (The eval harness works for the same reason — it loads .env at module top.)
 from aiops._dotenv import load_dotenv
-from aiops.tools import get_registry
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+# The platform default model (Azure gpt-5) is a reasoning model: its token
+# budget covers reasoning + output. The project .env pins the per-call cap at
+# 4096, which is fine for small prompts but gets fully consumed by reasoning on
+# a multi-notebook analysis, leaving empty content. Raise the ceiling for this
+# demo run — take the max so we never LOWER an operator's higher setting.
+_UC3_CAP = 16000
+_existing_cap = int(os.environ.get("AIOPS_LLM_MAX_TOKENS_PER_CALL", "0") or "0")
+if _existing_cap < _UC3_CAP:
+    os.environ["AIOPS_LLM_MAX_TOKENS_PER_CALL"] = str(_UC3_CAP)
+
+import aiops.tools.databricks  # noqa: E402,F401  — import registers the sample provider
+from agents.perf_reliability.agent import analyze  # noqa: E402
+from aiops.tools import get_registry  # noqa: E402
 
 
 def main() -> int:
-    # Load .env so the LLM path uses the configured (Azure) provider when
-    # available; without it the agent falls back to the offline heuristic.
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-    res = get_registry().call("code.assets.fetch", job_name="sample-incremental-load")
+    res = get_registry().call("code.assets.fetch", job_name="orders_incremental_load")
     if not res.ok:
         print(f"fetch failed: {res.error}")
         return 1

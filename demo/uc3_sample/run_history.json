@@ -1,18 +1,32 @@
 {
-  "job_name": "sample-incremental-load",
+  "job_name": "orders_incremental_load",
   "total_runtime_minutes": 2160,
-  "note": "Synthetic sample mimicking an Azure Databricks incremental load. Runtimes are illustrative. Replace with a live Databricks provider for real numbers.",
+  "note": "Synthetic sample mimicking an Azure Databricks incremental load that has drifted to >24h. Runtimes are illustrative. Replace with a live Databricks provider (Jobs API task timeline) for real numbers.",
   "assets": [
     {
       "path": "incremental_load",
       "file": "incremental_load.py",
-      "runtime_minutes": 300,
+      "runtime_minutes": 90,
       "is_child": false
+    },
+    {
+      "path": "enrich_customers",
+      "file": "enrich_customers.py",
+      "runtime_minutes": 330,
+      "is_child": true,
+      "called_by": "incremental_load"
     },
     {
       "path": "transforms_child",
       "file": "transforms_child.py",
-      "runtime_minutes": 1800,
+      "runtime_minutes": 1440,
+      "is_child": true,
+      "called_by": "incremental_load"
+    },
+    {
+      "path": "write_curated",
+      "file": "write_curated.py",
+      "runtime_minutes": 300,
       "is_child": true,
       "called_by": "incremental_load"
     }

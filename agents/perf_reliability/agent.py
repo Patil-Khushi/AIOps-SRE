@@ -48,6 +48,14 @@ logger = logging.getLogger(__name__)
 _LLM_PROVIDER = os.environ.get("AIOPS_UC3_LLM_PROVIDER") or None  # None = platform default
 _LLM_MODEL = os.environ.get("AIOPS_UC3_LLM_MODEL") or None
 
+# Token budget for the analysis call. Must be generous: the platform default
+# model is a *reasoning* model (Azure gpt-5), whose budget covers reasoning +
+# output. Too small and the reasoning consumes it all and the visible content
+# comes back empty. NOTE: the gateway also clamps to AIOPS_LLM_MAX_TOKENS_PER_CALL
+# (default 4096) — raise that env too for the live LLM path over multi-notebook
+# jobs, or the request below is silently capped.
+_MAX_TOKENS = int(os.environ.get("AIOPS_UC3_MAX_TOKENS", "12000"))
+
 
 # ─── deterministic heuristic fallback ───────────────────────────────────────
 #
@@ -301,11 +309,21 @@ def analyze(perf_input: dict[str, Any] | PerfInput) -> PerfVerdict:
             provider=_LLM_PROVIDER,
             model=_LLM_MODEL,
             temperature=0.2,
-            max_tokens=2000,
+            max_tokens=_MAX_TOKENS,
         )
         text = (resp.text or "").strip()
-        if not text or text.startswith("[stub]"):
-            decision_trace.append("LLM provider is stub; using deterministic heuristic")
+        if text.startswith("[stub]"):
+            decision_trace.append("LLM provider is the offline stub; using deterministic heuristic")
+            return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
+        if not text:
+            # Empty (not stub): a reasoning model (gpt-5) whose token budget was
+            # consumed by reasoning returns no visible content. Raise
+            # AIOPS_UC3_MAX_TOKENS and AIOPS_LLM_MAX_TOKENS_PER_CALL.
+            decision_trace.append(
+                "LLM returned an empty response (reasoning model likely out of token "
+                "budget — raise AIOPS_UC3_MAX_TOKENS / AIOPS_LLM_MAX_TOKENS_PER_CALL); "
+                "using deterministic heuristic"
+            )
             return _fallback_verdict(parsed, ranked, decision_trace=decision_trace)
         raw = _extract_json_object(text)
         if raw is None:
