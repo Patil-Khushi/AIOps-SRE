@@ -111,7 +111,9 @@ const CATEGORIES: Category[] = [
       // stored as JSON and compared by a brute-force cosine loop in Python.
       { name: 'SQLite', mono: 'SQ', color: '#0f80cc', top: true },
       { name: 'sentence-transformers', mono: 'ST', color: '#ffd21e', top: true },
-      // Aspirational: no dependency, no client, no deployed service for any of these.
+      // pgvector and sentence-transformers use the PostgreSQL and Hugging Face logos
+      // as stand-ins — neither has a dedicated standalone mark in simple-icons.
+      // Defensible until dedicated marks can be designed.
       { name: 'pgvector', mono: 'pg', color: '#4f8cff', soon: true },
       { name: 'Qdrant', mono: 'Qd', color: '#e11d48', soon: true },
       { name: 'Redis', mono: 'Rd', color: '#dc382d', soon: true },
