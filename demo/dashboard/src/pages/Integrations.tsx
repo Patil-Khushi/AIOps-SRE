@@ -7,14 +7,13 @@ import {
   Activity,
   Ticket,
   MessageSquare,
-  Sparkles,
   Database,
   ShieldCheck,
-  Blocks,
   LayoutGrid,
   Star,
   type LucideIcon,
 } from 'lucide-react';
+import { BrandLogo, brandColor, isMulticolor } from '../components/BrandLogo';
 
 // Integrations — the vendor-neutral ecosystem every agent plugs into through
 // the platform "seams". Layout mirrors a dense, logo-per-tool integrations
@@ -45,14 +44,7 @@ interface Tool {
 /** Category ids, spelled out so `Filter` below narrows to real literals. Adding a
  *  category here (and forgetting to add it to CATEGORIES, or typoing its id) is a
  *  compile error rather than a silently dead filter chip. */
-type CategoryId =
-  | 'observability'
-  | 'ticketing'
-  | 'chatops'
-  | 'llm'
-  | 'data'
-  | 'governance'
-  | 'contracts';
+type CategoryId = 'observability' | 'ticketing' | 'chatops' | 'data' | 'governance';
 
 interface Category {
   id: CategoryId | 'top';
@@ -79,10 +71,6 @@ const CATEGORIES: Category[] = [
       // demo run, so they are core rather than merely available.
       { name: 'Jaeger', mono: 'Jg', color: '#60d0e4', top: true },
       { name: 'Loki', mono: 'Lk', color: '#f9a825', top: true },
-      // Tempo has no provider module — it appears only in the docs reference stack.
-      { name: 'Tempo', mono: 'Tp', color: '#ff6b35', soon: true },
-      { name: 'Datadog', mono: 'Dd', color: '#7c3aed', soon: true },
-      { name: 'Elastic', mono: 'Es', color: '#00bfb3', soon: true },
     ],
   },
   {
@@ -96,7 +84,6 @@ const CATEGORIES: Category[] = [
       // aiops/tools/itsm/ ships ServiceNow only; its README describes Jira as a
       // provider that "would land here" as a sibling module.
       { name: 'Jira', mono: 'Jr', color: '#2684ff', soon: true },
-      { name: 'Zendesk', mono: 'Zd', color: '#03a17d', soon: true },
     ],
   },
   {
@@ -111,23 +98,6 @@ const CATEGORIES: Category[] = [
       { name: 'Slack', mono: 'Sl', color: '#a259c6', top: true },
       { name: 'PagerDuty', mono: 'PD', color: '#06ac38', top: true },
       { name: 'Microsoft Teams', mono: 'Tm', color: '#6264a7', soon: true },
-      { name: 'Opsgenie', mono: 'Og', color: '#2684ff', soon: true },
-    ],
-  },
-  {
-    id: 'llm',
-    title: 'LLM Providers',
-    note: 'The reasoning engine — chosen per agent by data sensitivity.',
-    icon: Sparkles,
-    accent: '#f59e0b',
-    tools: [
-      { name: 'Anthropic', mono: 'An', color: '#d97757', top: true },
-      { name: 'OpenAI', mono: 'AI', color: '#10a37f', top: true },
-      // The openai provider auto-detects an .azure.com endpoint and builds a real
-      // AzureOpenAI client — this is the platform default every non-RCA agent runs on.
-      { name: 'Azure OpenAI', mono: 'Az', color: '#0078d4', top: true },
-      { name: 'Ollama (local)', mono: 'Ol', color: '#c4c4cc' },
-      { name: 'Amazon Bedrock', mono: 'Br', color: '#ff9900', soon: true },
     ],
   },
   {
@@ -141,10 +111,11 @@ const CATEGORIES: Category[] = [
       // stored as JSON and compared by a brute-force cosine loop in Python.
       { name: 'SQLite', mono: 'SQ', color: '#0f80cc', top: true },
       { name: 'sentence-transformers', mono: 'ST', color: '#ffd21e', top: true },
-      // Aspirational: no dependency, no client, no deployed service for any of these.
+      // pgvector and sentence-transformers use the PostgreSQL and Hugging Face logos
+      // as stand-ins — neither has a dedicated standalone mark in simple-icons.
+      // Defensible until dedicated marks can be designed.
       { name: 'pgvector', mono: 'pg', color: '#4f8cff', soon: true },
       { name: 'Qdrant', mono: 'Qd', color: '#e11d48', soon: true },
-      { name: 'Neo4j', mono: 'N4', color: '#4581ff', soon: true },
       { name: 'Redis', mono: 'Rd', color: '#dc382d', soon: true },
     ],
   },
@@ -159,24 +130,6 @@ const CATEGORIES: Category[] = [
       // flagd drives every failure injection through the feature_flags seam.
       { name: 'flagd', mono: 'fd', color: '#ffc008', top: true },
       { name: 'GitHub Actions', mono: 'GH', color: '#8b95a8' },
-      // policies/hitl.rego is lint-checked in CI but nothing evaluates it at
-      // runtime — the HITL gate is still a hard-coded dict in aiops/policy/gate.py.
-      { name: 'Open Policy Agent', mono: 'PA', color: '#a78bfa', soon: true },
-    ],
-  },
-  {
-    id: 'contracts',
-    title: 'Open Contracts',
-    note: 'How third-party tools and agents plug in as first-class citizens.',
-    icon: Blocks,
-    accent: '#db2777',
-    tools: [
-      // OpenAPI is real via FastAPI's generated schema. MCP and A2A are design
-      // vocabulary from the architecture docs — there is no server, client, or
-      // transport for either. The tool registry is in-process Python, not MCP.
-      { name: 'OpenAPI', mono: 'API', color: '#6ba539' },
-      { name: 'MCP', mono: 'MCP', color: '#4f46e5', soon: true },
-      { name: 'A2A', mono: 'A2A', color: '#7c3aed', soon: true },
     ],
   },
 ];
@@ -203,6 +156,14 @@ type Filter = 'all' | 'top' | CategoryId;
 const pad = (n: number) => String(n).padStart(2, '0');
 
 function ToolCard({ tool }: { tool: Tool }) {
+  // Prefer the official brand hex that ships with the logo, so the tile tint and
+  // the mark can never disagree; `tool.color` is the fallback for monogram-only
+  // entries (MCP, A2A) and for anything without a vendored mark.
+  const accent = brandColor(tool.name, tool.color);
+  // A multi-colour mark (Slack, Teams) carries its own fills — tinting the tile's
+  // `color` would be inherited by any `currentColor` inside it, so don't.
+  const tinted = !isMulticolor(tool.name);
+
   return (
     <div
       className={`group relative flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-5 text-center transition-all duration-200 hover:-translate-y-0.5 hover:border-white/25 hover:bg-white/[0.07] ${
@@ -220,17 +181,17 @@ function ToolCard({ tool }: { tool: Tool }) {
       {/* Hover glow tinted to the tool's brand accent. */}
       <div
         className="pointer-events-none absolute inset-0 rounded-2xl opacity-0 blur-2xl transition-opacity duration-300 group-hover:opacity-20"
-        style={{ background: tool.color }}
+        style={{ background: accent }}
       />
       <div
-        className="relative flex h-12 w-12 items-center justify-center rounded-xl font-display text-sm font-black"
+        className="relative flex h-12 w-12 items-center justify-center rounded-xl"
         style={{
-          background: `${tool.color}1f`,
-          color: tool.color,
-          border: `1px solid ${tool.color}44`,
+          background: `${accent}1f`,
+          color: tinted ? accent : undefined,
+          border: `1px solid ${accent}44`,
         }}
       >
-        {tool.mono}
+        <BrandLogo name={tool.name} mono={tool.mono} className="h-[26px] w-[26px]" />
       </div>
       <span className="relative font-body text-[13px] font-semibold leading-tight text-white/85">
         {tool.name}
@@ -406,9 +367,10 @@ export default function Integrations() {
             Agents call capabilities like{' '}
             <span className="font-mono text-white/80">itsm.incident.create</span> or{' '}
             <span className="font-mono text-white/80">observability.metrics.query</span> — never a
-            vendor SDK directly. The tool registry picks the active provider, which is why Anthropic
-            and Azure OpenAI already coexist behind one LLM seam, and why adding a second ITSM or
-            logs backend is a configuration change rather than an agent rewrite.
+            vendor SDK directly. The tool registry picks the active provider, which is why a real
+            ServiceNow client and an in-process mock already serve the same ticketing capability,
+            and why adding a second ITSM or logs backend is a configuration change rather than an
+            agent rewrite.
           </p>
         </div>
       </div>

@@ -457,7 +457,7 @@ function PageHeader({ status, lastUpdate }: { status: string; lastUpdate: string
           Operations overview
         </h1>
         <p className="mt-1 text-sm text-ink-500 dark:text-ink-400">
-          Live state of the OpenTelemetry demo cluster and the Alert Intelligence agent.
+          Live state of the OpenTelemetry demo cluster and the Alert Triage agent.
         </p>
       </div>
       <div className="flex items-center gap-2">

@@ -364,7 +364,7 @@ export default function NotificationAssembler() {
         <div className="flex items-center gap-3">
           <Bell className="h-6 w-6 text-accent" />
           <h1 className="text-2xl font-semibold tracking-tight text-ink-900 dark:text-ink-50">
-            Incident Mobilization
+            Notification Router
           </h1>
           <span className="chip">RA-005+006</span>
         </div>

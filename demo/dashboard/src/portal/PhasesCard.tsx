@@ -2,7 +2,7 @@
 // phases. Mirrors the agent-catalog phase summary (see CLAUDE.md):
 // Reactive-Active (6) → Proactive (3) → Predictive (5) → Prescriptive (5) = 19.
 // Consolidated from 30: several agents merged into combined, product-named
-// agents (Alert Intelligence, Incident Mobilization, Proactive Sensing, Service
+// agents (Alert Triage Agent, Notification Router, Proactive Sensing, Service
 // Graph, Reliability Prediction, RCA, Closed-Loop Learning).
 
 const PHASES = [
@@ -10,7 +10,7 @@ const PHASES = [
     name: 'Reactive-Active',
     count: 6,
     swatch: '#4f46e5',
-    examples: 'Alert Intelligence · Incident Mobilization · Incident Commander',
+    examples: 'Alert Triage · Notification Router · Incident Commander',
   },
   {
     name: 'Proactive',

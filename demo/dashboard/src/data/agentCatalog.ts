@@ -7,8 +7,8 @@
 //
 // Consolidated to 19 agents (6 + 3 + 5 + 5). Several agents were merged into
 // combined, product-named agents; the folded members no longer have cards:
-//   Reactive-Active (6): Alert Triage + Incident Classifier → Alert Intelligence;
-//     Notification Router + War-Room Assembler → Incident Mobilization.
+//   Reactive-Active (6): Alert Triage + Incident Classifier → Alert Triage Agent;
+//     Notification Router + War-Room Assembler → Notification Router.
 //   Proactive (3): Anomaly Detector + Drift Monitor + Noise Reducer + Early
 //     Warning → Proactive Sensing; Topology Discovery + Dependency Mapper →
 //     Service Graph.
@@ -124,7 +124,7 @@ function agent(
 ): AgentCatalogItem {
   return {
     // id defaults to the name slug, but can be pinned so a display-name change
-    // (e.g. "Alert Triage" → "Alert Intelligence Agent") keeps a stable route +
+    // (e.g. "Notification Router" ↔ id "notification-assembler") keeps a stable route +
     // Sidebar/console-scope key. See components/Sidebar.tsx AGENT_SURFACES.
     id: options.id ?? slugify(name),
     name,
@@ -155,14 +155,14 @@ export const PHASE_DETAILS = PHASE_META;
 
 export const AGENTS: AgentCatalogItem[] = [
   // ── Reactive-Active (6) ────────────────────────────────────────────────────
-  agent('Alert Intelligence Agent', 'Reactive-Active', 1, 'Turn live alerts into a classified incident verdict.', 'Normalizes and deduplicates alerts, enriches them with context, writes the first verdict, AND classifies the incident type — triage and classification in one agent.', {
+  agent('Alert Triage Agent', 'Reactive-Active', 1, 'Turn live alerts into a classified incident verdict.', 'Normalizes and deduplicates alerts, enriches them with context, writes the first verdict, AND classifies the incident type — triage and classification in one agent.', {
     id: 'alert-triage',
     status: 'Shipped', hitl: 'Optional',
     inputs: ['Prometheus alert', 'service labels', 'metric context'],
     outputs: ['triage verdict', 'severity', 'ownership', 'incident type', 'summary'],
-    liveSurface: '/console', liveSurfaceLabel: 'Open alert intelligence console',
+    liveSurface: '/console', liveSurfaceLabel: 'Open alert triage console',
     plainSummary:
-      'When a monitoring alarm goes off, Alert Intelligence reads it for you. It removes duplicate and flapping alerts, adds context about which service is affected, writes a clear first verdict — what is wrong, how serious it is, and who owns it — and classifies the incident type so the right playbook is picked. It answers both "why am I getting this noisy alert?" and "what does it actually mean?" in one step. (Absorbs the former Alert Triage and Incident Classifier.)',
+      'When a monitoring alarm goes off, Alert Triage reads it for you. It removes duplicate and flapping alerts, adds context about which service is affected, writes a clear first verdict — what is wrong, how serious it is, and who owns it — and classifies the incident type so the right playbook is picked. It answers both "why am I getting this noisy alert?" and "what does it actually mean?" in one step. (Absorbs the former standalone Incident Classifier.)',
     benefits: [
       'Cuts the time to understand an alert — the first read AND the classification are done for you.',
       'Hides duplicate and repeating alerts so people see one incident, not fifty.',
@@ -211,12 +211,12 @@ export const AGENTS: AgentCatalogItem[] = [
       'Verifies the outcome and keeps a tested rollback ready.',
     ],
   }),
-  agent('Incident Mobilization Agent', 'Reactive-Active', 4, 'Notify the right people and mobilize the war room for major incidents.', 'Routes one notification to the right people and channel and, on Sev-1/Sev-2, stands up the war room and folds its join link into that same message.', {
+  agent('Notification Router', 'Reactive-Active', 4, 'Notify the right people and mobilize the war room for major incidents.', 'Routes one notification to the right people and channel and, on Sev-1/Sev-2, stands up the war room and folds its join link into that same message.', {
     id: 'notification-assembler',
     status: 'Shipped', hitl: 'Optional',
     inputs: ['triage verdict', 'CMDB / on-call', 'live telemetry'],
     outputs: ['one notification', 'war-room link', 'invited SMEs', 'context pack', 'timeline'],
-    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open mobilization console',
+    liveSurface: '/console/notifications', liveSurfaceLabel: 'Open notification router console',
     plainSummary:
       'Gets the right people into the right place, fast. It decides who needs to hear about an incident and on which channel, writes a single clear message, and sends it. For a major incident (Sev-1/Sev-2) it also spins up a shared war room — channel, on-call expert, live context, and a join link — and folds that link straight into the same notification, so the right people get one message with everything they need instead of two separate pings. Lower severities get the notification only. (Absorbs the former Notification Router and War-Room Assembler.)',
     benefits: [
