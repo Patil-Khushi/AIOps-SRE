@@ -102,41 +102,18 @@ prometheus:
       scrape_interval: 15s
       evaluation_interval: 15s
 
-  # --- ecommerce app: Docker Compose deployment ONLY --------------------------
-  # DELETE THIS BLOCK once the app runs only in k3s (demo/ecommerce/k8s/).
-  # The k8s deployment is discovered automatically by the chart's
-  # `kubernetes-pods` job via the prometheus.io/* pod annotations, so keeping
-  # both live double-counts every metric.
+  # --- ecommerce app ----------------------------------------------------------
+  # No scrape config needed. The app now runs in k3s (demo/ecommerce/k8s/) and
+  # every pod carries prometheus.io/scrape + prometheus.io/port annotations, so
+  # the chart's existing `kubernetes-pods` job discovers it automatically.
   #
-  # Needed only while the app runs in Compose: kubernetes_sd_configs cannot see
-  # Docker containers, so static targets are the only option there.
-  #
-  # 192.168.127.254 is the Rancher Desktop host gateway as seen from inside a
-  # k3s pod; the Compose port mappings (8001-8004) are published there.
-  # Verified reachable from a pod in this namespace. Preferred over the Docker
-  # bridge gateway (172.24.0.1) because that subnet is reassigned whenever the
-  # Compose network is recreated, which would silently break scraping.
-  #
-  # service_name is set explicitly so these line up with the OTEL_SERVICE_NAME
-  # on traces and the promtail service_name on logs — one label joins all three
-  # signals in Grafana.
-  extraScrapeConfigs: |
-    - job_name: ecommerce
-      scrape_interval: 15s
-      metrics_path: /metrics
-      static_configs:
-        - targets: ["192.168.127.254:8001"]
-          labels:
-            service_name: ecommerce-user-service
-            namespace: ecommerce
-        - targets: ["192.168.127.254:8002"]
-          labels:
-            service_name: ecommerce-order-service
-            namespace: ecommerce
-        - targets: ["192.168.127.254:8003"]
-          labels:
-            service_name: ecommerce-payment-service
-            namespace: ecommerce
+  # Removed here: an `extraScrapeConfigs` block with static targets at
+  # 192.168.127.254:8001-8003, which was how Prometheus reached the Docker
+  # Compose deployment (kubernetes_sd_configs cannot see Docker containers).
+  # Running both at once double-counted every metric, and once Compose stopped
+  # the static targets went `up == 0` and fired EcommerceServiceDown.
+  # Restore it from git history only if you go back to running the SUT in
+  # Compose. See demo/ecommerce/k8s/README.md.
 
   serverFiles:
     alerting_rules.yml:
