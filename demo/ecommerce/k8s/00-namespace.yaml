@@ -1,0 +1,15 @@
+# Dedicated namespace for the ecommerce system-under-test.
+#
+# Kept separate from the observability stack so `kubectl delete ns ecommerce`
+# tears down the app without touching Prometheus/Grafana/Loki/Jaeger, and so a
+# blast-radius cap on an agent's remediation action can be expressed as
+# "namespace=ecommerce".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecommerce
+  labels:
+    app.kubernetes.io/part-of: ecommerce
+    # Marks this as the system under test, as opposed to the tooling that
+    # observes it. Agents can use this to refuse actions outside the SUT.
+    aiops.role: system-under-test

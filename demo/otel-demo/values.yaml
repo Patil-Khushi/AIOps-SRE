@@ -102,10 +102,14 @@ prometheus:
       scrape_interval: 15s
       evaluation_interval: 15s
 
-  # --- ecommerce app (demo/ecommerce) -----------------------------------------
-  # The ecommerce SUT runs in Docker Compose, not in k3s, so the chart's
-  # kubernetes_sd_configs jobs cannot discover it — a pod-annotation approach
-  # would never match. Static targets instead.
+  # --- ecommerce app: Docker Compose deployment ONLY --------------------------
+  # DELETE THIS BLOCK once the app runs only in k3s (demo/ecommerce/k8s/).
+  # The k8s deployment is discovered automatically by the chart's
+  # `kubernetes-pods` job via the prometheus.io/* pod annotations, so keeping
+  # both live double-counts every metric.
+  #
+  # Needed only while the app runs in Compose: kubernetes_sd_configs cannot see
+  # Docker containers, so static targets are the only option there.
   #
   # 192.168.127.254 is the Rancher Desktop host gateway as seen from inside a
   # k3s pod; the Compose port mappings (8001-8004) are published there.
@@ -393,8 +397,16 @@ prometheus:
         # Scenarios: user_service_crashloop / order_service_memory_leak (OOM).
         # `up` is synthesised by Prometheus per target, so this fires when a
         # container is down entirely and no app metric is being reported.
+        #
+        # Keyed on `namespace`, NOT `job`. The two deployments produce different
+        # job labels — the Compose static config below sets job="ecommerce",
+        # while k8s pod discovery sets job="kubernetes-pods" and there is no
+        # relabel rule that overrides it. Both set namespace="ecommerce" (the
+        # static config via an explicit label, k8s via the chart's
+        # `target_label: namespace` rule), so this expression covers both and
+        # keeps working through the Compose -> k8s migration.
         - alert: EcommerceServiceDown
-          expr: up{job="ecommerce"} == 0
+          expr: up{namespace="ecommerce"} == 0
           for: 30s
           labels:
             severity: critical

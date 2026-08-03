@@ -1,0 +1,65 @@
+# Configuration for the ecommerce SUT.
+#
+# Mirrors demo/ecommerce/.env, which drives the Docker Compose deployment. The
+# split is deliberate: the ConfigMap holds everything safe to read, the Secret
+# holds credentials. Both are demo-only values — see the warning below.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ecommerce-config
+  namespace: ecommerce
+data:
+  # --- Datastore endpoints (in-cluster DNS) ---------------------------------
+  MYSQL_HOST: "mysql"
+  MYSQL_PORT: "3306"
+  MYSQL_DATABASE: "users"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "orders"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+
+  # --- Inter-service URLs ---------------------------------------------------
+  USER_SERVICE_URL: "http://user-service:8000"
+  PAYMENT_SERVICE_URL: "http://payment-service:8000"
+  GATEWAY_URL: "http://mock-payment-gateway:8000"
+
+  # --- Timeouts -------------------------------------------------------------
+  PAYMENT_TIMEOUT_SECONDS: "5"
+  GATEWAY_TIMEOUT_SECONDS: "5"
+  JWT_EXPIRY_MINUTES: "60"
+
+  # --- Tracing --------------------------------------------------------------
+  # In-cluster DNS to the collector. This replaces the NodePort bridge the
+  # Compose deployment needed (observability/nodeports.yaml) — once the app
+  # runs here, that bridge is only required if you still run Compose too.
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.otel-demo.svc.cluster.local:4317"
+
+  # --- Failure injection toggles (all OFF = healthy baseline) ---------------
+  # Scenarios flip these with `kubectl set env` or by patching this ConfigMap
+  # plus a rollout restart. See demo/ecommerce/scenarios/.
+  USER_INJECT_LATENCY_SECONDS: "0"
+  USER_INJECT_CPU_LOAD: "false"
+  ORDER_INJECT_HTTP_500: "false"
+  ORDER_INJECT_MEMORY_LEAK: "false"
+  PAYMENT_INJECT_HTTP_500: "false"
+  PAYMENT_INJECT_CPU_LOAD: "false"
+  GATEWAY_INJECT_DELAY_SECONDS: "0"
+---
+# WARNING: these are demo credentials committed on purpose so the stack runs
+# unconfigured, exactly as demo/ecommerce/.env.example does. They guard nothing
+# real. Never reuse this pattern for anything with actual data in it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ecommerce-secrets
+  namespace: ecommerce
+type: Opaque
+stringData:
+  MYSQL_ROOT_PASSWORD: "rootpass"
+  MYSQL_USER: "appuser"
+  MYSQL_PASSWORD: "apppass"
+  POSTGRES_USER: "appuser"
+  POSTGRES_PASSWORD: "apppass"
+  JWT_SECRET: "change-me-in-prod"
