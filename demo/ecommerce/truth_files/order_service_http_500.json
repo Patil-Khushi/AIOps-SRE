@@ -1,0 +1,47 @@
+{
+  "id": "order_service_http_500",
+  "scenario": "scenarios/order_service_http_500.yaml",
+  "failure_key": "order_service.http_500",
+  "service": "order-service",
+  "severity": "high",
+  "fault_category": "application_error",
+  "root_cause": "Code failure (unhandled exception path)",
+  "root_cause_keywords": [
+    "500",
+    "exception",
+    "error",
+    "code",
+    "application"
+  ],
+  "remediation": "Roll back the faulty change or fix the unhandled exception path in order creation.",
+  "expected_signals": {
+    "http_status": [
+      500
+    ],
+    "metrics": [
+      {
+        "name": "orders_failed_total{reason=\"injected_500\"}",
+        "expect": "increases"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "injected HTTP 500 on order creation"
+      }
+    ],
+    "container": [],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "500",
+      "exception",
+      "error",
+      "code",
+      "application"
+    ],
+    "must_identify_service": "order-service",
+    "must_identify_category": "application_error"
+  }
+}

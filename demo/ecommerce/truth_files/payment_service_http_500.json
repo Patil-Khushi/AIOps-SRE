@@ -1,0 +1,47 @@
+{
+  "id": "payment_service_http_500",
+  "scenario": "scenarios/payment_service_http_500.yaml",
+  "failure_key": "payment_service.http_500",
+  "service": "payment-service",
+  "severity": "high",
+  "fault_category": "application_error",
+  "root_cause": "Payment application failure",
+  "root_cause_keywords": [
+    "500",
+    "error",
+    "payment",
+    "application",
+    "failure"
+  ],
+  "remediation": "Roll back the faulty change or fix the failing code path in the payment handler.",
+  "expected_signals": {
+    "http_status": [
+      500
+    ],
+    "metrics": [
+      {
+        "name": "payment_failures_total{reason=\"injected_500\"}",
+        "expect": "increases"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "injected HTTP 500 on payment"
+      }
+    ],
+    "container": [],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "500",
+      "error",
+      "payment",
+      "application",
+      "failure"
+    ],
+    "must_identify_service": "payment-service",
+    "must_identify_category": "application_error"
+  }
+}

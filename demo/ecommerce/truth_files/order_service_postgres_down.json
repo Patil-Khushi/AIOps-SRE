@@ -1,0 +1,53 @@
+{
+  "id": "order_service_postgres_down",
+  "scenario": "scenarios/order_service_postgres_down.yaml",
+  "failure_key": "order_service.postgres_down",
+  "service": "order-service",
+  "severity": "critical",
+  "fault_category": "dependency_unavailable",
+  "root_cause": "PostgreSQL database unavailable",
+  "root_cause_keywords": [
+    "postgres",
+    "postgresql",
+    "database",
+    "unavailable",
+    "connection",
+    "down"
+  ],
+  "remediation": "Restore the PostgreSQL container (docker compose start postgres); verify connectivity.",
+  "expected_signals": {
+    "http_status": [
+      500
+    ],
+    "metrics": [
+      {
+        "name": "orders_failed_total{reason=\"db_error\"}",
+        "expect": "increases"
+      },
+      {
+        "name": "postgres_connection_status",
+        "expect": "== 0"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "database connection failed"
+      }
+    ],
+    "container": [],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "postgres",
+      "postgresql",
+      "database",
+      "unavailable",
+      "connection",
+      "down"
+    ],
+    "must_identify_service": "order-service",
+    "must_identify_category": "dependency_unavailable"
+  }
+}

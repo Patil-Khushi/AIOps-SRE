@@ -1,0 +1,35 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: order_service_http_500
+title: HTTP 500 errors
+service: order-service
+failure_key: order_service.http_500
+severity: high
+inject:
+  command: python -m failure_injection inject order_service.http_500
+recover:
+  command: python -m failure_injection recover order_service.http_500
+load:
+  url: http://localhost:8002/orders
+  method: POST
+  body:
+    items:
+    - sku: widget
+      qty: 1
+      price: 12.0
+    amount: 12.0
+  duration_seconds: 60
+detection:
+  l1: 5xx rate on /orders increases; orders_failed_total{reason=injected_500} rising
+  l2: Application logs show the injected error on order creation
+  http_status:
+  - 500
+  metrics:
+  - name: orders_failed_total{reason="injected_500"}
+    expect: increases
+  logs:
+  - level: ERROR
+    contains: injected HTTP 500 on order creation
+expected_rca: Code failure (unhandled exception path)
+truth_file: truth_files/order_service_http_500.json
+settle_seconds: 20

@@ -1,0 +1,69 @@
+# Promtail — ships Compose container stdout into the k3s Loki.
+#
+# Why Promtail and not the OTel Collector: the ecommerce services write
+# structured JSON to stdout (see each service's observability/logging_config.py)
+# and do NOT export logs over OTLP — only traces. Promtail reads container
+# output straight from the Docker API, so no application code changes.
+#
+# Why this is a shipper, not a second Loki: the ecommerce README says don't
+# stand up a duplicate Prometheus/Loki/Tempo here. This stores nothing; it
+# forwards to the one Loki in the cluster.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  # Tracks read offsets so a promtail restart doesn't re-send every log line.
+  filename: /tmp/positions.yaml
+
+clients:
+  # NodePort bridge from observability/nodeports.yaml.
+  - url: http://192.168.127.2:30310/loki/api/v1/push
+    # Loki here is single-tenant (auth_enabled: false in infra/loki-values.yaml),
+    # so no X-Scope-OrgID header is needed.
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  - job_name: ecommerce
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          # Only this project's containers — never the k8s ones, which Loki
+          # already receives via the OTel Collector.
+          - name: label
+            values: ["com.docker.compose.project=ecommerce"]
+
+    relabel_configs:
+      # service_name is the label the AIOps log_correlation agent queries on,
+      # and it must match OTEL_SERVICE_NAME so logs and traces join up.
+      # Compose service "order-service" -> "ecommerce-order-service".
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        regex: "(.*)"
+        target_label: "service_name"
+        replacement: "ecommerce-$1"
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/?(.*)"
+        target_label: "container"
+        replacement: "$1"
+      # Distinguishes these streams from the otel-demo ones in Grafana.
+      - target_label: "namespace"
+        replacement: "ecommerce"
+
+    pipeline_stages:
+      # The app services emit JSON: {"message","level","service","ts",...}.
+      # Infra containers (mysql/postgres/redis/nginx) emit plain text — the
+      # json stage fails soft on those and the line passes through intact.
+      - json:
+          expressions:
+            level: level
+            message: message
+      # Promote level to a label so Grafana/Loki can filter on level="ERROR"
+      # without a full-text scan. Deliberately NOT promoting message — that
+      # would be unbounded cardinality.
+      - labels:
+          level:

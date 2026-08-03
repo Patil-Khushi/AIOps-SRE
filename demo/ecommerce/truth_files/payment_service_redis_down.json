@@ -1,0 +1,51 @@
+{
+  "id": "payment_service_redis_down",
+  "scenario": "scenarios/payment_service_redis_down.yaml",
+  "failure_key": "payment_service.redis_down",
+  "service": "payment-service",
+  "severity": "critical",
+  "fault_category": "dependency_unavailable",
+  "root_cause": "Redis unavailable",
+  "root_cause_keywords": [
+    "redis",
+    "cache",
+    "unavailable",
+    "connection",
+    "down"
+  ],
+  "remediation": "Restore the Redis container (docker compose start redis); verify connectivity.",
+  "expected_signals": {
+    "http_status": [
+      500
+    ],
+    "metrics": [
+      {
+        "name": "payment_failures_total{reason=\"redis_error\"}",
+        "expect": "increases"
+      },
+      {
+        "name": "redis_connection_status",
+        "expect": "== 0"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "redis connection error"
+      }
+    ],
+    "container": [],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "redis",
+      "cache",
+      "unavailable",
+      "connection",
+      "down"
+    ],
+    "must_identify_service": "payment-service",
+    "must_identify_category": "dependency_unavailable"
+  }
+}

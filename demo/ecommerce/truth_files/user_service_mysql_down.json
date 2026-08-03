@@ -1,0 +1,51 @@
+{
+  "id": "user_service_mysql_down",
+  "scenario": "scenarios/user_service_mysql_down.yaml",
+  "failure_key": "user_service.mysql_down",
+  "service": "user-service",
+  "severity": "critical",
+  "fault_category": "dependency_unavailable",
+  "root_cause": "MySQL database unavailable",
+  "root_cause_keywords": [
+    "mysql",
+    "database",
+    "unavailable",
+    "connection",
+    "down"
+  ],
+  "remediation": "Restore the MySQL container (docker compose start mysql); verify connectivity and credentials.",
+  "expected_signals": {
+    "http_status": [
+      500
+    ],
+    "metrics": [
+      {
+        "name": "login_failure_total",
+        "expect": "increases"
+      },
+      {
+        "name": "mysql_connection_status",
+        "expect": "== 0"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "database connection failed"
+      }
+    ],
+    "container": [],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "mysql",
+      "database",
+      "unavailable",
+      "connection",
+      "down"
+    ],
+    "must_identify_service": "user-service",
+    "must_identify_category": "dependency_unavailable"
+  }
+}

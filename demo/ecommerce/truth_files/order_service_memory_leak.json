@@ -1,0 +1,54 @@
+{
+  "id": "order_service_memory_leak",
+  "scenario": "scenarios/order_service_memory_leak.yaml",
+  "failure_key": "order_service.memory_leak_oom",
+  "service": "order-service",
+  "severity": "critical",
+  "fault_category": "resource_exhaustion_memory",
+  "root_cause": "Memory leak caused OOMKilled",
+  "root_cause_keywords": [
+    "memory",
+    "leak",
+    "oom",
+    "oomkilled",
+    "exhaustion",
+    "restart"
+  ],
+  "remediation": "Restart to reclaim memory; fix the leak (unbounded allocation) and set memory limits/alerts.",
+  "expected_signals": {
+    "http_status": [
+      201,
+      401
+    ],
+    "metrics": [
+      {
+        "name": "orders_created_total",
+        "expect": "may plateau at restart"
+      }
+    ],
+    "logs": [],
+    "container": [
+      {
+        "signal": "mem_usage",
+        "expect": "climbs toward 256m limit"
+      },
+      {
+        "signal": "restart_reason",
+        "expect": "OOMKilled"
+      }
+    ],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "memory",
+      "leak",
+      "oom",
+      "oomkilled",
+      "exhaustion",
+      "restart"
+    ],
+    "must_identify_service": "order-service",
+    "must_identify_category": "resource_exhaustion_memory"
+  }
+}
