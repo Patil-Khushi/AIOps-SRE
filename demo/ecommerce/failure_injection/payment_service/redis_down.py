@@ -1,14 +1,14 @@
 """Payment Service — Failure 1: Redis down."""
-from .. import _docker
+from .. import _backend
 from .._base import Failure
 
 
 def inject() -> None:
-    _docker.stop("redis")
+    _backend.stop("redis")
 
 
 def recover() -> None:
-    _docker.start("redis")
+    _backend.start("redis")
 
 
 failure = Failure(

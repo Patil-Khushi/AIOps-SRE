@@ -121,7 +121,6 @@ from aiops.runtime.orchestrator import run_reactive_flow  # noqa: E402
 from aiops.state import init_db  # noqa: E402
 from aiops.state import repository as state_repo  # noqa: E402
 from aiops.tools import (  # noqa: E402
-    feature_flags,  # noqa: F401  — ARCH-1 @tool registration
     get_registry,
 )
 from aiops.tools import (  # noqa: E402
@@ -131,6 +130,8 @@ from aiops.tools import (  # noqa: E402
     resolvers as _resolvers_tool,  # noqa: F401  — DB-backed incident.resolvers.lookup registration
 )
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
+from demo.ui import fault_clear as _fault_clear  # noqa: E402,F401  — automation.fault.clear
+from demo.ui import scenario_provider  # noqa: E402
 from aiops.tools.chatops import register_env_adapters  # noqa: E402
 from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
@@ -534,29 +535,26 @@ def triage_fixture(fixture_id: str) -> dict[str, Any]:
 
 
 def _synthetic_alerts_for_active_scenarios() -> list[dict[str, Any]]:
-    """Canonical-alert payloads for every scenario whose flagd flag is non-off.
+    """Canonical-alert payloads for every scenario currently injected.
 
     The UI emits these directly so AlertStream reflects an Inject within one
-    broadcaster tick, regardless of cluster state. This is the bridge from a
-    flag flip to a firing alert on dev machines, where the OTel demo's
-    ``STATUS_CODE_UNSET`` spans keep the upstream ``*ErrorRateHigh`` rules from
-    firing on their own. The ``alert_id`` matches the canonical Prom shape
-    ``PROM-<alertname>-na`` so a real Prometheus alert with the same alertname
-    overrides the synthetic one in dedup.
+    broadcaster tick, without waiting for the real Prometheus rule to cross its
+    threshold — several ecommerce rules need ~2 minutes of sustained load before
+    they fire. The ``alert_id`` matches the canonical Prom shape
+    ``PROM-<alertname>-na`` so the real alert overrides the synthetic one in
+    dedup once it does fire.
+
+    Active state is read back from the cluster rather than from flagd, which no
+    longer exists. See ``scenario_provider.active_state``.
     """
     try:
-        res = get_registry().call("feature_flags.list_variants")
+        current = scenario_provider.active_state(SCENARIOS)
     except Exception:
+        logger.debug("could not read scenario state for synthetic alerts", exc_info=True)
         return []
-    if not res.ok:
-        return []
-    current: dict[str, str] = (res.data or {}).get("variants", {})
     out: list[dict[str, Any]] = []
     for sid, s in SCENARIOS.items():
-        flag = s.get("flag")
-        if not flag:
-            continue
-        if current.get(flag, "off") == "off":
+        if current.get(sid, "off") == "off":
             continue
         out.append(_synthetic_alert_for_scenario(sid, s))
     return out
@@ -1354,7 +1352,7 @@ _HITL_AGENT_POOL: _DaemonThreadPoolExecutor = _new_hitl_agent_pool()
 
 class HitlDemoRestartRequest(BaseModel):
     deployment: str = Field("product-catalog")
-    namespace: str = Field("otel-demo")
+    namespace: str = Field("ecommerce")
     reason: str = Field("Demo: agent recommends a restart to clear stuck state.")
     timeout_seconds: int = Field(120, ge=5, le=900)
 
@@ -1564,11 +1562,12 @@ def _verify_flag_resolution(runbook: Any, status: str) -> dict[str, Any]:
     flags = [
         s.target.split("/", 1)[1].strip()
         for s in runbook.steps
-        if s.action == "reset_feature_flag" and (s.target or "").startswith("flag/")
+        if s.action in ("clear_fault", "reset_feature_flag")
+        and (s.target or "").startswith(("fault/", "flag/"))
     ]
     flags = [f for f in flags if f]
     if not flags:
-        return {"status": "skipped", "reason": "runbook resets no feature flag", "checks": []}
+        return {"status": "skipped", "reason": "runbook clears no injected fault", "checks": []}
 
     reg = get_registry()
     checks: list[dict[str, Any]] = []
@@ -1577,9 +1576,11 @@ def _verify_flag_resolution(runbook: Any, status: str) -> dict[str, Any]:
         variant: Any = None
         available = True
         try:
-            r = reg.call("feature_flags.get_variant", flag=flag)
-            if r.ok:
-                variant = (r.data or {}).get("variant")
+            # Was feature_flags.get_variant; flagd is gone. Read the fault
+            # state back from the cluster instead — "off" still means resolved.
+            variants = _live_variants()
+            if flag in variants:
+                variant = variants[flag]
             else:
                 available = False
         except Exception:
@@ -1795,12 +1796,22 @@ class RcaApplyFixRequest(BaseModel):
 
 
 def _live_variants() -> dict[str, str]:
-    """Current flagd variants ({flag: variant}) via the feature-flags seam, or {}."""
+    """Current fault state as ``{failure_key: "on"|"off"}``.
+
+    Keyed by failure key rather than scenario id because every caller here
+    reasons in terms of the RCA verdict's ``flag`` field, which carries the
+    failure key. Replaces the flagd variant map; returns {} if the cluster is
+    unreachable so callers fail open exactly as before.
+    """
     try:
-        res = get_registry().call("feature_flags.list_variants")
-        return (res.data or {}).get("variants", {}) if getattr(res, "ok", False) else {}
+        by_scenario = scenario_provider.active_state(SCENARIOS)
     except Exception:
         return {}
+    return {
+        str(s["flag"]): by_scenario.get(sid, "off")
+        for sid, s in SCENARIOS.items()
+        if s.get("flag")
+    }
 
 
 def _norm_service(service: str | None) -> str:
@@ -1895,16 +1906,11 @@ async def trigger_rca_apply_fix(req: RcaApplyFixRequest) -> dict[str, Any]:
         )
         _HITL_OUTCOMES[approval_id] = outcome
         if isinstance(outcome, dict) and outcome.get("status") == "executed":
-            # The approved flip landed in the flagd ConfigMap, but the running
-            # flagd pod only re-reads its mounted ConfigMap on kubelet's sync
-            # (~60-120s). Kick it now so the fix actually takes effect in seconds
-            # — parity with scenario inject/reset (_toggle_flagd_flag). Skip a
-            # no-op flip (flag already at target) and non-set_flag actions, which
-            # don't touch flagd. Best-effort: _kick_flagd never raises.
-            result = outcome.get("result")
-            noop = bool(result.get("noop")) if isinstance(result, dict) else False
-            if req.action_type == "set_flag" and not noop:
-                _kick_flagd()
+            # No propagation kick needed any more. The old flagd path wrote a
+            # ConfigMap the running pod would not re-read for ~60-120s, so it had
+            # to force a rollout. Clearing an ecommerce fault mutates the pod
+            # template directly, which rolls immediately.
+            #
             # Fire-and-forget resolution verification after a successful apply.
             # Wrapped so it can never affect the fix-apply outcome (CLAUDE.md:
             # the verifier is fully decoupled).
@@ -2768,55 +2774,25 @@ def hitl_spa(path: str) -> FileResponse:
     return FileResponse(HITL_DIST / "index.html")
 
 
-# ─── scenarios (flagd flip + matching alert rule) ──────────────────────────
+# ─── scenarios (ecommerce SUT + matching alert rule) ───────────────────────
 #
-# Each scenario flips one flagd flag in the otel-demo namespace. The matching
-# Prometheus alert rule (inlined under prometheus.serverFiles.alerting_rules.yml
-# in demo/otel-demo/values.yaml) fires when the resulting metric anomaly
+# Each scenario applies a fault to the ecommerce app in the `ecommerce`
+# namespace — an env var on a Deployment, or a datastore StatefulSet scaled to
+# zero. The matching Prometheus alert rule (the `ecommerce` group in
+# infra/observability/prometheus-values.yaml) fires when the resulting anomaly
 # crosses its threshold.
 #
-# This requires `kubectl` on the PATH of the uvicorn process — start.ps1 does
+# Previously this flipped a flagd feature flag in the otel-demo namespace.
+# flagd shipped as part of the OpenTelemetry Demo chart, which was removed in
+# migration Phase 6, so there is no flag daemon any more. The catalog, the
+# inject/reset actions and the "is it currently active?" read-back all live in
+# demo/ui/scenario_provider.py.
+#
+# Still requires `kubectl` on the PATH of the uvicorn process — start.ps1 does
 # that automatically. If running uvicorn directly, prepend
 # %LOCALAPPDATA%\Programs\kubectl to PATH first.
 
-# Scenario catalog lives in demo/scenarios/*.yaml — one file per scenario.
-# Schema and conventions: demo/scenarios/README.md.
-SCENARIOS_DIR = Path(__file__).resolve().parent.parent / "scenarios"
-
-
-def _load_scenarios() -> dict[str, dict[str, Any]]:
-    """Read every UI-descriptor YAML in ``demo/scenarios/`` into a dict keyed by id.
-
-    The dict key is the scenario id (also the filename stem); the value
-    is the rest of the YAML record. We pop ``id`` from the value because
-    it is already the key — keeping it both places would risk drift.
-    Iteration order is alphabetical by filename; the UI then groups by
-    ``category`` so the on-screen layout is stable regardless of fs order.
-
-    DEMO-12 (#64): the folder now also holds CLI-runnable scenarios that
-    declare a ``mechanism`` field. Those are the responsibility of
-    ``demo.failure_injection.inject`` and are *not* part of the dashboard
-    catalog. We skip them here so ``/api/scenarios`` only returns the rows
-    the React Overview page knows how to render.
-    """
-    out: dict[str, dict[str, Any]] = {}
-    for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise RuntimeError(f"scenario file {path.name} must be a YAML mapping")
-        if "mechanism" in data:
-            # CLI-runnable scenario — owned by inject.py, not the UI catalog.
-            continue
-        sid = data.pop("id", None)
-        if sid != path.stem:
-            raise RuntimeError(
-                f"scenario file {path.name}: 'id' must equal filename stem {path.stem!r}, got {sid!r}"
-            )
-        out[sid] = data
-    return out
-
-
-SCENARIOS: dict[str, dict[str, Any]] = _load_scenarios()
+SCENARIOS: dict[str, dict[str, Any]] = scenario_provider.load()
 
 
 def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
@@ -2842,74 +2818,50 @@ def _run_kubectl(args: list[str], *, input_text: str | None = None) -> str:
     return r.stdout
 
 
-def _kick_flagd() -> None:
-    """Force the flagd deployment to reload its configmap immediately.
+def _apply_scenario(scenario_id: str, *, on: bool) -> dict[str, Any]:
+    """Inject or recover a scenario on the ecommerce SUT.
 
-    flagd watches its mounted configmap *file*, but the mount inside the
-    running pod doesn't refresh until kubelet's ConfigMap sync (~60-120s).
-    Without this kick, a flag flip lands in the configmap right away, but the
-    running flagd pod keeps serving the old variant for up to ~2 minutes. That
-    means no real service degradation and no upstream Prometheus alert, so the
-    Alert Stream / Integrated Tools feeds show only the UI's synthetic alert
-    until the real ``*ErrorRateHigh`` rule catches up.
+    Replaces ``_toggle_flagd_flag``. There is no flag daemon any more, so no
+    equivalent of ``_kick_flagd`` is needed either: the fault is applied by
+    ``kubectl set env`` / ``kubectl scale``, which mutates the pod template and
+    triggers a rollout immediately. The old flagd path had to force a restart
+    because a ConfigMap edit is invisible to the running pod until kubelet's
+    ~60-120s sync — that whole class of latency is gone.
 
-    Restarting the deployment remounts the configmap in seconds. This mirrors
-    the CLI's ``inject.py:_flagd_set`` behavior so UI and CLI injects propagate
-    at the same speed. Best-effort and non-fatal — a failed kick just means the
-    slow kubelet-sync path, not a broken inject, so we never raise.
+    Both actions are idempotent, so a double-click on Inject is harmless.
     """
-    namespace = os.environ.get("AIOPS_FLAGD_NAMESPACE", "otel-demo")
-    try:
-        subprocess.run(
-            ["kubectl", "-n", namespace, "rollout", "restart", "deployment/flagd"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        logger.warning("flagd kick (rollout restart) failed; falling back to kubelet sync: %s", exc)
-
-
-def _toggle_flagd_flag(flag_name: str, variant: str) -> dict[str, Any]:
-    """Set ``flags.<flag_name>.defaultVariant`` to ``variant`` via the ARCH-1
-    feature-flags seam, then kick the flagd deployment so the change propagates
-    in seconds rather than waiting on kubelet's ~60-120s configmap sync.
-
-    Variant must be one of the variants declared for that flag in flagd-config."""
-    res = get_registry().call("feature_flags.set_variant", flag=flag_name, variant=variant)
-    if not res.ok:
-        meta = res.metadata or {}
-        if "available_flags" in meta:
-            raise HTTPException(status_code=404, detail=res.error)
-        if "valid_variants" in meta:
-            raise HTTPException(status_code=400, detail=res.error)
-        raise HTTPException(status_code=502, detail=res.error)
-    _kick_flagd()
+    result = (
+        scenario_provider.inject(scenario_id, SCENARIOS)
+        if on
+        else scenario_provider.reset(scenario_id, SCENARIOS)
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "scenario action failed")
     return {
-        "flag": flag_name,
-        "variant": variant,
+        "flag": result.get("failure_key"),
+        "variant": "on" if on else "off",
         "applied_at": datetime.now(UTC).isoformat(),
     }
 
 
 @app.get("/api/scenarios")
 def list_scenarios() -> dict[str, Any]:
-    """List the available failure scenarios + their current variant in flagd."""
+    """List the failure scenarios + whether each is currently active.
+
+    ``current_variant`` used to come from flagd's in-memory variant map. There
+    is no flag daemon now, so it is read back from the live cluster (env vars on
+    Deployments, replica counts on datastore StatefulSets) — see
+    ``scenario_provider.active_state``. If the cluster is unreachable every row
+    reports "off" rather than erroring the page.
+    """
     out: list[dict[str, Any]] = []
-    current: dict[str, str] = {}
-    try:
-        res = get_registry().call("feature_flags.list_variants")
-        if res.ok:
-            current = (res.data or {}).get("variants", {})
-    except Exception:
-        pass
+    current = scenario_provider.active_state(SCENARIOS)
     for sid, s in SCENARIOS.items():
         out.append(
             {
                 **s,
                 "scenario_id": sid,
-                "current_variant": current.get(s["flag"], "off"),
+                "current_variant": current.get(sid, "off"),
             }
         )
     return {"scenarios": out}
@@ -2980,7 +2932,7 @@ def inject_scenario(scenario_id: str, background_tasks: BackgroundTasks) -> dict
         raise HTTPException(
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
-    result = _toggle_flagd_flag(s["flag"], _variant_on(s))
+    result = _apply_scenario(scenario_id, on=True)
     # Explicit inject = a fresh incident. Clear the service's dedup clusters
     # so triage yields an Active verdict (not Suppressed against a warm
     # cluster from a prior inject), and mark the synthetic alert id seen so
@@ -3006,7 +2958,7 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
-    result = _toggle_flagd_flag(s["flag"], "off")
+    result = _apply_scenario(scenario_id, on=False)
     # DEMO-AUTO-TRIAGE (#130): drop this scenario's alert ids from the
     # auto-triage seen set so a re-inject of the same scenario fires the
     # chain again. The Prometheus alert_id is stable per (alertname,
@@ -3024,26 +2976,24 @@ def reset_scenario(scenario_id: str) -> dict[str, Any]:
 
 @app.post("/api/scenarios/reset-all")
 def reset_all_scenarios() -> dict[str, Any]:
-    """Flip every scenario flag back to ``off`` in a single SSA patch via the
-    ARCH-1 feature-flags seam. Atomic — flagd reloads once instead of N times.
+    """Recover every scenario on the ecommerce SUT.
+
+    NOT atomic, unlike the flagd version this replaces — that wrote one
+    server-side-apply patch covering all flags, so flagd reloaded once. Here each
+    recovery is its own kubectl call, so a partial failure is possible. The
+    per-scenario ``results`` say which ones landed; the endpoint still returns
+    200 so one unhealthy workload cannot block resetting the rest.
     """
-    flag_names = [s["flag"] for s in SCENARIOS.values()]
-    res = get_registry().call("feature_flags.reset_all", flags=flag_names)
-    if not res.ok:
-        raise HTTPException(status_code=502, detail=res.error or "reset_all failed")
-    # Reset writes the configmap via the seam but, like inject, the running
-    # flagd pod won't see it until kubelet syncs — kick it so the cleared
-    # flags take effect in seconds.
-    _kick_flagd()
+    outcome = scenario_provider.reset_all(SCENARIOS)
     # DEMO-AUTO-TRIAGE (#130): see comment in reset_scenario above.
     _AUTO_TRIAGE.forget_all()
     # Same incident-over semantics as the single reset, for every scenario.
     for s in SCENARIOS.values():
         _clear_scenario_clusters(s)
-    data = res.data or {}
     return {
-        "reset_count": data.get("reset_count", 0),
-        "touched": data.get("touched", []),
+        "reset_count": outcome.get("reset_count", 0),
+        "touched": outcome.get("touched", []),
+        "results": outcome.get("results", []),
         "applied_at": datetime.now(UTC).isoformat(),
     }
 
@@ -3109,7 +3059,7 @@ _AGE_PATTERN = re.compile(r"^\S+\s+\S+\s+\S+\s+\S+\s+(\S+)")
 
 
 @app.get("/api/system/pods")
-def get_pods(namespace: str = "otel-demo") -> dict[str, Any]:
+def get_pods(namespace: str = "ecommerce") -> dict[str, Any]:
     """List pods in the namespace using ``kubectl get pods``.
 
     Parses the default columnar output (NAME READY STATUS RESTARTS AGE). We

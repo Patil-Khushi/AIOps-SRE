@@ -15,6 +15,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from .db import postgres_client as db
@@ -35,6 +36,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ecommerce-order-service", lifespan=lifespan)
+
+# See user-service/src/main.py — the SPA calls this service cross-origin from
+# :3000 with a JSON content type and an Authorization header, both of which
+# force a CORS preflight. Without this, the browser blocks checkout entirely.
+_cors_origins = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(create_order.router)
 app.include_router(get_orders.router)

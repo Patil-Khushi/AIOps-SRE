@@ -1,0 +1,149 @@
+# Prometheus + Alertmanager for the ecommerce SUT.
+#
+# Chart: prometheus-community/prometheus
+#
+# This replaces the Prometheus that used to arrive as a SUBCHART of the
+# opentelemetry-demo umbrella chart. That coupling was the reason the OTel Demo
+# could not simply be uninstalled: `helm uninstall otel-demo` would have taken
+# Prometheus, Grafana, Jaeger and the Collector with it.
+#
+# Scrape discovery is unchanged from the subchart: the stock `kubernetes-pods`
+# job matches on `prometheus.io/scrape` annotations, which every ecommerce pod
+# already carries (demo/ecommerce/k8s/20-app.yaml). No static targets.
+#
+# Alertmanager ships with this chart, closing the gap where rules evaluated but
+# nothing could route them — agents had to poll /api/v1/alerts instead.
+
+server:
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+  persistentVolume:
+    # 8Gi is ample for a demo retention window and keeps the k3s node's
+    # local-path storage from filling.
+    size: 8Gi
+  resources:
+    requests: {memory: "512Mi", cpu: "100m"}
+    limits: {memory: "1Gi"}
+
+alertmanager:
+  enabled: true
+  resources:
+    requests: {memory: "64Mi", cpu: "50m"}
+    limits: {memory: "128Mi"}
+
+# Components the POC does not use. Each is a pod we would otherwise pay for on
+# a single-node k3s VM.
+prometheus-pushgateway:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+kube-state-metrics:
+  enabled: true    # container_memory / restart counts feed the OOM + crashloop rules
+
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: ecommerce
+        interval: 10s
+        rules:
+        # Scenario: user_service_mysql_down
+        - alert: EcommerceMySQLDown
+          expr: mysql_connection_status == 0
+          for: 15s
+          labels:
+            severity: critical
+            service: user-service
+            alert_type: dependency_down
+          annotations:
+            summary: user-service cannot reach MySQL
+            description: mysql_connection_status=0 on {{ $labels.service_name }}
+            scenario: user_service_mysql_down
+
+        # Scenario: order_service_postgres_down
+        - alert: EcommercePostgresDown
+          expr: postgres_connection_status == 0
+          for: 15s
+          labels:
+            severity: critical
+            service: order-service
+            alert_type: dependency_down
+          annotations:
+            summary: order-service cannot reach PostgreSQL
+            description: postgres_connection_status=0 on {{ $labels.service_name }}
+            scenario: order_service_postgres_down
+
+        # Scenario: payment_service_redis_down
+        - alert: EcommerceRedisDown
+          expr: redis_connection_status == 0
+          for: 15s
+          labels:
+            severity: critical
+            service: payment-service
+            alert_type: dependency_down
+          annotations:
+            summary: payment-service cannot reach Redis
+            description: redis_connection_status=0 on {{ $labels.service_name }}
+            scenario: payment_service_redis_down
+
+        # Scenarios: order_service_payment_timeout / payment_service_gateway_timeout
+        - alert: EcommercePaymentTimeouts
+          expr: "rate(payment_timeout_total[2m]) > 0\n"
+          for: 15s
+          labels:
+            severity: high
+            service: order-service
+            alert_type: timeout
+          annotations:
+            summary: order-service payment calls are timing out
+            description: timeout_rate={{ $value }}/s
+            scenario: order_service_payment_timeout
+
+        # Scenarios: order_service_http_500 / payment_service_http_500
+        - alert: EcommerceOrderErrorRateHigh
+          expr: "sum by (reason) (rate(orders_failed_total[2m])) > 0\n"
+          for: 15s
+          labels:
+            severity: high
+            service: order-service
+            alert_type: error_rate
+          annotations:
+            summary: order-service is failing orders
+            description: reason={{ $labels.reason }} rate={{ $value }}/s
+            scenario: order_service_http_500
+
+        # Scenarios: user_service_high_latency / *_high_cpu
+        - alert: EcommerceOrderLatencyHigh
+          expr: "histogram_quantile(0.95, sum by (le) (\n  rate(order_latency_seconds_bucket[2m])\n)) > 2\n"
+          for: 30s
+          labels:
+            severity: high
+            service: order-service
+            alert_type: latency
+          annotations:
+            summary: order-service p95 latency above 2s
+            description: p95={{ $value }}s
+            scenario: user_service_high_latency
+
+        # Scenarios: user_service_crashloop / order_service_memory_leak (OOM).
+        # `up` is synthesised by Prometheus per target, so this fires when a
+        # container is down entirely and no app metric is being reported.
+        #
+        # Keyed on `namespace`, NOT `job`. The two deployments produce different
+        # job labels — the Compose static config below sets job="ecommerce",
+        # while k8s pod discovery sets job="kubernetes-pods" and there is no
+        # relabel rule that overrides it. Both set namespace="ecommerce" (the
+        # static config via an explicit label, k8s via the chart's
+        # `target_label: namespace` rule), so this expression covers both and
+        # keeps working through the Compose -> k8s migration.
+        - alert: EcommerceServiceDown
+          expr: up{namespace="ecommerce"} == 0
+          for: 30s
+          labels:
+            severity: critical
+            service: '{{ $labels.service_name }}'
+            alert_type: service_down
+          annotations:
+            summary: '{{ $labels.service_name }} is not responding to scrapes'
+            description: target={{ $labels.instance }} has been down for 30s
+            scenario: user_service_crashloop

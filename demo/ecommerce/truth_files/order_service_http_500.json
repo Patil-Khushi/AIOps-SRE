@@ -43,5 +43,35 @@
     ],
     "must_identify_service": "order-service",
     "must_identify_category": "application_error"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-order-service-http-500",
+    "service": "order-service",
+    "metric": "orders_failed_total",
+    "value": 1.84,
+    "threshold": 0.0,
+    "severity_hint": "high",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommerceOrderErrorRateHigh",
+      "severity": "high",
+      "service": "order-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "order-service",
+      "severity_in": [
+        "Sev-2"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Order Experience"
+    }
   }
 }

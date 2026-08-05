@@ -119,7 +119,7 @@ def _destructive_pair_runbook() -> ExecutableRunbook:
     return ExecutableRunbook(
         id="rb-pair",
         title="Two destructive steps",
-        service="payment",
+        service="payment-service",
         severity="sev1",
         tags=["crash"],
         steps=[
@@ -128,14 +128,14 @@ def _destructive_pair_runbook() -> ExecutableRunbook:
                 action="act_one",
                 destructive=True,
                 rollback_action="undo_one",
-                target="deployment/payment",
+                target="deployment/payment-service",
             ),
             RunbookStep(
                 name="step-two",
                 action="act_two",
                 destructive=True,
                 rollback_action="undo_two",
-                target="deployment/payment",
+                target="deployment/payment-service",
             ),
         ],
     )
@@ -145,20 +145,21 @@ def _destructive_pair_runbook() -> ExecutableRunbook:
 
 
 def test_selects_payment_runbook_by_service_and_tags():
-    rb = select(Incident(service="payment", severity="sev1", tags=["oom", "crash"]))
+    rb = select(Incident(service="payment-service", severity="sev3", tags=["restart", "generic"]))
     assert rb is not None
-    assert rb.id == "payment-restart"
+    assert rb.id == "payment-service-restart"
 
 
 def test_selects_by_substring_service_spelling():
-    rb = select(Incident(service="payment-service", tags=["crashloop"]))
-    assert rb is not None and rb.id == "payment-restart"
+    rb = select(Incident(service="paymentservice", tags=["restart"]))
+    assert rb is not None and rb.id == "payment-service-restart"
 
 
-def test_selects_cart_runbook_by_tag_substring():
-    # "high-latency" must match the runbook tag "high-latency"/"latency".
-    rb = select(Incident(service="cart", severity="sev2", tags=["high-latency"]))
-    assert rb is not None and rb.id == "cartservice-scale-up"
+def test_selects_runbook_by_tag_substring():
+    # "memory"/"oom" must match the memory-leak runbook's tags, beating the
+    # generic order-service-restart which shares the service but no tags.
+    rb = select(Incident(service="order-service", severity="sev1", tags=["memory", "oom"]))
+    assert rb is not None and rb.id == "order-service-memory-leak"
 
 
 def test_no_matching_runbook_returns_none():
@@ -177,18 +178,44 @@ def test_execute_with_no_runbook_is_clean_no_runbook_status():
 
 def test_runbooks_parse_into_steps_with_flags():
     by_id = {rb.id: rb for rb in load_runbooks()}
-    pay = by_id["payment-restart"]
-    assert [s.name for s in pay.steps] == ["drain-connections", "restart-pods"]
-    drain, restart = pay.steps
+    pay = by_id["payment-service-restart"]
+    assert [s.name for s in pay.steps] == ["drain-connections", "restart-pods", "verify-health"]
+    drain, restart, verify = pay.steps
     assert drain.destructive is False
     assert restart.destructive is True
+    # A destructive step must declare how to undo itself — CLAUDE.md
+    # non-negotiable #5. Without this the HITL gate can only offer approve/deny,
+    # not approve-with-automatic-rollback.
     assert restart.rollback_action == "rescale_previous"
     assert restart.action == "restart_deployment"
+    assert verify.destructive is False
+
+
+def test_fault_clearing_runbooks_target_a_real_failure_key():
+    """`clear_fault` steps must name a key the injection registry knows.
+
+    A typo here produces a runbook that looks correct, passes the gate, and then
+    fails at execution with "unknown fault" — after a human has already approved
+    it.
+    """
+    from demo.ecommerce.failure_injection import FAILURES
+
+    for rb in load_runbooks():
+        for step in rb.steps:
+            if step.action != "clear_fault":
+                continue
+            assert (step.target or "").startswith("fault/"), (
+                f"{rb.id}: clear_fault target must be 'fault/<key>', got {step.target!r}"
+            )
+            key = step.target.split("/", 1)[1]
+            assert key in FAILURES, (
+                f"{rb.id}: fault key {key!r} is not registered; available: {sorted(FAILURES)}"
+            )
 
 
 def test_three_runbooks_ship_in_the_library():
     ids = {rb.id for rb in load_runbooks()}
-    assert {"payment-restart", "cartservice-scale-up", "checkout-rollback-deploy"} <= ids
+    assert {"payment-service-restart", "order-service-memory-leak", "user-service-crashloop"} <= ids
 
 
 # ─── resolved: autonomous (non-destructive only) ─────────────────────────────
@@ -198,13 +225,13 @@ def test_non_destructive_only_resolves_without_any_approver():
     rb = ExecutableRunbook(
         id="rb-safe",
         title="Safe",
-        service="cart",
+        service="order-service",
         steps=[
             RunbookStep(name="snapshot", action="snapshot_replicas", destructive=False),
             RunbookStep(name="healthcheck", action="healthcheck", destructive=False),
         ],
     )
-    out = run_plan(Incident(service="cart"), rb)  # no approver installed
+    out = run_plan(Incident(service="order-service"), rb)  # no approver installed
     assert out.status == "resolved"
     assert out.steps_executed == 2
     assert all(s.status == "executed" for s in out.steps)
@@ -214,12 +241,15 @@ def test_non_destructive_only_resolves_without_any_approver():
 
 
 def test_destructive_step_denied_without_approver():
-    out = execute_runbook(Incident(service="payment", severity="sev1", tags=["oom"]))
+    out = execute_runbook(Incident(service="payment-service", severity="sev3", tags=["restart"]))
     assert out.status == "denied"
-    # The safe drain ran; the destructive restart was blocked and nothing past it ran.
-    drain, restart = out.steps
+    # The safe drain ran; the destructive restart was blocked and nothing past
+    # it ran — including the trailing verify-health, which must NOT be reported
+    # as executed just because it is non-destructive.
+    drain, restart, verify = out.steps
     assert drain.status == "executed"
     assert restart.status == "denied"
+    assert verify.status != "executed"
     assert out.steps_executed == 1
     assert "gate" in out.reason.lower()
 
@@ -228,10 +258,10 @@ def test_destructive_step_denied_without_approver():
 
 
 def test_destructive_step_resolves_with_approver(auto_approve):
-    out = execute_runbook(Incident(service="payment", severity="sev1", tags=["oom"]))
+    out = execute_runbook(Incident(service="payment-service", severity="sev3", tags=["restart"]))
     assert out.status == "resolved"
-    assert out.steps_executed == 2
-    _drain, restart = out.steps
+    assert out.steps_executed == 3
+    _drain, restart, _verify = out.steps
     assert restart.name == "restart-pods"
     assert restart.status == "executed"
     assert restart.executed is not None  # evidence captured
@@ -242,7 +272,7 @@ def test_destructive_step_resolves_with_approver(auto_approve):
 
 def test_step_failure_rolls_back_prior_steps(faulty_providers, auto_approve):
     faulty_providers["exec_fail"].add("step-two")
-    out = run_plan(Incident(service="payment"), _destructive_pair_runbook())
+    out = run_plan(Incident(service="payment-service"), _destructive_pair_runbook())
     assert out.status == "rolled_back"
     s1, s2 = out.steps
     assert s1.status == "rolled_back"  # executed then undone
@@ -259,7 +289,7 @@ def test_step_failure_rolls_back_prior_steps(faulty_providers, auto_approve):
 def test_rollback_failure_yields_failed(faulty_providers, auto_approve):
     faulty_providers["exec_fail"].add("step-two")
     faulty_providers["exec_rollback_fail"].add("step-one")
-    out = run_plan(Incident(service="payment"), _destructive_pair_runbook())
+    out = run_plan(Incident(service="payment-service"), _destructive_pair_runbook())
     assert out.status == "failed"
     assert out.rollback_artifacts[0]["ok"] is False
     assert "manual intervention" in out.reason.lower()
@@ -269,9 +299,11 @@ def test_rollback_failure_yields_failed(faulty_providers, auto_approve):
 
 
 def test_dry_run_previews_every_step_even_when_gate_blocks_first_step():
-    # checkout's first step is destructive -> denied immediately in phase 2,
-    # but phase 1 must have previewed BOTH steps without executing anything.
-    out = execute_runbook(Incident(service="checkout", severity="sev1", tags=["bad-deploy"]))
+    # order-service-memory-leak's FIRST step (clear_fault) is destructive, so
+    # phase 2 denies immediately and nothing executes — but phase 1 must still
+    # have previewed BOTH steps. Picked deliberately over a runbook that starts
+    # with a safe drain, which would execute one step and defeat the test.
+    out = execute_runbook(Incident(service="order-service", severity="sev1", tags=["memory", "oom"]))
     assert out.status == "denied"
     assert out.steps_executed == 0
     assert len(out.steps) == 2
@@ -285,10 +317,10 @@ def test_dry_run_previews_every_step_even_when_gate_blocks_first_step():
 
 
 def test_run_returns_eval_dict():
-    out = run({"service": "payment", "severity": "sev1", "tags": ["oom"]})
-    assert out["selected_runbook"] == "payment-restart"
+    out = run({"service": "payment-service", "severity": "sev3", "tags": ["restart"]})
+    assert out["selected_runbook"] == "payment-service-restart"
     assert out["status"] == "denied"
-    assert out["steps_total"] == 2
+    assert out["steps_total"] == 3
     assert out["destructive_steps"] == 1
     assert out["steps_executed"] == 1
 

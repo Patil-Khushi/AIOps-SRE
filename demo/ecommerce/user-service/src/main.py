@@ -14,6 +14,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from .db import mysql_client as db
@@ -36,6 +37,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ecommerce-user-service", lifespan=lifespan)
+
+# The SPA is served from a different origin (:3000 in Docker, :5173 under
+# `npm run dev`) and sends Content-Type: application/json, which makes the
+# browser issue a CORS preflight. Without this middleware the preflight gets
+# 405 and the browser blocks every call — even though the API itself is fine.
+# Bearer tokens travel in the Authorization header, not cookies, so
+# allow_credentials is deliberately left off (it cannot be combined with "*").
+_cors_origins = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(register.router)
 app.include_router(login.router)

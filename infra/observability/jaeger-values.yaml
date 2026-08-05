@@ -1,0 +1,38 @@
+# Jaeger for the ecommerce SUT.
+#
+# Chart: jaegertracing/jaeger
+#
+# allInOne mode: one pod, in-memory span storage. Correct for a POC — the
+# production topology (collector + query + Cassandra/ES) costs several pods
+# and buys durability nobody needs for a demo. Traces are lost on restart,
+# which is acceptable; the eval harness never reads historical spans.
+#
+# NOTE the base-path change from the OTel Demo. Its Jaeger v2 config served the
+# query API under /jaeger/ui, which is why aiops/tools/observability/jaeger.py
+# has an AIOPS_JAEGER_API_PREFIX and why a plain /api/services 404s there. This
+# deployment serves the API at the root, so that prefix must be set to "" —
+# see infra/observability/README.md.
+
+provisionDataStore:
+  cassandra: false
+  elasticsearch: false
+  kafka: false
+
+allInOne:
+  enabled: true
+  args:
+    - --memory.max-traces=50000
+  resources:
+    requests: {memory: "256Mi", cpu: "100m"}
+    limits: {memory: "512Mi"}
+
+# The separate collector/query/agent deployments are redundant in allInOne mode.
+collector:
+  enabled: false
+query:
+  enabled: false
+agent:
+  enabled: false
+
+storage:
+  type: memory

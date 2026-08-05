@@ -1,14 +1,15 @@
 """User Service — Failure 3: high CPU usage."""
-from .. import _docker
+from .. import _backend
 from .._base import Failure, LoadHint
+from .._endpoints import USER_SERVICE
 
 
 def inject() -> None:
-    _docker.apply_override("user-service", {"environment": {"INJECT_CPU_LOAD": "true"}})
+    _backend.apply_override("user-service", {"environment": {"INJECT_CPU_LOAD": "true"}})
 
 
 def recover() -> None:
-    _docker.remove_override("user-service")
+    _backend.remove_override("user-service")
 
 
 failure = Failure(
@@ -20,6 +21,6 @@ failure = Failure(
     l1="user-service container CPU > 90%",
     l2="A single process pegged on CPU; latency climbs under load",
     rca="Application CPU saturation",
-    load=LoadHint("http://localhost:8001/login", "POST",
+    load=LoadHint(f"{USER_SERVICE}/login", "POST",
                   {"email": "load@test.dev", "password": "x"}),
 )

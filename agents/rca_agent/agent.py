@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # scenario_id with no usable LLM response surfaces as a low-confidence verdict
 # rather than a confident wrong answer (the truth file's "known_wrong_fixes"
 # section is explicit that pattern-matching to restart/scale is a failure mode).
-_LOCKED_SCENARIO = "slow-product-catalog"
+_LOCKED_SCENARIO = "user_service_mysql_down"
 
 # Per-agent LLM choice. The platform default (AIOPS_LLM_PROVIDER=openai → Azure
 # OpenAI gpt-5) works for the lighter agents (alert_triage, classifier) but
@@ -68,7 +68,7 @@ _RCA_MODEL = os.environ.get("AIOPS_RCA_LLM_MODEL", "claude-sonnet-4-6")
 # dashboard path (which may not pass scenario_id) still hits the confident
 # verdict for the actual broken service, without a loose substring match like
 # "product" in service that would also fire on unrelated product-* services.
-_LOCKED_SERVICES = frozenset({"product-catalog", "productcatalog", "productcatalogservice"})
+_LOCKED_SERVICES = frozenset({"user-service", "userservice", "user"})
 
 
 # ─── deterministic fallback ─────────────────────────────────────────────────
@@ -80,46 +80,55 @@ def _fallback_verdict(
     scenario_id: str | None,
     decision_trace: list[str],
 ) -> RCAVerdict:
-    """Hand-written verdict matching ``demo/truth_files/slow-product-catalog.yaml``.
+    """Hand-written verdict matching ``demo/ecommerce/truth_files/user_service_mysql_down.json``.
 
     Used when (a) the LLM provider is the stub, (b) the LLM response is
     unparseable, or (c) the scenario is locked-v0 and we want to guarantee
     eval-harness coverage independent of LLM availability.
     """
-    service = triage.get("affected_service") or "productcatalogservice"
+    # "unknown", NOT a service name. This used to default to
+    # "productcatalogservice", which is in _LOCKED_SERVICES — so a triage
+    # verdict with a MISSING affected_service silently produced a confident
+    # root cause about a service that was never involved (and, after the
+    # migration, no longer exists).
+    service = triage.get("affected_service") or "unknown"
 
     if scenario_id == _LOCKED_SCENARIO or service.lower() in _LOCKED_SERVICES:
         decision_trace.append(
-            "deterministic fallback: matched locked scenario slow-product-catalog"
+            "deterministic fallback: matched locked scenario user_service_mysql_down"
         )
         return RCAVerdict(
             affected_service=service,
             root_cause=(
-                "The flagd feature flag `productCatalogFailure` is on, injecting a "
-                "deterministic ~5s delay into productcatalogservice GetProduct calls. "
-                "Latency is isolated to this service; trace spans show the delay is "
-                "inside the service, not in a downstream dependency."
+                "The MySQL StatefulSet in namespace `ecommerce` is scaled to zero, so "
+                "user-service cannot open a database connection and returns HTTP 500 on "
+                "/login and /register. The service itself is healthy and Running - "
+                "mysql_connection_status reads 0 and /health reports status=degraded."
             ),
             ranked_fix_steps=[
                 RankedFixStep(
                     description=(
-                        "Set the flagd feature flag `productCatalogFailure` "
-                        "defaultVariant back to 'off' via the feature-flags seam."
+                        "Clear the user_service.mysql_down fault - scale the MySQL "
+                        "StatefulSet back to 1 and wait for the rollout."
                     ),
                     blast_radius=BlastRadius.LOW,
-                    rollback="Re-flip the flag back to 'on' — instant.",
+                    rollback="Scale MySQL back to 0 - instant, and the PVC is retained.",
                     action_type=FixActionType.SET_FLAG,
-                    flag="productCatalogFailure",
+                    # `flag` carries a FAILURE KEY now, not a flagd flag name.
+                    # automation.fault.clear takes exactly these.
+                    flag="user_service.mysql_down",
                     variant="off",
                 ),
                 RankedFixStep(
                     description=(
-                        "If the flag did not actually change recently, roll back the "
-                        "most recent productcatalogservice deploy."
+                        "If MySQL is already Running and the gauge stays 0, verify the "
+                        "credentials in the ecommerce-secrets Secret still match what "
+                        "the StatefulSet was initialised with - the password is only "
+                        "applied on first boot with an empty PVC."
                     ),
                     blast_radius=BlastRadius.MEDIUM,
-                    rollback="helm rollback otel-demo to the prior revision.",
-                    action_type=FixActionType.ROLLBACK_DEPLOY,
+                    rollback="No change made - this step is diagnostic.",
+                    action_type=FixActionType.MANUAL,
                 ),
             ],
             confidence_score=0.85,
@@ -130,9 +139,9 @@ def _fallback_verdict(
         )
 
     # Unknown scenario without a usable LLM — emit a low-confidence "I don't
-    # know" verdict rather than a confident wrong answer. v0 only ships
-    # slow-product-catalog as a real path; this branch keeps the contract
-    # honest if the agent is invoked on something else.
+    # know" verdict rather than a confident wrong answer. Only one scenario
+    # has a hand-written fallback; this branch keeps the contract honest for
+    # the other eleven when the LLM is unavailable.
     decision_trace.append(
         f"deterministic fallback: scenario_id={scenario_id!r} not in locked-v0 set; "
         "emitting low-confidence verdict"
@@ -235,24 +244,39 @@ def _coerce_action(step: dict[str, Any]) -> tuple[FixActionType, str | None, str
 
 
 def _live_flag_names() -> set[str] | None:
-    """Best-effort set of flag names configured in the live flagd config, via
-    the feature-flags seam (``feature_flags.list_variants``).
+    """Best-effort set of fault keys the platform can actually clear.
 
-    Returns ``None`` when the list can't be fetched — no flagd, not configured,
-    or the call failed — so callers fail *open*: grounding is a safety net, never
-    a hard dependency for the offline / eval / unit-test paths. Uses the tool
-    registry seam (not a vendor SDK), matching the platform's seam rule.
+    Grounding exists because the LLM invents plausible-but-nonexistent handles
+    (it once emitted ``emailGatewayProvider`` for a service whose real handle was
+    ``emailMemoryLeak``). Checking a proposed fix against the real list stops the
+    agent recommending a step that cannot execute.
+
+    Previously this read flag names from flagd via
+    ``feature_flags.list_variants``. flagd shipped with the OpenTelemetry Demo
+    and was removed in migration Phase 6; the handles are now ecommerce failure
+    keys such as ``order_service.http_500``, surfaced by the
+    ``automation.fault.clear`` provider's error metadata.
+
+    Returns ``None`` when the list cannot be fetched — no provider registered,
+    cluster unreachable, call failed — so callers fail *open*. Grounding is a
+    safety net, never a hard dependency for the offline / eval / unit-test paths.
     """
     try:
         from aiops.tools import get_registry
 
-        res = get_registry().call("feature_flags.list_variants")
-        if not getattr(res, "ok", False):
-            return None
-        variants = (getattr(res, "data", None) or {}).get("variants") or {}
-        names = set(variants)
+        # Deliberately an invalid request: the provider answers a bad fault key
+        # with the list of valid ones in metadata. That avoids adding a
+        # list-only capability whose sole consumer is this safety net.
+        res = get_registry().call("automation.fault.clear", fault="", target="off")
+        meta = getattr(res, "metadata", None) or {}
+        names = set(meta.get("available_faults") or ())
+        if names:
+            return names
+        res = get_registry().call("automation.fault.clear", fault="__probe__", target="off")
+        meta = getattr(res, "metadata", None) or {}
+        names = set(meta.get("available_faults") or ())
         return names or None
-    except Exception:  # registry missing capability, flagd unreachable, etc.
+    except Exception:  # registry missing capability, cluster unreachable, etc.
         return None
 
 

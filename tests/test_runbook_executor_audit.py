@@ -117,7 +117,7 @@ def _safe_runbook() -> ExecutableRunbook:
     return ExecutableRunbook(
         id="rb-safe",
         title="Safe",
-        service="cart",
+        service="order-service",
         steps=[
             RunbookStep(
                 name="snap",
@@ -139,8 +139,8 @@ def _destructive_pair() -> ExecutableRunbook:
     return ExecutableRunbook(
         id="rb-pair",
         title="pair",
-        service="payment",
-        severity="sev1",
+        service="payment-service",
+        severity="sev3",
         tags=["crash"],
         steps=[
             RunbookStep(
@@ -173,7 +173,7 @@ def _by_step(execution) -> dict[str, list[AuditEventType]]:
 
 def test_event_shape_matches_issue_spec():
     ex = execute_runbook(
-        Incident(incident_id="INC-9", service="payment", severity="sev1", tags=["oom"]),
+        Incident(incident_id="INC-9", service="payment-service", severity="sev3", tags=["restart"]),
         hitl_context={"skip_approval": True},
     )
     d = ex.audit_events[0].model_dump(mode="json")
@@ -187,7 +187,7 @@ def test_event_shape_matches_issue_spec():
     }
     assert set(d["metadata"]) >= {"reason", "gate_type", "approval_id"}
     assert d["incident_id"] == "INC-9"
-    assert d["runbook_id"] == "payment-restart"
+    assert d["runbook_id"] == "payment-service-restart"
 
 
 # ─── event completeness (no gaps) ────────────────────────────────────────────
@@ -197,16 +197,17 @@ def test_denied_run_emits_full_event_sequence():
     ex = execute_runbook(
         Incident(
             incident_id="INC-1",
-            service="payment",
-            severity="sev1",
-            tags=["oom", "crash"],
+            service="payment-service",
+            severity="sev3",
+            tags=["restart", "generic"],
         ),
         hitl_context={"skip_approval": True},
     )
     assert ex.status == "denied"
     types = [e.status for e in ex.audit_events]
     # both steps previewed in phase 1
-    assert types.count(AuditEventType.STEP_SIMULATED) == 2
+    # 3, not 2: the generic restart runbook is drain -> restart -> verify.
+    assert types.count(AuditEventType.STEP_SIMULATED) == 3
     by = _by_step(ex)
     # safe drain: started → gate(none) → executed
     assert AuditEventType.STEP_STARTED in by["drain-connections"]
@@ -219,7 +220,7 @@ def test_denied_run_emits_full_event_sequence():
 
 def test_gate_checked_carries_correct_gate_type():
     ex = execute_runbook(
-        Incident(service="payment", severity="sev1", tags=["oom"]),
+        Incident(service="payment-service", severity="sev3", tags=["restart"]),
         hitl_context={"skip_approval": True},
     )
     gate_events = [e for e in ex.audit_events if e.status == AuditEventType.GATE_CHECKED]
@@ -229,7 +230,7 @@ def test_gate_checked_carries_correct_gate_type():
 
 
 def test_resolved_run_emits_hitl_approved(approve):
-    ex = execute_runbook(Incident(service="payment", severity="sev1", tags=["oom"]))
+    ex = execute_runbook(Incident(service="payment-service", severity="sev3", tags=["restart"]))
     assert ex.status == "resolved"
     by = _by_step(ex)
     assert AuditEventType.HITL_APPROVED in by["restart-pods"]
@@ -238,7 +239,7 @@ def test_resolved_run_emits_hitl_approved(approve):
 
 def test_seq_is_monotonic_and_gapless():
     ex = execute_runbook(
-        Incident(service="cart", severity="sev2", tags=["latency", "load"]),
+        Incident(service="order-service", severity="sev2", tags=["latency", "load"]),
         hitl_context={"skip_approval": True},
     )
     seqs = [e.seq for e in ex.audit_events]
@@ -250,7 +251,7 @@ def test_hitl_approved_recorded_even_when_execution_then_fails(faulty, approve):
     An approved destructive step whose tool then fails must still show
     HITL_APPROVED (approval happened), followed by STEP_FAILED."""
     faulty["exec"].add("restart-pods")
-    ex = execute_runbook(Incident(service="payment", severity="sev1", tags=["oom"]))
+    ex = execute_runbook(Incident(service="payment-service", severity="sev3", tags=["restart"]))
     by = _by_step(ex)
     assert AuditEventType.HITL_APPROVED in by["restart-pods"]
     assert AuditEventType.STEP_FAILED in by["restart-pods"]
@@ -283,7 +284,7 @@ def test_eventlog_exposes_no_mutation_api():
 
 def test_execution_audit_events_is_an_immutable_tuple():
     ex = execute_runbook(
-        Incident(service="payment", severity="sev1", tags=["oom"]),
+        Incident(service="payment-service", severity="sev3", tags=["restart"]),
         hitl_context={"skip_approval": True},
     )
     assert isinstance(ex.audit_events, tuple)
@@ -296,7 +297,7 @@ def test_execution_audit_events_is_an_immutable_tuple():
 
 
 def test_comparison_on_executed_step_matches_prediction():
-    ex = run_plan(Incident(service="cart"), _safe_runbook())
+    ex = run_plan(Incident(service="order-service"), _safe_runbook())
     assert ex.status == "resolved"
     for rec in ex.steps:
         assert rec.status == "executed"
@@ -307,7 +308,7 @@ def test_comparison_on_executed_step_matches_prediction():
 
 def test_comparison_attached_on_failed_step(faulty):
     faulty["apply"].add("snap")  # first (non-destructive) step fails
-    ex = run_plan(Incident(service="cart"), _safe_runbook())
+    ex = run_plan(Incident(service="order-service"), _safe_runbook())
     snap = next(s for s in ex.steps if s.name == "snap")
     assert snap.status == "failed"
     assert snap.comparison is not None
@@ -318,7 +319,7 @@ def test_comparison_attached_on_failed_step(faulty):
 
 def test_comparison_attached_on_rolled_back_step(faulty, approve):
     faulty["exec"].add("step-two")  # 2nd destructive step fails → roll back step-one
-    ex = run_plan(Incident(service="payment"), _destructive_pair())
+    ex = run_plan(Incident(service="payment-service"), _destructive_pair())
     assert ex.status == "rolled_back"
     s1 = next(s for s in ex.steps if s.name == "step-one")
     assert s1.status == "rolled_back"

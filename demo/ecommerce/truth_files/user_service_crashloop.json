@@ -52,5 +52,35 @@
     ],
     "must_identify_service": "user-service",
     "must_identify_category": "startup_config_error"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-user-service-crashloop",
+    "service": "user-service",
+    "metric": "up",
+    "value": 0.0,
+    "threshold": 1.0,
+    "severity_hint": "critical",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommerceServiceDown",
+      "severity": "critical",
+      "service": "user-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "user-service",
+      "severity_in": [
+        "Sev-1"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Identity Team"
+    }
   }
 }

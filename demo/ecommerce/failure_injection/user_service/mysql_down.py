@@ -1,14 +1,14 @@
 """User Service — Failure 1: MySQL database down."""
-from .. import _docker
+from .. import _backend
 from .._base import Failure
 
 
 def inject() -> None:
-    _docker.stop("mysql")
+    _backend.stop("mysql")
 
 
 def recover() -> None:
-    _docker.start("mysql")
+    _backend.start("mysql")
 
 
 failure = Failure(

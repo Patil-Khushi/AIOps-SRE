@@ -155,12 +155,21 @@ def test_every_scenario_has_a_truth_file():
     assert not missing, f"scenarios without truth files: {sorted(missing)}"
 
 
-def test_truth_template_is_valid_yaml():
-    template = REPO_ROOT / "demo" / "truth_files" / "template.yaml"
-    data = yaml.safe_load(template.read_text(encoding="utf-8"))
-    assert "scenario_id" in data
-    assert "expected_rca" in data
-    assert "expected_fix_steps" in data
+def test_every_ecommerce_scenario_has_a_truth_file():
+    """CLAUDE.md non-negotiable #8: no scenario without ground truth.
+
+    Replaces test_truth_template_is_valid_yaml. demo/truth_files/template.yaml
+    belonged to the OTel Demo suite and went with it; the ecommerce truth files
+    are JSON and carry no template. The invariant worth enforcing was never the
+    template's existence — it was that every scenario has ground truth.
+    """
+    scen_dir = REPO_ROOT / "demo" / "ecommerce" / "scenarios"
+    truth_dir = REPO_ROOT / "demo" / "ecommerce" / "truth_files"
+    scenarios = {p.stem for p in scen_dir.glob("*.yaml")}
+    truths = {p.stem for p in truth_dir.glob("*.json")}
+    assert scenarios, "no ecommerce scenarios found"
+    missing = sorted(scenarios - truths)
+    assert not missing, f"scenarios without a truth file: {missing}"
 
 
 # --- eval harness handles empty agents/ ------------------------------------

@@ -1,14 +1,14 @@
 """Order Service — Failure 1: PostgreSQL database down."""
-from .. import _docker
+from .. import _backend
 from .._base import Failure
 
 
 def inject() -> None:
-    _docker.stop("postgres")
+    _backend.stop("postgres")
 
 
 def recover() -> None:
-    _docker.start("postgres")
+    _backend.start("postgres")
 
 
 failure = Failure(

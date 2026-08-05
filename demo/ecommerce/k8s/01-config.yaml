@@ -34,7 +34,12 @@ data:
   # In-cluster DNS to the collector. This replaces the NodePort bridge the
   # Compose deployment needed (observability/nodeports.yaml) — once the app
   # runs here, that bridge is only required if you still run Compose too.
-  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.otel-demo.svc.cluster.local:4317"
+  #
+  # Points at the STANDALONE collector in the `observability` namespace
+  # (infra/observability/), not the one that used to ship as an
+  # opentelemetry-demo subchart. The service name is the helm release name plus
+  # the chart name, which is why it reads as a stutter.
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4317"
 
   # --- Failure injection toggles (all OFF = healthy baseline) ---------------
   # Scenarios flip these with `kubectl set env` or by patching this ConfigMap

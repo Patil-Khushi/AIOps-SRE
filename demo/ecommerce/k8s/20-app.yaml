@@ -153,11 +153,18 @@ metadata:
   name: payment-service
   namespace: ecommerce
 spec:
+  # NodePort, even though the browser never calls it: three failure scenarios
+  # (payment_service.{high_cpu,http_500,gateway_timeout}) drive load straight at
+  # POST /payments to make the fault observable. Compose published it on 8003
+  # for the same reason. Without this the load generator gets connection
+  # refused and the scenario produces no signal at all.
+  type: NodePort
   selector:
     app: payment-service
   ports:
     - port: 8000
       targetPort: 8000
+      nodePort: 30083
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -193,11 +193,50 @@ class TruthFileRun:
 
 
 def discover_truth_files() -> list[Path]:
-    """Every ``demo/truth_files/*.yaml`` except ``template.yaml``."""
-    truth_dir = REPO_ROOT / "demo" / "truth_files"
-    if not truth_dir.exists():
-        return []
-    return sorted(p for p in truth_dir.glob("*.yaml") if p.stem != "template")
+    """Truth files from both scenario suites.
+
+    * ``demo/truth_files/*.yaml``           — OTel Demo scenarios (legacy)
+    * ``demo/ecommerce/truth_files/*.json`` — ecommerce SUT scenarios
+
+    Two directories and two formats because the ecommerce app is a
+    self-contained folder that ships its own scenarios and truth files; moving
+    them out to satisfy the harness would break that. ``load_truth_file()``
+    normalises the two schemas.
+
+    The legacy YAML set goes away when the OTel Demo is removed; until then
+    both are scored.
+    """
+    paths: list[Path] = []
+
+    legacy_dir = REPO_ROOT / "demo" / "truth_files"
+    if legacy_dir.exists():
+        paths += [p for p in legacy_dir.glob("*.yaml") if p.stem != "template"]
+
+    ecommerce_dir = REPO_ROOT / "demo" / "ecommerce" / "truth_files"
+    if ecommerce_dir.exists():
+        paths += list(ecommerce_dir.glob("*.json"))
+
+    return sorted(paths)
+
+
+def load_truth_file(path: Path) -> dict[str, Any]:
+    """Parse a truth file, normalising the ecommerce JSON schema.
+
+    The two suites describe the same idea with different keys:
+
+        legacy YAML   scenario_id  expected_alert_payload  exercises
+        ecommerce     id           expected_alert_payload  exercises
+
+    Only the identifier differs in the fields this harness reads, so the
+    normalisation is deliberately minimal — the ecommerce file's richer blocks
+    (root_cause_keywords, expected_signals, grading) are for RCA scoring, not
+    for the alert_triage path, and are left untouched.
+    """
+    text = path.read_text(encoding="utf-8")
+    data = (json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)) or {}
+    if "scenario_id" not in data and "id" in data:
+        data["scenario_id"] = data["id"]
+    return data
 
 
 def run_truth_file(path: Path) -> TruthFileRun:
@@ -207,7 +246,7 @@ def run_truth_file(path: Path) -> TruthFileRun:
     blocks return an empty ``TruthFileRun`` (they haven't opted in to
     automated evaluation yet — smoke test still enforces file presence).
     """
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = load_truth_file(path)
     scenario_id = data.get("scenario_id") or path.stem
     payload = data.get("expected_alert_payload")
     exercises = data.get("exercises") or {}
