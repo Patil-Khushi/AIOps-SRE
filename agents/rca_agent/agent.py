@@ -24,9 +24,10 @@ import json
 import logging
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from agents.rca_agent import evidence as _evidence
 from agents.rca_agent.models import (
     BlastRadius,
     FixActionType,
@@ -36,13 +37,15 @@ from agents.rca_agent.models import (
     RCAVerdict,
 )
 from agents.rca_agent.prompts import (
+    CHANGE_EVIDENCE_BLOCK,
     CORRELATION_EVIDENCE_BLOCK,
     RCA_PROMPT_USER_V1,
-    SYSTEM_PROMPT_V3,
+    SYSTEM_PROMPT_V4,
 )
 from agents.rca_agent.remediation_map import flag_for_service
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
+from aiops.tools import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +454,101 @@ def _render_evidence_block(correlation: dict[str, Any] | None) -> str:
     )
 
 
-def _render_user_prompt(triage: dict[str, Any], correlation: dict[str, Any] | None = None) -> str:
+# Where each service's code lives, for scoping the commit query. Without a
+# path filter the query returns repo-wide commits and the model happily blames
+# a docs change for a database outage.
+#
+# Unmapped services fall back to a repo-wide query, which is noisier but still
+# better than no change evidence at all.
+_SERVICE_SOURCE_PATHS: dict[str, str] = {
+    "user-service": "demo/ecommerce/user-service",
+    "order-service": "demo/ecommerce/order-service",
+    "payment-service": "demo/ecommerce/payment-service",
+    "mock-payment-gateway": "demo/ecommerce/mock-payment-gateway",
+    "frontend": "demo/ecommerce/frontend",
+}
+
+# How far back to look for changes. Long enough to catch "deployed this
+# morning, broke this afternoon"; short enough that the model isn't handed a
+# month of unrelated history to pattern-match against.
+_CHANGE_LOOKBACK_HOURS = int(os.getenv("AIOPS_RCA_CHANGE_LOOKBACK_HOURS", "48"))
+
+
+def _fetch_change_evidence(service: str, decision_trace: list[str]) -> list[dict[str, Any]] | None:
+    """Recent commits touching ``service``, via the SCM seam. Never raises.
+
+    Goes through ``get_registry().call`` rather than importing the GitHub
+    provider: the agent must not know which SCM backend is configured
+    (non-negotiable #1), and the registry is also where the HITL gate lives.
+
+    Returns None when the seam is unregistered or unconfigured — the common
+    case in CI and for anyone running without a token. RCA then proceeds with
+    observability evidence alone, exactly as it did before this existed.
+    """
+    path = _SERVICE_SOURCE_PATHS.get(service)
+    if path is None:
+        decision_trace.append(
+            f"no source path mapped for service={service!r}; querying repo-wide change history"
+        )
+
+    since = (datetime.now(UTC) - timedelta(hours=_CHANGE_LOOKBACK_HOURS)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+    try:
+        res = get_registry().call("scm.commit.history", path=path, since=since, limit=10)
+    except KeyError:
+        # Capability not registered — nobody imported aiops.tools.scm, or the
+        # deployment deliberately omits source access.
+        decision_trace.append("scm.commit.history not registered; skipping change correlation")
+        return None
+    except Exception as exc:
+        decision_trace.append(f"change correlation raised {type(exc).__name__}; skipping")
+        return None
+
+    if not getattr(res, "ok", False):
+        decision_trace.append(f"change correlation unavailable: {getattr(res, 'error', 'unknown')}")
+        return None
+
+    commits = (res.data or {}).get("commits") or []
+    if not commits:
+        # A real and useful answer: "nothing changed here recently" actively
+        # argues AGAINST a deploy-induced cause, so record it rather than
+        # treating it as a failed lookup.
+        decision_trace.append(
+            f"change correlation: no commits touching {path or 'the repo'} in the last "
+            f"{_CHANGE_LOOKBACK_HOURS}h"
+        )
+        return []
+
+    decision_trace.append(
+        f"change correlation: {len(commits)} commit(s) touching {path or 'the repo'} "
+        f"in the last {_CHANGE_LOOKBACK_HOURS}h (newest {commits[0].get('sha')})"
+    )
+    return commits
+
+
+def _render_change_block(commits: list[dict[str, Any]] | None) -> str:
+    """Render commits into a prompt block. Empty string when unavailable."""
+    if commits is None:
+        return ""
+    if not commits:
+        return CHANGE_EVIDENCE_BLOCK.format(
+            commits=f"- (no commits in the last {_CHANGE_LOOKBACK_HOURS}h)"
+        )
+    lines = [
+        f"- {c.get('sha')} {c.get('date')} by {c.get('author')}: {c.get('message')}"
+        for c in commits
+    ]
+    return CHANGE_EVIDENCE_BLOCK.format(commits="\n".join(lines))
+
+
+def _render_user_prompt(
+    triage: dict[str, Any],
+    correlation: dict[str, Any] | None = None,
+    change_evidence: list[dict[str, Any]] | None = None,
+    observed: dict[str, list[str]] | None = None,
+) -> str:
     service = str(triage.get("affected_service") or "unknown")
     severity = str(triage.get("severity") or "unknown")
     summary = str(triage.get("alert_summary") or "(no summary)")
@@ -461,12 +558,22 @@ def _render_user_prompt(triage: dict[str, Any], correlation: dict[str, Any] | No
         rendered_trace = "\n".join(f"- {line}" for line in trace_lines)
     else:
         rendered_trace = "- (no trace lines available)"
+    # Log correlation first (the symptom), then change history (the likely
+    # cause) — the order the model should reason in.
+    # Log correlation (the symptom), then change history (the likely cause),
+    # then raw telemetry last — the order the model should reason in, and the
+    # observations are what it should have most freshly in mind.
+    evidence = (
+        _render_evidence_block(correlation)
+        + _render_change_block(change_evidence)
+        + _evidence.render(observed or {})
+    )
     return RCA_PROMPT_USER_V1.format(
         service=service,
         severity=severity,
         summary=summary,
         decision_trace=rendered_trace,
-        evidence_block=_render_evidence_block(correlation),
+        evidence_block=evidence,
     )
 
 
@@ -497,14 +604,34 @@ def analyze(
         )
     service = str(triage_verdict.get("affected_service") or "unknown")
 
-    user_prompt = _render_user_prompt(triage_verdict, correlation)
+    # Change correlation. Deliberately best-effort: an unconfigured or
+    # unreachable SCM seam must degrade the RCA's evidence, never fail the RCA.
+    change_evidence = _fetch_change_evidence(service, decision_trace)
+
+    # Live telemetry, so the model reasons from what the system is actually
+    # doing rather than pattern-matching the service name. Without this it can
+    # only guess a mechanism — which is how the previous prompt produced
+    # confident root causes naming feature flags that do not exist.
+    # Never raises; an unreachable backend costs one evidence line, not the RCA.
+    observed = _evidence.gather(service)
+    if observed:
+        decision_trace.append(
+            "live evidence gathered: " + ", ".join(f"{k}={len(v)}" for k, v in observed.items())
+        )
+    else:
+        decision_trace.append(
+            "no live evidence (observability seams unreachable); reasoning from "
+            "the triage verdict alone"
+        )
+
+    user_prompt = _render_user_prompt(triage_verdict, correlation, change_evidence, observed)
     try:
         # JSON mode would be ideal but the gateway is provider-agnostic and
         # not every backend supports it; we ask for JSON in the prompt and
         # parse defensively. 1500 tokens covers reasoning + a 2-3 step plan.
         resp = llm_complete(
             messages=[
-                Message(role="system", content=SYSTEM_PROMPT_V3),
+                Message(role="system", content=SYSTEM_PROMPT_V4),
                 Message(role="user", content=user_prompt),
             ],
             provider=_RCA_PROVIDER,
