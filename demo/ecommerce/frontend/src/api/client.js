@@ -2,20 +2,23 @@
 // returns a normalized result that records status, latency, and error text so
 // the UI can display exactly what happened (and which service answered).
 
+import { dropToken, loadToken, saveToken } from "../state/session.js";
+
 const cfg = window.__APP_CONFIG__ || {};
 export const USER_SERVICE_URL = cfg.USER_SERVICE_URL || "http://localhost:8001";
 export const ORDER_SERVICE_URL = cfg.ORDER_SERVICE_URL || "http://localhost:8002";
 
-const TOKEN_KEY = "ecommerce_jwt";
-
+// Token storage moved to state/session.js (sessionStorage + in-memory mirror)
+// so a page refresh no longer logs the user out. These three functions keep
+// their exact signatures — everything downstream is unchanged.
 export function getToken() {
-  return window.__authToken || null;
+  return loadToken();
 }
 export function setToken(t) {
-  window.__authToken = t;
+  saveToken(t);
 }
 export function clearToken() {
-  window.__authToken = null;
+  dropToken();
 }
 
 // Subscribers (the request-log panel listens here).
