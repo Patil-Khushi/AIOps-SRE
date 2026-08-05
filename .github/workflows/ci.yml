@@ -43,6 +43,37 @@ jobs:
           AIOPS_LLM_PROVIDER: stub
         run: uv run python -m evals.harness --ci --min-pass-rate 0.85
 
+  ecommerce-service-tests:
+    # The order/payment/user FastAPI services each ship their own `src/` and
+    # `tests/` and are NOT part of the root uv workspace (they're standalone
+    # containers with a plain requirements.txt) — the root testpaths
+    # deliberately excludes demo/ecommerce/** because three same-named `src`
+    # packages would collide if collected together. Test each in isolation.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [order-service, payment-service, user-service]
+    defaults:
+      run:
+        working-directory: demo/ecommerce/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install service + test deps
+        # httpx is needed by fastapi.testclient.TestClient; it's already a
+        # production dependency of order/payment-service (they call
+        # downstream services over HTTP) but not of user-service, so it's
+        # installed here explicitly rather than added to requirements.txt.
+        run: pip install -r requirements.txt pytest httpx
+
+      - name: pytest
+        run: pytest
+
   policy-validate:
     runs-on: ubuntu-latest
     steps:
