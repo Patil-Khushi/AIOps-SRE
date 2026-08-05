@@ -7,6 +7,7 @@ Delays payment-service rather than the mock gateway: the app-layer version slows
 the gateway via env var, so putting the tc qdisc one hop closer (on payment
 itself) makes the two halves stack instead of masking each other.
 """
+
 from . import _infra_backend
 
 DELAY_MS = 30_000

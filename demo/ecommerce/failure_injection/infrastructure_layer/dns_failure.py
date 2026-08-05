@@ -1,4 +1,5 @@
 """Payment Service — Failure: DNS resolution broken."""
+
 from .._base import Failure, InjectionLayer
 from . import _infra_backend
 

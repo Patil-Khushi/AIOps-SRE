@@ -11,6 +11,7 @@ produced no signal — with no error to explain why.
 Override any of them explicitly with FI_USER_URL / FI_ORDER_URL / FI_PAYMENT_URL
 — useful when port-forwarding from another machine, or if a NodePort clashes.
 """
+
 from __future__ import annotations
 
 import os

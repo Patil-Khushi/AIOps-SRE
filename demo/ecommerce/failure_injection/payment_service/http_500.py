@@ -1,4 +1,5 @@
 """Payment Service — Failure 4: HTTP 500 errors."""
+
 from .. import _backend
 from .._base import Failure, LoadHint
 from .._endpoints import PAYMENT_SERVICE
@@ -21,6 +22,5 @@ failure = Failure(
     l1="5xx rate on /payments increases; payment_failures_total{reason=injected_500} rising",
     l2="Payment logs show the injected failure",
     rca="Payment application failure",
-    load=LoadHint(f"{PAYMENT_SERVICE}/payments", "POST",
-                  {"order_id": 1, "amount": 12.0}),
+    load=LoadHint(f"{PAYMENT_SERVICE}/payments", "POST", {"order_id": 1, "amount": 12.0}),
 )

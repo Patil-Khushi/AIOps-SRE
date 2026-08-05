@@ -3,14 +3,14 @@
 Verifies the app imports, exposes /metrics, and that /health degrades (rather
 than crashes) when the database is unreachable.
 """
+
 import os
 
 os.environ.setdefault("MYSQL_HOST", "localhost")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from src.main import app  # noqa: E402
+from fastapi.testclient import TestClient
+from src.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 

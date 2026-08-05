@@ -12,6 +12,7 @@ there do OOMKilled and CrashLoopBackOff appear as real pod states, which is
 what the truth files assert. The Compose backend is kept because the app is
 still perfectly runnable under Compose for plain development.
 """
+
 from __future__ import annotations
 
 import os
@@ -23,9 +24,7 @@ if _BACKEND == "docker":
 elif _BACKEND in ("k8s", "kubernetes", "kubectl"):
     from . import _k8s as _impl
 else:
-    raise ValueError(
-        f"Unknown FI_BACKEND={_BACKEND!r}. Expected 'k8s' or 'docker'."
-    )
+    raise ValueError(f"Unknown FI_BACKEND={_BACKEND!r}. Expected 'k8s' or 'docker'.")
 
 BACKEND_NAME = "docker" if _BACKEND == "docker" else "k8s"
 

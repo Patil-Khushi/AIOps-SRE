@@ -11,10 +11,10 @@ router = APIRouter()
 def payment_status(payment_id: str):
     try:
         record = store.get_payment(payment_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         store.redis_connection_status.set(0)
         log.error("redis connection error", extra={"op": "get_payment", "error": str(exc)})
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "storage error")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "storage error") from exc
 
     if not record:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")

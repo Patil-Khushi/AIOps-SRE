@@ -6,6 +6,7 @@ Provides only inject()/recover(); the Failure object lives in
 here would be dead code that shadows nothing — see the app-layer module for the
 registered definition.
 """
+
 from . import _infra_backend
 
 DELAY_MS = 500

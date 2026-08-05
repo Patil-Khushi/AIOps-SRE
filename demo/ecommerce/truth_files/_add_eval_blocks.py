@@ -21,6 +21,7 @@ the payload straight to ``run()`` with no adapter in the path. Put it only in
 ratio — which scores a MySQL outage (value=0, threshold=1) as Sev-4, because
 that heuristic assumes higher-is-worse.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,18 +34,33 @@ HERE = Path(__file__).resolve().parent
 # infra/observability/prometheus-values.yaml.
 # value/threshold mirror what the firing rule would actually report.
 ALERTS: dict[str, tuple[str, str, float, float]] = {
-    "user_service_mysql_down":         ("EcommerceMySQLDown",          "mysql_connection_status",    0.0,  1.0),
-    "order_service_postgres_down":     ("EcommercePostgresDown",       "postgres_connection_status", 0.0,  1.0),
-    "payment_service_redis_down":      ("EcommerceRedisDown",          "redis_connection_status",    0.0,  1.0),
-    "user_service_crashloop":          ("EcommerceServiceDown",        "up",                         0.0,  1.0),
-    "order_service_memory_leak":       ("EcommerceServiceDown",        "up",                         0.0,  1.0),
-    "order_service_payment_timeout":   ("EcommercePaymentTimeouts",    "payment_timeout_total",      1.8,  0.0),
-    "payment_service_gateway_timeout": ("EcommercePaymentTimeouts",    "payment_timeout_total",      1.5,  0.0),
-    "order_service_http_500":          ("EcommerceOrderErrorRateHigh", "orders_failed_total",        1.84, 0.0),
-    "payment_service_http_500":        ("EcommerceOrderErrorRateHigh", "orders_failed_total",        1.6,  0.0),
-    "user_service_high_latency":       ("EcommerceOrderLatencyHigh",   "order_latency_seconds",      10.4, 2.0),
-    "user_service_high_cpu":           ("EcommerceOrderLatencyHigh",   "order_latency_seconds",      4.2,  2.0),
-    "payment_service_high_cpu":        ("EcommerceOrderLatencyHigh",   "order_latency_seconds",      3.8,  2.0),
+    "user_service_mysql_down": ("EcommerceMySQLDown", "mysql_connection_status", 0.0, 1.0),
+    "order_service_postgres_down": (
+        "EcommercePostgresDown",
+        "postgres_connection_status",
+        0.0,
+        1.0,
+    ),
+    "payment_service_redis_down": ("EcommerceRedisDown", "redis_connection_status", 0.0, 1.0),
+    "user_service_crashloop": ("EcommerceServiceDown", "up", 0.0, 1.0),
+    "order_service_memory_leak": ("EcommerceServiceDown", "up", 0.0, 1.0),
+    "order_service_payment_timeout": (
+        "EcommercePaymentTimeouts",
+        "payment_timeout_total",
+        1.8,
+        0.0,
+    ),
+    "payment_service_gateway_timeout": (
+        "EcommercePaymentTimeouts",
+        "payment_timeout_total",
+        1.5,
+        0.0,
+    ),
+    "order_service_http_500": ("EcommerceOrderErrorRateHigh", "orders_failed_total", 1.84, 0.0),
+    "payment_service_http_500": ("EcommerceOrderErrorRateHigh", "orders_failed_total", 1.6, 0.0),
+    "user_service_high_latency": ("EcommerceOrderLatencyHigh", "order_latency_seconds", 10.4, 2.0),
+    "user_service_high_cpu": ("EcommerceOrderLatencyHigh", "order_latency_seconds", 4.2, 2.0),
+    "payment_service_high_cpu": ("EcommerceOrderLatencyHigh", "order_latency_seconds", 3.8, 2.0),
 }
 
 # The truth files' own `severity` field drives the expected verdict. This is the

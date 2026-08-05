@@ -1,4 +1,5 @@
 """Request/response schemas for the User Service."""
+
 from pydantic import BaseModel, EmailStr
 
 

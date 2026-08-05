@@ -6,6 +6,7 @@ The spec's key log lines map to levels:
     WARN  "invalid credentials"
     ERROR "database connection failed"
 """
+
 import logging
 import sys
 

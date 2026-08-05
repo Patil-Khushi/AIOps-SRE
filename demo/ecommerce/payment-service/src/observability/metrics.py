@@ -1,4 +1,5 @@
 """Prometheus metrics for the Payment Service."""
+
 from prometheus_client import Counter, Gauge, Histogram
 
 payment_requests_total = Counter(

@@ -66,7 +66,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import yaml
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -130,9 +129,9 @@ from aiops.tools import (  # noqa: E402
     resolvers as _resolvers_tool,  # noqa: F401  — DB-backed incident.resolvers.lookup registration
 )
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
+from aiops.tools.chatops import register_env_adapters  # noqa: E402
 from demo.ui import fault_clear as _fault_clear  # noqa: E402,F401  — automation.fault.clear
 from demo.ui import scenario_provider  # noqa: E402
-from aiops.tools.chatops import register_env_adapters  # noqa: E402
 from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
@@ -1569,7 +1568,6 @@ def _verify_flag_resolution(runbook: Any, status: str) -> dict[str, Any]:
     if not flags:
         return {"status": "skipped", "reason": "runbook clears no injected fault", "checks": []}
 
-    reg = get_registry()
     checks: list[dict[str, Any]] = []
     failures = skips = 0
     for flag in flags:
@@ -1808,9 +1806,7 @@ def _live_variants() -> dict[str, str]:
     except Exception:
         return {}
     return {
-        str(s["flag"]): by_scenario.get(sid, "off")
-        for sid, s in SCENARIOS.items()
-        if s.get("flag")
+        str(s["flag"]): by_scenario.get(sid, "off") for sid, s in SCENARIOS.items() if s.get("flag")
     }
 
 

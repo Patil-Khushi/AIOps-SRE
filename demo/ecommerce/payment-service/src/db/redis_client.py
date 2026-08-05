@@ -4,6 +4,7 @@ Stores each payment record as a JSON string under key `payment:{id}`.
 Connection failures raise so routes return 500 and flip
 redis_connection_status (Failure 1: Redis down).
 """
+
 import json
 import os
 
@@ -30,7 +31,7 @@ def ping() -> bool:
         client.ping()
         redis_connection_status.set(1)
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         redis_connection_status.set(0)
         log.error("redis connection error", extra={"error": str(exc)})
         return False

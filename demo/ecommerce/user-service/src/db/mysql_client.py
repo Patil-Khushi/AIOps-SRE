@@ -5,6 +5,7 @@ table plus helpers for the three routes. Connection failures surface as
 exceptions so routes can return 500 and flip the mysql_connection_status gauge
 (Failure 1: MySQL down).
 """
+
 import os
 
 from passlib.context import CryptContext
@@ -63,7 +64,7 @@ def ping() -> bool:
             conn.execute(text("SELECT 1"))
         mysql_connection_status.set(1)
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         mysql_connection_status.set(0)
         log.error("database connection failed", extra={"error": str(exc)})
         return False
@@ -100,13 +101,11 @@ def create_user(name: str, email: str, password: str) -> int:
     with engine.begin() as conn:
         try:
             result = conn.execute(
-                insert(users).values(
-                    name=name, email=email, password_hash=hash_password(password)
-                )
+                insert(users).values(name=name, email=email, password_hash=hash_password(password))
             )
             return result.inserted_primary_key[0]
-        except IntegrityError:
-            raise ValueError("email already registered")
+        except IntegrityError as exc:
+            raise ValueError("email already registered") from exc
 
 
 def get_user_by_email(email: str):

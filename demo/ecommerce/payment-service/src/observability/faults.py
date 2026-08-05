@@ -1,8 +1,9 @@
 """Failure-injection helpers for the Payment Service.
 
-    INJECT_HTTP_500   -> Failure 4 (unhandled 5xx)
-    INJECT_CPU_LOAD   -> Failure 3 (high CPU)
+INJECT_HTTP_500   -> Failure 4 (unhandled 5xx)
+INJECT_CPU_LOAD   -> Failure 3 (high CPU)
 """
+
 import os
 import time
 

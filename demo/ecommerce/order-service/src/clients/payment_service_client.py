@@ -5,6 +5,7 @@ path is slow (e.g. the mock gateway is delayed above this threshold), the call
 raises TimeoutException, which the route maps to a timed-out order and bumps
 payment_timeout_total (Failure 2).
 """
+
 import os
 
 import httpx

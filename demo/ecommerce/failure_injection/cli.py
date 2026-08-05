@@ -1,12 +1,11 @@
 """Command-line interface for the failure-injection toolkit."""
+
 from __future__ import annotations
 
 import argparse
 import sys
 
-from . import FAILURES
-from . import _load
-from . import _orchestrator
+from . import FAILURES, _load, _orchestrator
 
 
 def _print_table(show_layers: bool = False) -> None:
@@ -69,20 +68,34 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_list = sub.add_parser("list", help="list all failures")
-    p_list.add_argument("--show-layers", action="store_true",
-                        help="show injection layer for each failure")
+    p_list.add_argument(
+        "--show-layers", action="store_true", help="show injection layer for each failure"
+    )
 
     p_inject = sub.add_parser("inject", help="inject a failure")
     p_inject.add_argument("key")
-    p_inject.add_argument("--mode", choices=["application", "infrastructure", "hybrid"],
-                          default=None, help="injection mode (default: FI_MODE env or 'hybrid')")
-    p_inject.add_argument("--load", type=float, metavar="SECONDS", default=0,
-                          help="after injecting, drive traffic for N seconds")
+    p_inject.add_argument(
+        "--mode",
+        choices=["application", "infrastructure", "hybrid"],
+        default=None,
+        help="injection mode (default: FI_MODE env or 'hybrid')",
+    )
+    p_inject.add_argument(
+        "--load",
+        type=float,
+        metavar="SECONDS",
+        default=0,
+        help="after injecting, drive traffic for N seconds",
+    )
 
     p_recover = sub.add_parser("recover", help="recover a failure")
     p_recover.add_argument("key")
-    p_recover.add_argument("--mode", choices=["application", "infrastructure", "hybrid"],
-                           default=None, help="recovery mode (default: FI_MODE env or 'hybrid')")
+    p_recover.add_argument(
+        "--mode",
+        choices=["application", "infrastructure", "hybrid"],
+        default=None,
+        help="recovery mode (default: FI_MODE env or 'hybrid')",
+    )
 
     p_sig = sub.add_parser("signals", help="print L1/L2/RCA for a failure")
     p_sig.add_argument("key")

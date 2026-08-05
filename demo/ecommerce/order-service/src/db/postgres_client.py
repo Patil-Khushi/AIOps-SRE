@@ -3,6 +3,8 @@
 SQLAlchemy Core over psycopg3. A single `orders` table. Connection failures
 raise so routes return 500 and flip postgres_connection_status (Failure 1).
 """
+
+import contextlib
 import json
 import os
 
@@ -62,7 +64,7 @@ def ping() -> bool:
             conn.execute(text("SELECT 1"))
         postgres_connection_status.set(1)
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         postgres_connection_status.set(0)
         log.error("database connection failed", extra={"error": str(exc)})
         return False
@@ -89,10 +91,8 @@ def set_status(order_id: int, status: str) -> None:
 def _row_to_dict(row) -> dict:
     m = dict(row._mapping)
     if m.get("items"):
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             m["items"] = json.loads(m["items"])
-        except (TypeError, ValueError):
-            pass
     if m.get("created_at") is not None:
         m["created_at"] = m["created_at"].isoformat()
     return m

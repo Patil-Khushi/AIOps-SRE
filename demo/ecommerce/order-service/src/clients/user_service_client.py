@@ -4,6 +4,7 @@ Order creation validates the caller by forwarding their bearer token to the
 User Service's /profile endpoint. A 200 means the user is valid and gives us
 their id; anything else means the order should be rejected.
 """
+
 import os
 
 import httpx

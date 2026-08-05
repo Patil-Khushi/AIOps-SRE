@@ -76,6 +76,7 @@ def clear_fault(fault: str = "", target: str = "off", **_: object) -> ToolResult
 
     try:
         from demo.ecommerce.failure_injection import recover
+
         result = recover(failure)
         if not result["ok"]:
             return ToolResult(

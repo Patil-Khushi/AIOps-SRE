@@ -1,11 +1,11 @@
 """Smoke tests that don't require live Postgres or downstream services."""
+
 import os
 
 os.environ.setdefault("POSTGRES_HOST", "localhost")
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from src.main import app  # noqa: E402
+from fastapi.testclient import TestClient
+from src.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 

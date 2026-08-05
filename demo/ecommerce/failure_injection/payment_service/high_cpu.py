@@ -1,4 +1,5 @@
 """Payment Service — Failure 3: high CPU usage."""
+
 from .. import _backend
 from .._base import Failure, InjectionLayer, LoadHint
 from .._endpoints import PAYMENT_SERVICE
@@ -15,12 +16,14 @@ def recover() -> None:
 def inject_infra() -> None:
     """Infrastructure-layer: burn CPU cores with stress-ng."""
     from ..infrastructure_layer import cpu_spike
+
     cpu_spike.inject()
 
 
 def recover_infra() -> None:
     """Infrastructure-layer: kill the pod to stop the stress process."""
     from ..infrastructure_layer import cpu_spike
+
     cpu_spike.recover()
 
 
@@ -36,6 +39,5 @@ failure = Failure(
     l1="payment-service container CPU > 90%",
     l2="Resource consumption shows process pegged on CPU; OR stress-ng visible",
     rca="Application resource exhaustion OR external CPU stress (infra-layer)",
-    load=LoadHint(f"{PAYMENT_SERVICE}/payments", "POST",
-                  {"order_id": 1, "amount": 12.0}),
+    load=LoadHint(f"{PAYMENT_SERVICE}/payments", "POST", {"order_id": 1, "amount": 12.0}),
 )

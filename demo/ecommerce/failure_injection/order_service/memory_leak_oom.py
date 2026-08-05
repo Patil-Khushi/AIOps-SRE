@@ -3,6 +3,7 @@
 Enables the per-order leak and caps container memory so sustained order traffic
 grows RSS until the kernel OOM-kills the container.
 """
+
 from .. import _backend
 from .._base import Failure, LoadHint
 from .._endpoints import ORDER_SERVICE
@@ -28,6 +29,9 @@ failure = Failure(
     l1="order-service memory usage climbing toward the limit",
     l2="Container restarted with reason OOMKilled",
     rca="Memory leak caused OOMKilled",
-    load=LoadHint(f"{ORDER_SERVICE}/orders", "POST",
-                  {"items": [{"sku": "widget", "qty": 1, "price": 12.0}], "amount": 12.0}),
+    load=LoadHint(
+        f"{ORDER_SERVICE}/orders",
+        "POST",
+        {"items": [{"sku": "widget", "qty": 1, "price": 12.0}], "amount": 12.0},
+    ),
 )

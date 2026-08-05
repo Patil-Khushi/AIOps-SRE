@@ -6,6 +6,7 @@ inject()/recover() only; the registered Failure lives in
 The burn loop is plain Python, not stress-ng: the service images do not ship
 stress-ng. It is bounded by DURATION_SEC, so a missed recover() self-heals.
 """
+
 from . import _infra_backend
 
 # payment-service has `limits.cpu: 1`, so one worker is the whole quota —

@@ -1,4 +1,5 @@
 """User Service — Failure 2: high API latency on /login."""
+
 from .. import _backend
 from .._base import Failure, InjectionLayer, LoadHint
 from .._endpoints import USER_SERVICE
@@ -17,12 +18,14 @@ def inject_infra() -> None:
     # Imported lazily: the infra layer shells out to kubectl, and importing it at
     # module scope would make `list` fail on a machine with no cluster.
     from ..infrastructure_layer import network_latency
+
     network_latency.inject()
 
 
 def recover_infra() -> None:
     """Infrastructure-layer: remove the network delay."""
     from ..infrastructure_layer import network_latency
+
     network_latency.recover()
 
 
@@ -38,6 +41,5 @@ failure = Failure(
     l1="login_latency_seconds p95/p99 breaches threshold (~10s)",
     l2="Latency isolated to the login handler; DB and CPU normal; OR network latency observed",
     rca="Application processing delay OR network infrastructure latency",
-    load=LoadHint(f"{USER_SERVICE}/login", "POST",
-                  {"email": "load@test.dev", "password": "x"}),
+    load=LoadHint(f"{USER_SERVICE}/login", "POST", {"email": "load@test.dev", "password": "x"}),
 )

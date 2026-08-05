@@ -1,4 +1,5 @@
 """Structured JSON logging for the Payment Service."""
+
 import logging
 import sys
 

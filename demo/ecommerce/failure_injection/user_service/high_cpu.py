@@ -1,4 +1,5 @@
 """User Service — Failure 3: high CPU usage."""
+
 from .. import _backend
 from .._base import Failure, LoadHint
 from .._endpoints import USER_SERVICE
@@ -21,6 +22,5 @@ failure = Failure(
     l1="user-service container CPU > 90%",
     l2="A single process pegged on CPU; latency climbs under load",
     rca="Application CPU saturation",
-    load=LoadHint(f"{USER_SERVICE}/login", "POST",
-                  {"email": "load@test.dev", "password": "x"}),
+    load=LoadHint(f"{USER_SERVICE}/login", "POST", {"email": "load@test.dev", "password": "x"}),
 )

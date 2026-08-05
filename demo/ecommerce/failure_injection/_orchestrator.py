@@ -18,12 +18,14 @@ asked for the env-var path.
     FI_MODE=infrastructure   tc, stress-ng, kubectl, dd, DNS only
     FI_MODE=hybrid           both, where the failure supports both (default)
 """
+
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING
 
 from ._base import ChaosUnavailable, InjectionLayer
 
@@ -35,12 +37,13 @@ logger = logging.getLogger(__name__)
 
 class OrchestrationMode(Enum):
     """Which layer(s) the operator asked to drive."""
+
     APPLICATION = "application"
     INFRASTRUCTURE = "infrastructure"
     HYBRID = "hybrid"
 
 
-def _coerce_mode(mode: Optional[OrchestrationMode | str]) -> OrchestrationMode:
+def _coerce_mode(mode: OrchestrationMode | str | None) -> OrchestrationMode:
     """Resolve an explicit mode, else FI_MODE, else hybrid."""
     if isinstance(mode, OrchestrationMode):
         return mode
@@ -60,7 +63,7 @@ def _plan(
     failure: Failure,
     mode: OrchestrationMode,
     action: str,
-) -> dict[str, Optional[Callable[[], None]]]:
+) -> dict[str, Callable[[], None] | None]:
     """Resolve which callable runs in each layer slot.
 
     ``None`` means "this layer does not apply to this failure" — reported as
@@ -75,7 +78,7 @@ def _plan(
     want_app = mode in (OrchestrationMode.APPLICATION, OrchestrationMode.HYBRID)
     want_infra = mode in (OrchestrationMode.INFRASTRUCTURE, OrchestrationMode.HYBRID)
 
-    plan: dict[str, Optional[Callable[[], None]]] = {
+    plan: dict[str, Callable[[], None] | None] = {
         "application": None,
         "infrastructure": None,
     }
@@ -149,9 +152,7 @@ def _execute(failure: Failure, mode: OrchestrationMode, action: str) -> dict:
     if "ran" not in statuses:
         results["ok"] = False
         blocked = [
-            step["reason"]
-            for step in results["layers"].values()
-            if step["status"] == "unavailable"
+            step["reason"] for step in results["layers"].values() if step["status"] == "unavailable"
         ]
         results["error"] = (
             "; ".join(blocked)
@@ -165,12 +166,12 @@ def _execute(failure: Failure, mode: OrchestrationMode, action: str) -> dict:
     return results
 
 
-def inject(failure: Failure, mode: Optional[OrchestrationMode | str] = None) -> dict:
+def inject(failure: Failure, mode: OrchestrationMode | str | None = None) -> dict:
     """Inject `failure` across whichever layers `mode` and the failure both allow."""
     return _execute(failure, _coerce_mode(mode), "inject")
 
 
-def recover(failure: Failure, mode: Optional[OrchestrationMode | str] = None) -> dict:
+def recover(failure: Failure, mode: OrchestrationMode | str | None = None) -> dict:
     """Recover `failure` across whichever layers `mode` and the failure both allow."""
     return _execute(failure, _coerce_mode(mode), "recover")
 

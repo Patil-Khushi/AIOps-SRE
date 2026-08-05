@@ -3,8 +3,10 @@
 JWT_SECRET is required — a missing secret raises at import time, which is one of
 the intentional CrashLoopBackOff triggers (Failure 4).
 """
+
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -18,7 +20,7 @@ _bearer = HTTPBearer(auto_error=True)
 
 
 def create_access_token(user_id: int, email: str) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "email": email,
@@ -29,13 +31,13 @@ def create_access_token(user_id: int, email: str) -> str:
 
 
 def get_current_user(
-    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+    creds: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
 ) -> dict:
     """Dependency for protected routes. Returns the decoded claims."""
     try:
         claims = jwt.decode(creds.credentials, _SECRET, algorithms=[_ALGO])
         return {"id": int(claims["sub"]), "email": claims.get("email")}
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token expired")
-    except jwt.PyJWTError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token expired") from exc
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token") from exc

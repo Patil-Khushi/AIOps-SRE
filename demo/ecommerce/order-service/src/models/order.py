@@ -1,4 +1,5 @@
 """Request/response schemas for the Order Service."""
+
 from typing import Any
 
 from pydantic import BaseModel
@@ -19,6 +20,6 @@ class OrderResponse(BaseModel):
     id: int
     user_id: int
     amount: float
-    status: str          # PENDING | PAID | FAILED
+    status: str  # PENDING | PAID | FAILED
     items: Any = None
     created_at: str | None = None

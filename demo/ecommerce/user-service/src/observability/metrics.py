@@ -3,6 +3,7 @@
 Metric names follow the project spec so dashboards/alerts and the AIOps agents
 can rely on stable names.
 """
+
 from prometheus_client import Counter, Gauge, Histogram
 
 login_requests_total = Counter(

@@ -6,6 +6,7 @@ external process holds pages resident until the cgroup limit forces an OOMKill,
 so the app's own memory profile stays clean and the RCA has to come from pod
 state rather than application logs.
 """
+
 from .._base import Failure, InjectionLayer
 from . import _infra_backend
 
@@ -27,9 +28,7 @@ DURATION_SEC = 600
 
 def inject() -> None:
     """Hold MEMORY_MB resident in order-service until the cgroup OOMKills it."""
-    _infra_backend.stress_memory(
-        "order-service", memory_mb=MEMORY_MB, duration_sec=DURATION_SEC
-    )
+    _infra_backend.stress_memory("order-service", memory_mb=MEMORY_MB, duration_sec=DURATION_SEC)
 
 
 def recover() -> None:
@@ -50,6 +49,6 @@ failure = Failure(
     recover=recover,
     l1="container_memory_working_set_bytes for order-service pinned at its 256Mi limit",
     l2="Kernel OOM event in the container's cgroup; application heap metrics normal, "
-       "so the pressure originates outside the application",
+    "so the pressure originates outside the application",
     rca="External memory pressure exhausted the container's cgroup limit",
 )

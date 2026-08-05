@@ -12,6 +12,7 @@ recreates the service from the base compose again.
 Set FI_DRY_RUN=1 to print every command instead of executing it — useful to
 preview exactly what will happen before touching real containers.
 """
+
 from __future__ import annotations
 
 import os
@@ -51,11 +52,11 @@ def _faults_path() -> Path:
 
 # --- container stop/start --------------------------------------------------
 def stop(service: str) -> None:
-    run(_compose_cmd() + ["-f", BASE_COMPOSE, "stop", service])
+    run([*_compose_cmd(), "-f", BASE_COMPOSE, "stop", service])
 
 
 def start(service: str) -> None:
-    run(_compose_cmd() + ["-f", BASE_COMPOSE, "start", service])
+    run([*_compose_cmd(), "-f", BASE_COMPOSE, "start", service])
 
 
 # --- compose override (env / config / resources) --------------------------
@@ -88,9 +89,18 @@ def apply_override(service: str, config: dict) -> None:
     else:
         _faults_path().write_text(content)
     run(
-        _compose_cmd()
-        + ["-f", BASE_COMPOSE, "-f", FAULTS_COMPOSE,
-           "up", "-d", "--no-deps", "--force-recreate", service]
+        [
+            *_compose_cmd(),
+            "-f",
+            BASE_COMPOSE,
+            "-f",
+            FAULTS_COMPOSE,
+            "up",
+            "-d",
+            "--no-deps",
+            "--force-recreate",
+            service,
+        ]
     )
 
 
@@ -101,7 +111,4 @@ def remove_override(service: str) -> None:
         print(f"[dry-run] rm {FAULTS_COMPOSE}")
     elif path.exists():
         path.unlink()
-    run(
-        _compose_cmd()
-        + ["-f", BASE_COMPOSE, "up", "-d", "--no-deps", "--force-recreate", service]
-    )
+    run([*_compose_cmd(), "-f", BASE_COMPOSE, "up", "-d", "--no-deps", "--force-recreate", service])

@@ -227,10 +227,7 @@ def _run_failure(failure_key: str, action: str) -> dict[str, Any]:
     if failure is None:
         return {"ok": False, "error": f"unknown failure key {failure_key!r}"}
     try:
-        if action == "inject":
-            result = inject(failure)
-        else:
-            result = recover(failure)
+        result = inject(failure) if action == "inject" else recover(failure)
         return {
             "ok": result["ok"],
             "failure_key": failure_key,

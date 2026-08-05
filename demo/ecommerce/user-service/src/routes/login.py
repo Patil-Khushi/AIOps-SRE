@@ -21,16 +21,16 @@ def login(req: LoginRequest):
 
     # Injected faults (default inert).
     maybe_inject_latency()  # Failure 2: high latency
-    maybe_burn_cpu()        # Failure 3: high CPU
+    maybe_burn_cpu()  # Failure 3: high CPU
 
     # Look up the user; DB errors here are Failure 1 (MySQL down).
     try:
         user = db.get_user_by_email(str(req.email))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         db.mysql_connection_status.set(0)
         login_failure_total.labels(reason="db_error").inc()
         log.error("database connection failed", extra={"op": "login", "error": str(exc)})
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "database error")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "database error") from exc
 
     if not db.verify_login(req.password, user):
         login_failure_total.labels(reason="invalid_credentials").inc()

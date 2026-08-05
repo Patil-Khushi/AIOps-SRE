@@ -4,6 +4,7 @@ Kept in one place so routes stay readable. All default to inert.
     INJECT_LATENCY_SECONDS  -> Failure 2 (high API latency)
     INJECT_CPU_LOAD         -> Failure 3 (high CPU usage)
 """
+
 import os
 import time
 

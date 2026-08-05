@@ -3,13 +3,12 @@
 Provides abstractions over tc, stress-ng, kubectl, iptables, etc.
 All operations log their commands for transparency.
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import subprocess
-import sys
-from pathlib import Path
 
 from .._base import ChaosUnavailable
 
@@ -77,6 +76,7 @@ def _run_output(cmd: list[str]) -> str | None:
 
 # ─── Preflight ────────────────────────────────────────────────────────────────
 
+
 def require_binary(pod_name: str, binary: str) -> None:
     """Raise ChaosUnavailable unless `binary` exists inside the pod."""
     if DRY_RUN:
@@ -114,12 +114,13 @@ def require_net_admin(pod_name: str) -> None:
             f"a qdisc. Add to the container spec:\n"
             f"    securityContext:\n"
             f"      capabilities:\n"
-            f"        add: [\"NET_ADMIN\"]\n"
+            f'        add: ["NET_ADMIN"]\n'
             f"...or drive network chaos from outside the container (Chaos Mesh)."
         )
 
 
 # ─── Network Chaos (tc qdisc) ──────────────────────────────────────────────────
+
 
 def _netem(pod_or_service: str, spec: str, description: str) -> None:
     """Attach a netem qdisc described by `spec` to the pod's root qdisc."""
@@ -181,6 +182,7 @@ def remove_packet_loss(pod_or_service: str) -> None:
 
 # ─── Pod Operations ────────────────────────────────────────────────────────────
 
+
 def kill_pod(pod_or_service: str) -> None:
     """Kill a pod by name or service name.
 
@@ -206,10 +208,16 @@ def wait_for_pod_ready(pod_or_service: str, timeout_sec: int = 120) -> None:
     if not pod_name:
         return
 
-    selector = pod_name.rsplit("-", 2)[0]  # e.g., 'payment-service' from 'payment-service-abc123-def456'
+    selector = pod_name.rsplit("-", 2)[
+        0
+    ]  # e.g., 'payment-service' from 'payment-service-abc123-def456'
     _run(
         [
-            "kubectl", "-n", NAMESPACE, "rollout", "status",
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "rollout",
+            "status",
             f"deployment/{selector}",
             f"--timeout={timeout_sec}s",
         ],
@@ -218,6 +226,7 @@ def wait_for_pod_ready(pod_or_service: str, timeout_sec: int = 120) -> None:
 
 
 # ─── Resource Stress ───────────────────────────────────────────────────────────
+
 
 def stress_cpu(
     pod_or_service: str,
@@ -298,10 +307,7 @@ def stress_memory(
 
 def _spawn_tracked(payload: str, count: int) -> str:
     """Shell snippet that backgrounds `payload` `count` times, recording each PID."""
-    one = (
-        f"python3 -c {_shquote(payload)} >/dev/null 2>&1 & "
-        f"echo $! >> {CHAOS_PIDFILE}"
-    )
+    one = f"python3 -c {_shquote(payload)} >/dev/null 2>&1 & echo $! >> {CHAOS_PIDFILE}"
     return "; ".join([one] * count)
 
 
@@ -404,8 +410,7 @@ def fill_disk(
     )
     if avail and avail.isdigit() and int(avail) < size_mb:
         raise ChaosUnavailable(
-            f"{target_path} on {pod_name} has only {avail}MB free; "
-            f"refusing to write {size_mb}MB"
+            f"{target_path} on {pod_name} has only {avail}MB free; refusing to write {size_mb}MB"
         )
 
     _kubectl_exec(
@@ -440,6 +445,7 @@ def _fill_path(target_path: str) -> str:
 
 # ─── DNS Chaos ────────────────────────────────────────────────────────────────
 
+
 def break_dns(pod_or_service: str) -> None:
     """Break DNS resolution by poisoning /etc/resolv.conf."""
     pod_name = _get_pod_name(pod_or_service)
@@ -460,6 +466,7 @@ def restore_dns(pod_or_service: str) -> None:
 
 
 # ─── Connection Pool Exhaustion ────────────────────────────────────────────────
+
 
 def start_connection_holder(
     pod_or_service: str,
@@ -519,6 +526,7 @@ def stop_connection_holder(pod_or_service: str) -> None:
 
 # ─── Helper Functions ──────────────────────────────────────────────────────────
 
+
 def _shquote(s: str) -> str:
     """Single-quote `s` for /bin/sh.
 
@@ -549,12 +557,20 @@ def _get_pod_name(pod_or_service: str) -> str | None:
     if pod_or_service.count("-") >= 3 or _looks_like_statefulset_pod(pod_or_service):
         return pod_or_service
 
-    output = _run_output([
-        "kubectl", "-n", NAMESPACE, "get", "pods",
-        "-l", f"app={pod_or_service}",
-        "--field-selector=status.phase=Running",
-        "-o", "jsonpath={.items[0].metadata.name}",
-    ])
+    output = _run_output(
+        [
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "get",
+            "pods",
+            "-l",
+            f"app={pod_or_service}",
+            "--field-selector=status.phase=Running",
+            "-o",
+            "jsonpath={.items[0].metadata.name}",
+        ]
+    )
     return output or None
 
 
@@ -574,8 +590,7 @@ def _get_pod_interface(pod_name: str) -> str:
     """
     listing = _kubectl_exec_capture(
         pod_name,
-        "for d in /sys/class/net/*; do n=$(basename $d); "
-        "[ \"$n\" != lo ] && echo $n; done | head -1",
+        'for d in /sys/class/net/*; do n=$(basename $d); [ "$n" != lo ] && echo $n; done | head -1',
     )
     if listing:
         return listing.strip()
@@ -591,8 +606,15 @@ def _kubectl_exec(
     """Execute a command inside a pod."""
     return _run(
         [
-            "kubectl", "-n", NAMESPACE, "exec", pod_name, "--",
-            "sh", "-c", command,
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "exec",
+            pod_name,
+            "--",
+            "sh",
+            "-c",
+            command,
         ],
         description,
     )
@@ -600,10 +622,19 @@ def _kubectl_exec(
 
 def _kubectl_exec_capture(pod_name: str, command: str) -> str | None:
     """Execute a command in a pod and capture output."""
-    return _run_output([
-        "kubectl", "-n", NAMESPACE, "exec", pod_name, "--",
-        "sh", "-c", command,
-    ])
+    return _run_output(
+        [
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "exec",
+            pod_name,
+            "--",
+            "sh",
+            "-c",
+            command,
+        ]
+    )
 
 
 __all__ = [

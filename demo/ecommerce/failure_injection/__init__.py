@@ -16,6 +16,7 @@ Injection modes (controlled by --mode flag or FI_MODE env var):
 
 FI_DRY_RUN=1 prints the docker commands instead of running them.
 """
+
 from ._base import Failure, InjectionLayer, LoadHint
 from ._orchestrator import OrchestrationMode, inject, recover
 from .infrastructure_layer import disk_full as _i_disk
@@ -40,16 +41,28 @@ from .user_service import mysql_down as _u_mysql
 # order http_500, payment high_cpu) now declare layer=HYBRID and carry an
 # infrastructure implementation alongside the env-var one.
 _APP_FAILURES = [
-    _u_mysql.failure, _u_lat.failure, _u_cpu.failure, _u_crash.failure,
-    _o_pg.failure, _o_pt.failure, _o_500.failure, _o_oom.failure,
-    _p_redis.failure, _p_gt.failure, _p_cpu.failure, _p_500.failure,
+    _u_mysql.failure,
+    _u_lat.failure,
+    _u_cpu.failure,
+    _u_crash.failure,
+    _o_pg.failure,
+    _o_pt.failure,
+    _o_500.failure,
+    _o_oom.failure,
+    _p_redis.failure,
+    _p_gt.failure,
+    _p_cpu.failure,
+    _p_500.failure,
 ]
 
 # Infrastructure-only failures: no env-var equivalent exists, so these run
 # nothing under FI_MODE=application.
 _INFRA_FAILURES = [
-    _i_loss.failure, _i_mem.failure, _i_disk.failure,
-    _i_dns.failure, _i_pool.failure,
+    _i_loss.failure,
+    _i_mem.failure,
+    _i_disk.failure,
+    _i_dns.failure,
+    _i_pool.failure,
 ]
 
 _ALL = [*_APP_FAILURES, *_INFRA_FAILURES]
@@ -64,6 +77,11 @@ if _dupes:
 FAILURES: dict[str, Failure] = {f.key: f for f in _ALL}
 
 __all__ = [
-    "FAILURES", "Failure", "InjectionLayer", "LoadHint",
-    "OrchestrationMode", "inject", "recover",
+    "FAILURES",
+    "Failure",
+    "InjectionLayer",
+    "LoadHint",
+    "OrchestrationMode",
+    "inject",
+    "recover",
 ]

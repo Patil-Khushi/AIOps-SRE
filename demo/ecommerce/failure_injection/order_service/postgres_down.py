@@ -1,4 +1,5 @@
 """Order Service — Failure 1: PostgreSQL database down."""
+
 from .. import _backend
 from .._base import Failure
 

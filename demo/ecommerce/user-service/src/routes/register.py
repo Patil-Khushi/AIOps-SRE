@@ -14,11 +14,11 @@ def register(req: RegisterRequest):
     except ValueError as exc:
         # Duplicate email — client error, not a fault.
         log.warning("registration rejected", extra={"reason": str(exc), "email": str(req.email)})
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
-    except Exception as exc:  # noqa: BLE001 — DB down etc.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except Exception as exc:
         db.mysql_connection_status.set(0)
         log.error("database connection failed", extra={"op": "register", "error": str(exc)})
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "database error")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "database error") from exc
 
     log.info("user registered", extra={"user_id": user_id, "email": str(req.email)})
     return {"id": user_id, "name": req.name, "email": str(req.email)}

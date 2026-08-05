@@ -11,6 +11,7 @@ Endpoints:
     POST /charge   { amount } -> { status: "approved", txn_id }
     GET  /health
 """
+
 import os
 import time
 import uuid

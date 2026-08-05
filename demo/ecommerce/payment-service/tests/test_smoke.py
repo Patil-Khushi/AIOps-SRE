@@ -1,11 +1,11 @@
 """Smoke tests that don't require a live Redis or gateway."""
+
 import os
 
 os.environ.setdefault("REDIS_HOST", "localhost")
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from src.main import app  # noqa: E402
+from fastapi.testclient import TestClient
+from src.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 

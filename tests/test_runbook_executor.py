@@ -303,7 +303,9 @@ def test_dry_run_previews_every_step_even_when_gate_blocks_first_step():
     # phase 2 denies immediately and nothing executes — but phase 1 must still
     # have previewed BOTH steps. Picked deliberately over a runbook that starts
     # with a safe drain, which would execute one step and defeat the test.
-    out = execute_runbook(Incident(service="order-service", severity="sev1", tags=["memory", "oom"]))
+    out = execute_runbook(
+        Incident(service="order-service", severity="sev1", tags=["memory", "oom"])
+    )
     assert out.status == "denied"
     assert out.steps_executed == 0
     assert len(out.steps) == 2

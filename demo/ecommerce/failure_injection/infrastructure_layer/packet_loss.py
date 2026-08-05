@@ -1,5 +1,6 @@
 """Order Service — Failure: Network packet loss."""
-from .._base import Failure, LoadHint, InjectionLayer
+
+from .._base import Failure, InjectionLayer, LoadHint
 from .._endpoints import ORDER_SERVICE
 from . import _infra_backend
 
@@ -24,6 +25,9 @@ failure = Failure(
     l1="order_failures_total rising; connection errors increasing",
     l2="TCP retransmits increasing; network packet loss observable via tcpdump",
     rca="Network infrastructure packet loss",
-    load=LoadHint(f"{ORDER_SERVICE}/orders", "POST",
-                  {"items": [{"sku": "widget", "qty": 1, "price": 12.0}], "amount": 12.0}),
+    load=LoadHint(
+        f"{ORDER_SERVICE}/orders",
+        "POST",
+        {"items": [{"sku": "widget", "qty": 1, "price": 12.0}], "amount": 12.0},
+    ),
 )

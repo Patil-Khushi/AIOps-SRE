@@ -10,6 +10,7 @@ Endpoints:
 Observability: Prometheus metrics, structured JSON logs, optional OTel traces.
 Failure modes are driven by env toggles (see .env.example).
 """
+
 import os
 from contextlib import asynccontextmanager
 
@@ -29,7 +30,7 @@ async def lifespan(app: FastAPI):
     log.info("user-service starting")
     try:
         db.init_schema()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.error("startup schema init failed", extra={"error": str(exc)})
         raise
     db.ping()
@@ -93,5 +94,5 @@ if _otlp:
         trace.set_tracer_provider(provider)
         FastAPIInstrumentor.instrument_app(app)
         log.info("otel tracing enabled", extra={"endpoint": _otlp})
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("otel init failed; continuing without tracing", extra={"error": str(exc)})

@@ -6,6 +6,7 @@ the application is a bystander: its pool is healthy, but every attempt to open a
 new connection is refused by MySQL. That is the shape this takes in production —
 some other client exhausts the server and an innocent service starts failing.
 """
+
 from .._base import Failure, InjectionLayer
 from . import _infra_backend
 
@@ -37,6 +38,6 @@ failure = Failure(
     recover=recover,
     l1="login_failure_total rising; 500s on /login; mysql_connection_status flapping",
     l2="MySQL Threads_connected pinned at max_connections; user-service logs "
-       "'Too many connections' on connect, while its own pool metrics look healthy",
+    "'Too many connections' on connect, while its own pool metrics look healthy",
     rca="MySQL server connection limit exhausted by an external client",
 )

@@ -7,6 +7,7 @@ that is never actually exercised is indistinguishable in the summary from one
 that passes — and a discovery bug that drops the whole ecommerce suite reports
 a perfect score while measuring nothing.
 """
+
 from __future__ import annotations
 
 import json

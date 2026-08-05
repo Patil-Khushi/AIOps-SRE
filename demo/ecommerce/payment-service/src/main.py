@@ -6,6 +6,7 @@ Endpoints:
     GET  /health          liveness + Redis reachability
     GET  /metrics         Prometheus exposition
 """
+
 import os
 from contextlib import asynccontextmanager
 
@@ -65,5 +66,5 @@ if _otlp:
         FastAPIInstrumentor.instrument_app(app)
         HTTPXClientInstrumentor().instrument()
         log.info("otel tracing enabled", extra={"endpoint": _otlp})
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("otel init failed; continuing without tracing", extra={"error": str(exc)})

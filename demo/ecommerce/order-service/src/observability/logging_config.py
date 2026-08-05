@@ -1,4 +1,5 @@
 """Structured JSON logging for the Order Service."""
+
 import logging
 import sys
 

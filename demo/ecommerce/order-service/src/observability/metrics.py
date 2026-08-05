@@ -1,4 +1,5 @@
 """Prometheus metrics for the Order Service (names per project spec)."""
+
 from prometheus_client import Counter, Gauge, Histogram
 
 orders_created_total = Counter(

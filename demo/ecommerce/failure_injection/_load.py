@@ -4,6 +4,7 @@ Several faults (high CPU, high latency, memory leak) only become visible under
 traffic. This fires concurrent requests for a fixed duration and reports the
 status-code distribution. No third-party dependencies so it runs anywhere.
 """
+
 from __future__ import annotations
 
 import json as _json
@@ -24,7 +25,7 @@ def _one(url: str, method: str, body: dict | None) -> int:
             return resp.status
     except urllib.error.HTTPError as exc:
         return exc.code
-    except Exception:  # noqa: BLE001 — connection refused, timeout, etc.
+    except Exception:
         return 0
 
 

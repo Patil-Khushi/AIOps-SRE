@@ -7,6 +7,7 @@ Note the asymmetry: inject() deletes the pod, but recover() only *waits* for the
 Deployment to bring a replacement up. Kubernetes owns the restart, so there is
 nothing to undo — recovery is "confirm it came back", not "put it back".
 """
+
 from . import _infra_backend
 
 

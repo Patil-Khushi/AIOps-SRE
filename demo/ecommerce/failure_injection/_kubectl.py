@@ -11,6 +11,7 @@ that rejects standard flags like ``-n`` when invoked from subprocess. It works
 fine typed into PowerShell, which makes the failure mode confusing. We probe
 each candidate and keep the first real one.
 """
+
 from __future__ import annotations
 
 import os
@@ -51,7 +52,12 @@ def resolve() -> str:
     if home := os.environ.get("USERPROFILE"):
         candidates.append(
             os.path.join(
-                home, "AppData", "Local", "Microsoft", "WinGet", "Packages",
+                home,
+                "AppData",
+                "Local",
+                "Microsoft",
+                "WinGet",
+                "Packages",
                 "Kubernetes.kubectl_Microsoft.Winget.Source_8wekyb3d8bbwe",
                 "kubectl.exe",
             )

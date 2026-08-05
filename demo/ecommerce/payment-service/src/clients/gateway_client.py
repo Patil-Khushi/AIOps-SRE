@@ -4,6 +4,7 @@ The call has an explicit timeout (GATEWAY_TIMEOUT_SECONDS). When the gateway is
 delayed past that threshold, the call raises TimeoutException -> the route maps
 it to a gateway timeout (Failure 2).
 """
+
 import os
 
 import httpx

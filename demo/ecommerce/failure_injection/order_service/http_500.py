@@ -1,4 +1,5 @@
 """Order Service — Failure 3: HTTP 500 errors."""
+
 from .. import _backend
 from .._base import Failure, InjectionLayer, LoadHint
 from .._endpoints import ORDER_SERVICE
@@ -15,12 +16,14 @@ def recover() -> None:
 def inject_infra() -> None:
     """Infrastructure-layer: kill the payment dependency for real 5xx."""
     from ..infrastructure_layer import dependency_failure
+
     dependency_failure.inject()
 
 
 def recover_infra() -> None:
     """Infrastructure-layer: wait for the payment pod to come back."""
     from ..infrastructure_layer import dependency_failure
+
     dependency_failure.recover()
 
 
@@ -36,6 +39,9 @@ failure = Failure(
     l1="5xx rate on /orders increases; orders_failed_total rising",
     l2="Application logs show error OR payment service pod is down (connection refused)",
     rca="Code failure (unhandled exception) OR dependency unavailable",
-    load=LoadHint(f"{ORDER_SERVICE}/orders", "POST",
-                  {"items": [{"sku": "widget", "qty": 1, "price": 12.0}], "amount": 12.0}),
+    load=LoadHint(
+        f"{ORDER_SERVICE}/orders",
+        "POST",
+        {"items": [{"sku": "widget", "qty": 1, "price": 12.0}], "amount": 12.0},
+    ),
 )

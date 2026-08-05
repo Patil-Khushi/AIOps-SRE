@@ -14,6 +14,7 @@ Why k8s is the better target than Compose for these scenarios:
 
 Set FI_DRY_RUN=1 to print commands instead of running them.
 """
+
 from __future__ import annotations
 
 import json

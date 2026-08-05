@@ -1,16 +1,18 @@
 """Shared types for failure-injection modules."""
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Optional
 
 
 class InjectionLayer(Enum):
     """Which layer(s) a failure injection targets."""
-    APPLICATION = "application"       # Environment variables, ConfigMaps
-    INFRASTRUCTURE = "infrastructure" # tc, python stress, kubectl, dd, DNS
-    HYBRID = "hybrid"                 # Both layers
+
+    APPLICATION = "application"  # Environment variables, ConfigMaps
+    INFRASTRUCTURE = "infrastructure"  # tc, python stress, kubectl, dd, DNS
+    HYBRID = "hybrid"  # Both layers
 
 
 class ChaosUnavailable(RuntimeError):
@@ -31,28 +33,29 @@ class ChaosUnavailable(RuntimeError):
 @dataclass(frozen=True)
 class LoadHint:
     """Traffic to drive so a fault becomes observable (CPU/latency/OOM need it)."""
+
     url: str
     method: str = "GET"
-    body: Optional[dict] = None
+    body: dict | None = None
 
 
 @dataclass(frozen=True)
 class Failure:
-    key: str                    # unique id, e.g. "user_service.mysql_down"
-    service: str                # logical service the fault belongs to
+    key: str  # unique id, e.g. "user_service.mysql_down"
+    service: str  # logical service the fault belongs to
     title: str
     inject: Callable[[], None]  # application-layer injection
-    recover: Callable[[], None] # application-layer recovery
+    recover: Callable[[], None]  # application-layer recovery
 
     # Injection layer configuration
     layer: InjectionLayer = InjectionLayer.APPLICATION
 
     # Optional infrastructure-layer implementations (for HYBRID failures)
-    inject_infra: Optional[Callable[[], None]] = None
-    recover_infra: Optional[Callable[[], None]] = None
+    inject_infra: Callable[[], None] | None = None
+    recover_infra: Callable[[], None] | None = None
 
     # Reference signals (also mirrored into truth_files/ later).
-    l1: str = ""                # alert-level signal
-    l2: str = ""                # investigation-level signal
-    rca: str = ""               # root cause
-    load: Optional[LoadHint] = None
+    l1: str = ""  # alert-level signal
+    l2: str = ""  # investigation-level signal
+    rca: str = ""  # root cause
+    load: LoadHint | None = None

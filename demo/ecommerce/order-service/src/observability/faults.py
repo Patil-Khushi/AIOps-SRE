@@ -1,8 +1,9 @@
 """Failure-injection helpers for the Order Service.
 
-    INJECT_HTTP_500     -> Failure 3 (unhandled 5xx)
-    INJECT_MEMORY_LEAK  -> Failure 4 (unbounded allocation -> OOMKilled)
+INJECT_HTTP_500     -> Failure 3 (unhandled 5xx)
+INJECT_MEMORY_LEAK  -> Failure 4 (unbounded allocation -> OOMKilled)
 """
+
 import os
 
 # Module-global sink that is never freed while the leak toggle is on. Each
