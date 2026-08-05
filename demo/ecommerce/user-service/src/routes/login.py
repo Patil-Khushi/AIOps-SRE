@@ -32,7 +32,7 @@ def login(req: LoginRequest):
         log.error("database connection failed", extra={"op": "login", "error": str(exc)})
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "database error")
 
-    if not user or not db.verify_password(req.password, user["password_hash"]):
+    if not db.verify_login(req.password, user):
         login_failure_total.labels(reason="invalid_credentials").inc()
         log.warning("invalid credentials", extra={"email": str(req.email)})
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")

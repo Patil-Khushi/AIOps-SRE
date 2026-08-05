@@ -77,6 +77,25 @@ def verify_password(raw: str, hashed: str) -> bool:
     return pwd_context.verify(raw, hashed)
 
 
+# Precomputed once at import time so a login against a nonexistent account
+# pays the same bcrypt cost as one against a real account with a wrong
+# password. Without this, "no such user" short-circuits before bcrypt runs at
+# all, and that fast path is measurably faster than a bcrypt mismatch — a
+# timing side-channel an attacker can use to enumerate registered emails.
+_DUMMY_PASSWORD_HASH = pwd_context.hash("no-such-account-timing-guard")
+
+
+def verify_login(raw_password: str, user) -> bool:
+    """True iff `user` exists and `raw_password` matches its stored hash.
+
+    Always runs the bcrypt comparison, even when `user` is None, to close the
+    timing gap described above.
+    """
+    hashed = user["password_hash"] if user is not None else _DUMMY_PASSWORD_HASH
+    matched = pwd_context.verify(raw_password, hashed)
+    return matched and user is not None
+
+
 def create_user(name: str, email: str, password: str) -> int:
     with engine.begin() as conn:
         try:

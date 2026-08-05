@@ -400,7 +400,7 @@ def fill_disk(
         size_mb = MAX_DISK_FILL_MB
 
     avail = _kubectl_exec_capture(
-        pod_name, f"df -Pm {target_path} 2>/dev/null | awk 'NR==2 {{print $4}}'"
+        pod_name, f"df -Pm {_shquote(target_path)} 2>/dev/null | awk 'NR==2 {{print $4}}'"
     )
     if avail and avail.isdigit() and int(avail) < size_mb:
         raise ChaosUnavailable(
@@ -410,7 +410,7 @@ def fill_disk(
 
     _kubectl_exec(
         pod_name,
-        f"dd if=/dev/zero of={_fill_path(target_path)} bs=1M count={int(size_mb)}",
+        f"dd if=/dev/zero of={_shquote(_fill_path(target_path))} bs=1M count={int(size_mb)}",
         f"writing {size_mb}MB to {target_path} on {pod_name}",
     )
 
@@ -424,7 +424,7 @@ def clear_disk(pod_or_service: str, target_path: str = "/tmp") -> None:
 
     _kubectl_exec(
         pod_name,
-        f"rm -f {_fill_path(target_path)}",
+        f"rm -f {_shquote(_fill_path(target_path))}",
         f"clearing disk fill on {pod_name}",
     )
 
