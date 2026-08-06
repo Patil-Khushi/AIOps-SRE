@@ -24,6 +24,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agents.log_correlation.confidence import ConfidenceBreakdown
+from agents.log_correlation.evidence import Evidence
+from agents.log_correlation.history import SimilarIncidents
+from agents.log_correlation.timeline import IncidentTimeline
+from aiops.tools.change_context import ChangeContext
+from aiops.tools.topology.graph import ServiceGraph
+
 SignalSource = Literal["logs", "traces", "metrics"]
 # Provenance of the signals a verdict was built from. "live" = pulled from the
 # observability backends via the registry; "synthetic" = deterministic fallback
@@ -155,3 +162,122 @@ class CorrelationResult(BaseModel):
     suspected_dependencies: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     audit_metadata: AuditMetadata
+    evidence: list[Evidence] | None = None
+    """Structured, immutable findings derived from ``timeline``.
+
+    Additive and optional — every pre-existing field above is unchanged.
+    ``timeline`` remains the raw signal list it always was; this is a richer *view*
+    over the same observations, adding what a reasoning consumer needs and a raw
+    signal lacks: a stable identity, a per-finding confidence, a signal type
+    distinct from its source, and topology context.
+
+    ``None`` means the build did not produce a result — it was skipped or it
+    raised. An empty list means it ran and there was genuinely nothing to derive.
+    Those are different facts and this field keeps them apart, as the rest of the
+    result does: defaulting to ``[]`` made a caught exception indistinguishable
+    from a clean no-signal verdict, which is exactly the ambiguity the "absent is
+    not empty" rule exists to prevent. ``audit_metadata.decision_trace`` records
+    which of the two happened.
+
+    Consumers that ignore it are unaffected. The RCA agent reads this payload as
+    a plain ``dict`` and pulls three keys by name
+    (``suspected_dependencies`` / ``top_signatures`` / ``summary``), so a new key
+    is invisible to it until it opts in.
+    """
+
+    incident_timeline: IncidentTimeline | None = None
+    """Merged, grouped, chronological account of the incident.
+
+    Distinct from ``timeline`` above, which is and remains the raw
+    ``CorrelatedSignal`` list. This one unifies six sources — logs, metrics,
+    traces, topology, deployment and configuration — so a reader can see a
+    rollout at 10:02 sitting immediately before the error burst at 10:03. That
+    ordering is the part telemetry alone cannot supply.
+
+    Optional and defaults to ``None``: absent means "not built", which is
+    different from an empty timeline meaning "nothing happened".
+    """
+
+    confidence_breakdown: ConfidenceBreakdown | None = None
+    """Derivation of ``confidence`` above — same number, now explained.
+
+    ``confidence: 0.82`` alone is unactionable: it does not say whether the score
+    came from three signal sources agreeing or from one weak heuristic, so neither
+    a responder nor the RCA agent can weigh it. This records, per rule, the
+    increment applied, why it applied, and which evidence triggered it — plus the
+    rules that did *not* fire, which is usually the more useful half ("confidence
+    is 0.6 because only one signal source was present" names the missing evidence).
+
+    The numeric algorithm is untouched. ``confidence`` and
+    ``confidence_breakdown.score`` come from a single implementation, so they
+    cannot diverge.
+    """
+
+    similar_incidents: SimilarIncidents | None = None
+    """Past incidents resembling this one — retrieval evidence, not a conclusion.
+
+    Carries no claim about the *current* incident: no probable cause, no ranked
+    hypothesis, no recommended action. Each match records what happened to a past
+    incident and why it matched; the RCA agent decides whether any of it is
+    relevant. Keeping that inference on the consumer side is what keeps it
+    attributable instead of buried in a similarity score.
+
+    ``None`` means retrieval was not attempted — it is opt-in via
+    ``AIOPS_INCIDENT_HISTORY``. An empty ``matches`` list *with* a
+    ``coverage_note`` means it was attempted and genuinely found nothing, which is
+    a different and much stronger statement.
+    """
+
+    dependency_graph: ServiceGraph | None = None
+    """The multi-hop service map around the incident service.
+
+    Distinct from ``suspected_dependencies`` in both content and meaning.
+    ``suspected_dependencies`` is a *suspect list* — one hop, filtered by what the
+    evidence implicates. This is the *topology* — every service reachable from the
+    root within the depth cap, whether implicated or not. Conflating them is how a
+    leaf service ends up drawn as depending on itself, because the sole suspect
+    for a self-contained incident is the service itself.
+
+    ``upstream`` is empty whenever the resolving tier answers per-service, since
+    such a tier can say what X calls but never what calls X. ``truncated`` and
+    ``coverage_note`` record that, so an empty ``upstream`` reads as "not
+    observable here", never "nothing calls this".
+
+    ``None`` means no graph was produced — the walk was skipped or it raised. It
+    does **not** mean "no dependencies": a graph with an empty ``edges`` list is
+    returned as a real result.
+
+    Zero edges is then two further facts, kept apart by ``root_answered``:
+
+    - ``root_answered=True`` — a tier answered and this service genuinely has no
+      downstream dependencies. A leaf.
+    - ``root_answered=False`` — no tier could answer, so the dependencies are
+      *unknown*. ``coverage_note`` says so.
+
+    Collapsing those would be worse than the ambiguous ``None`` this replaced,
+    because a consumer would render a resolution failure as a positive "nothing
+    depends on this" claim. ``provider`` cannot carry the distinction: it comes from
+    ``winning_provider``, unset for a genuine leaf too.
+
+    Whether an edgeless graph is worth *drawing* is a separate, rendering-layer
+    question — the console falls back to the suspect list and names which of the
+    three cases it is looking at.
+
+    The walk costs one resolution per node, so it is capped by
+    ``AIOPS_TOPOLOGY_GRAPH_MAX_DEPTH`` / ``_MAX_NODES``; ``truncated`` records when
+    a cap was hit.
+    """
+
+    deployment_context: ChangeContext | None = None
+    """What changed around this incident — deployments, commits, flags, config.
+
+    Facts only. Records are ordered chronologically, never by suspicion, and
+    nothing here asserts that a change caused the incident. Most outages do follow
+    a change, which is precisely why the ordering must stay factual: sorting by
+    "most likely culprit" would make the RCA agent's judgement invisibly and
+    without accountability.
+
+    ``sources_unavailable`` matters as much as the records: an empty list means
+    "nothing changed" only when every source actually answered. ``None`` means
+    collection was not attempted (opt-in via ``AIOPS_CHANGE_CONTEXT``).
+    """
