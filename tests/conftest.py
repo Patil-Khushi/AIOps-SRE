@@ -79,6 +79,7 @@ from agents.alert_triage import agent as _alert_triage_agent
 from agents.alert_triage import classifier as _alert_triage_classifier
 from agents.knowledge_synthesizer import agent as _knowledge_synthesizer_agent
 from aiops.policy import get_gate
+from aiops.tools import topology as _topology
 from aiops.tools.observability import jaeger as _jaeger
 from aiops.tools.observability import loki as _loki
 
@@ -243,6 +244,77 @@ def _hermetic_observability_circuits():
     finally:
         _jaeger._reset_circuit_for_tests()
         _loki._reset_circuit_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_resilience():
+    """Reset the shared resilience middleware around every test.
+
+    Its breakers, cache and counters are process-global, so without this a test
+    that trips a breaker would silently disable that provider for the next 30s of
+    unrelated tests — and a cached result would be served to a test that expected
+    a fresh call. Same leak class as the observability breakers above, now
+    centralised because all three provider seams share this state.
+    """
+    from aiops.tools import resilience as _resilience
+
+    _resilience.reset_for_tests()
+    try:
+        yield
+    finally:
+        _resilience.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_topology_chain(monkeypatch):
+    """Reset the topology resolver's cache + per-provider breakers, and pin the
+    chain to its default, around every test.
+
+    Same class of leak as the observability breakers above: the resolver keeps a
+    process-global TTL cache and a per-provider circuit-breaker dict, so a test
+    that trips a provider or caches a dependency list would otherwise change what
+    an unrelated later test resolves — and topology feeds suspect derivation, so
+    the bleed would show up as a wrong ``suspected_dependencies`` far from its
+    cause.
+
+    ``AIOPS_TOPOLOGY_PROVIDERS`` is deleted rather than set so tests exercise the
+    real default chain; a developer's ``.env`` enabling an opt-in tier must not
+    silently turn every test into a live-backend test (the same ``.env``-bleed
+    class as #151 / #174 above).
+    """
+    monkeypatch.delenv("AIOPS_TOPOLOGY_PROVIDERS", raising=False)
+    _topology.reset_for_tests()
+    try:
+        yield
+    finally:
+        _topology.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _opt_in_enrichment_seams_off(monkeypatch):
+    """Pin RA-007's three opt-in enrichment gates off for every test.
+
+    Completes the ``.env``-bleed defence above for a case ``delenv`` cannot reach.
+    These gates are module-level constants evaluated at *import*, so by the time
+    any fixture runs the value is already baked in — deleting the environment
+    variable changes nothing. They have to be patched on the module object.
+
+    Without this, a machine whose ``.env`` sets ``AIOPS_CHANGE_CONTEXT`` or
+    ``AIOPS_INCIDENT_HISTORY`` runs correlation stages 9 and 10 for the entire
+    suite while CI, which has no ``.env``, does not. That is a green CI and a red
+    laptop for the same commit — the most expensive kind of divergence, because
+    the failure looks like the developer's change.
+
+    Tests that need a seam on already patch it ``True`` themselves; a test-body
+    patch applies after fixture setup, so those are unaffected.
+    """
+    from agents.log_correlation import agent as _lc_agent
+    from agents.log_correlation import history as _lc_history
+    from agents.log_correlation import timeline_sources as _lc_timeline_sources
+
+    monkeypatch.setattr(_lc_agent, "_CHANGE_CONTEXT_ENABLED", False, raising=False)
+    monkeypatch.setattr(_lc_history, "_ENABLED", False, raising=False)
+    monkeypatch.setattr(_lc_timeline_sources, "_K8S_ENABLED", False, raising=False)
 
 
 @pytest.fixture(autouse=True)
