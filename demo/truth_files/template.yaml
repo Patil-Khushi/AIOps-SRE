@@ -1,0 +1,106 @@
+# Truth-file template.
+#
+# POC guide §2.3.6: every demo failure scenario must have a written truth file.
+# Without it, the team grades itself on vibes and that's how POCs fail in pilot.
+#
+# Copy this file to demo/truth_files/<scenario-id>.yaml and fill in. The
+# scenario-id MUST match the YAML in demo/failure_injection/scenarios/.
+
+scenario_id: <must match scenarios/*.yaml id>
+title: <one-line summary>
+last_updated: 2026-05-06
+owner: <team or person>
+
+# What is actually broken inside the system, in plain English.
+real_cause:
+  layer: <network | compute | storage | application | data | config>
+  component: <service or resource name>
+  description: |
+    What is broken at the lowest accurate level. Not the symptom. The thing
+    we'd write in the postmortem under "root cause".
+
+# What an honest, well-trained engineer should report.
+expected_rca:
+  cause_summary: |
+    One paragraph the RCA Agent should produce.
+  evidence_signals:
+    - <metric / log line / trace span — the things the agent should cite>
+  ranked_hypotheses:                # the agent's top-K should match this set
+    - <best hypothesis>
+    - <second-best>
+    - <third>
+  confidence_floor: 0.6              # below this, the agent should hedge
+
+# What the right fix looks like.
+expected_fix_steps:
+  - description: <what to do>
+    blast_radius: <low | medium | high>
+    rollback: <how to undo>
+    requires_hitl: true | false
+  - description: <fallback fix if the first does not work>
+    blast_radius: low
+    rollback: <how>
+    requires_hitl: true
+
+# Things the agent should NOT do — common wrong fixes.
+known_wrong_fixes:
+  - description: <something an over-eager agent might propose>
+    why_wrong: <one line>
+
+# Used by the eval harness to score multi-agent runs against this truth file.
+scoring:
+  rca_must_include:                  # substrings that must appear in RCA output
+    - <substring 1>
+    - <substring 2>
+  fix_step_match: any-of             # any-of | first-equals | exact-set
+  max_time_to_rca_seconds: 180
+
+# ─── EVAL-1 (#75): wire truth files into the harness ──────────────────────
+#
+# Adding the two blocks below opts this truth file in to automated evaluation
+# by `uv run python -m evals.harness`. Without them, the truth file remains
+# human documentation only (smoke test still enforces presence).
+#
+# Both blocks are optional individually — but you need both to be picked up:
+#   - expected_alert_payload  → the synthetic Alert payload fed to agents
+#   - exercises               → which agents to run, with per-agent expected output
+
+# The canonical Alert payload that THIS scenario produces upstream. Same
+# shape the FastAPI POST /api/triage accepts. The harness feeds this into
+# alert_triage.agent.run() directly.
+expected_alert_payload:
+  alert_id: <scenario-derived id, e.g. payment-error-rate-high>
+  service: <affected service, e.g. payment>
+  metric: <metric name, e.g. error_rate>
+  value: <numeric, e.g. 0.85>
+  threshold: <numeric, e.g. 0.05>
+  timestamp: "2026-05-21T10:00:00Z"
+  source: Prometheus              # or Alertmanager / Datadog / CloudWatch
+  labels:
+    alertname: <prometheus alertname>
+    severity: <critical | warning | info>
+    service: <same as service above>
+
+# Per-agent expected output. Field names follow the agent's run() output
+# shape, with the scoring suffix grammar from evals/scoring.py:
+#   <field>                  exact equality
+#   <field>_in: [list]       membership
+#   <field>_contains: value  substring/element
+#   min_<field>: N           numeric >=
+#   max_<field>: N           numeric <=
+#
+# v0: only `alert_triage` is wired (it takes a bare Alert payload as input).
+# Other agents listed here are recorded as "deferred" pending [INFRA-2 #74]
+# orchestrator (which provides chained inputs for classify/route/ticket).
+exercises:
+  alert_triage:
+    severity_in: ["Sev-1", "Sev-2"]
+    affected_service: <service name, must match service above>
+    status: Triaged                # or Suppressed if dedup is expected
+    min_confidence_score: 0.6
+  # incident_classifier: { ... }   # deferred — needs triage_verdict input
+  # notification_router: { ... }   # deferred — needs verdict input
+
+notes: |
+  Anything else worth recording — known gotchas, why this scenario is in the
+  POC, what we'd want to test once we have real customer data.
