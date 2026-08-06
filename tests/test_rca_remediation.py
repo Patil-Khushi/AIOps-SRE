@@ -20,7 +20,7 @@ from aiops.tools.rca_remediation import execute_rca_fix_step
 
 
 def test_locked_scenario_fallback_annotates_set_flag_action():
-    """The deterministic verdict for slow-product-catalog must carry an
+    """The deterministic verdict for user_service_mysql_down must carry an
     executable set_flag action so the executor can follow it directly.
 
     Tests ``_fallback_verdict`` directly rather than ``analyze`` — the latter
@@ -28,16 +28,18 @@ def test_locked_scenario_fallback_annotates_set_flag_action():
     and would make this assertion flaky. The deterministic verdict is the
     contract we control."""
     verdict = _fallback_verdict(
-        {"affected_service": "product-catalog", "severity": "Sev-2"},
-        scenario_id="slow-product-catalog",
+        {"affected_service": "user-service", "severity": "Sev-1"},
+        scenario_id="user_service_mysql_down",
         decision_trace=[],
     )
     primary = verdict.ranked_fix_steps[0]
     assert primary.action_type is FixActionType.SET_FLAG
-    assert primary.flag == "productCatalogFailure"
+    assert primary.flag == "user_service.mysql_down"
     assert primary.variant == "off"
-    # The deploy-rollback step is recognised but has no executor — manual-ish.
-    assert verdict.ranked_fix_steps[1].action_type is FixActionType.ROLLBACK_DEPLOY
+    # The second step is diagnostic (check the Secret's credentials), so it is
+    # MANUAL. It used to be ROLLBACK_DEPLOY ("helm rollback otel-demo"), which
+    # named a release that no longer exists.
+    assert verdict.ranked_fix_steps[1].action_type is FixActionType.MANUAL
 
 
 def test_unknown_scenario_fallback_step_is_manual():
@@ -56,9 +58,13 @@ def test_unknown_scenario_fallback_step_is_manual():
 
 def test_coerce_action_parses_valid_set_flag():
     action_type, flag, variant = _coerce_action(
-        {"action_type": "set_flag", "flag": "paymentFailure", "variant": "off"}
+        {"action_type": "set_flag", "flag": "payment_service.redis_down", "variant": "off"}
     )
-    assert (action_type, flag, variant) == (FixActionType.SET_FLAG, "paymentFailure", "off")
+    assert (action_type, flag, variant) == (
+        FixActionType.SET_FLAG,
+        "payment_service.redis_down",
+        "off",
+    )
 
 
 def test_coerce_action_downgrades_set_flag_without_flag_to_manual():
@@ -74,9 +80,19 @@ def test_coerce_action_unknown_type_becomes_manual():
     assert flag is None
 
 
-def test_ensure_executable_action_backstops_from_service_map():
-    """If the LLM left every step manual but the service maps to a known flag,
-    the primary step is annotated set_flag — preserving the apply button."""
+def test_ensure_executable_action_does_not_guess_a_fault_from_the_service_name():
+    """A manual step must STAY manual when the service has several faults.
+
+    The old behaviour annotated set_flag using a one-flag-per-service map, so a
+    manual step gained an apply button. That map is gone: order-service alone
+    has four possible faults (postgres_down, http_500, memory_leak_oom,
+    payment_timeout) and the service name cannot discriminate between them.
+
+    Guessing would hand the operator a one-click "fix" for a fault that may not
+    be the one occurring — worse than no button, because it looks authoritative.
+    Identifying which fault is live is the job of evidence
+    (agents/rca_agent/evidence.py), not of a name lookup.
+    """
     steps = [
         RankedFixStep(
             description="restart the pod",
@@ -85,30 +101,33 @@ def test_ensure_executable_action_backstops_from_service_map():
         )
     ]
     trace: list[str] = []
-    out = _ensure_executable_action(steps, service="cartservice", decision_trace=trace)
-    assert out[0].action_type is FixActionType.SET_FLAG
-    assert out[0].flag == "cartFailure"
-    assert trace  # the backstop is recorded in the decision trace
+    out = _ensure_executable_action(steps, service="order-service", decision_trace=trace)
+    assert out[0].action_type is FixActionType.MANUAL
+    assert out[0].flag is None
 
 
-def test_ensure_executable_action_corrects_hallucinated_flag():
-    """The LLM sometimes guesses a flag that follows the <service>Failure
-    pattern but isn't real (e.g. 'recommendationFailure' vs the actual
-    'recommendationCacheFailure'). The curated map must override it so the
-    executor flips a flag that exists in flagd."""
+def test_ensure_executable_action_keeps_a_real_failure_key():
+    """A step naming a REAL failure key keeps its executable annotation.
+
+    Replaces a test that asserted the curated map could correct a hallucinated
+    flag ('recommendationFailure' -> 'recommendationCacheFailure'). With several
+    faults per service there is nothing to correct *to*; invented keys are
+    instead caught downstream by _ground_set_flags_against_flagd, which checks
+    them against the live automation.fault.clear registry and downgrades
+    anything unrecognised to manual.
+    """
     steps = [
         RankedFixStep(
-            description="Disable the recommendationFailure flag",
+            description="Clear the order_service.http_500 fault",
             blast_radius=BlastRadius.LOW,
-            rollback="re-enable",
+            rollback="re-inject",
             action_type=FixActionType.SET_FLAG,
-            flag="recommendationFailure",  # does not exist in flagd
+            flag="order_service.http_500",
         )
     ]
-    trace: list[str] = []
-    out = _ensure_executable_action(steps, service="recommendation", decision_trace=trace)
-    assert out[0].flag == "recommendationCacheFailure"
-    assert any("corrected" in line for line in trace)
+    out = _ensure_executable_action(steps, service="order-service", decision_trace=[])
+    assert out[0].action_type is FixActionType.SET_FLAG
+    assert out[0].flag == "order_service.http_500"
 
 
 def test_ensure_executable_action_leaves_correct_flag_untouched():
@@ -118,12 +137,12 @@ def test_ensure_executable_action_leaves_correct_flag_untouched():
             blast_radius=BlastRadius.LOW,
             rollback="re-enable",
             action_type=FixActionType.SET_FLAG,
-            flag="paymentFailure",
+            flag="payment_service.redis_down",
         )
     ]
     trace: list[str] = []
     out = _ensure_executable_action(steps, service="paymentservice", decision_trace=trace)
-    assert out[0].flag == "paymentFailure"
+    assert out[0].flag == "payment_service.redis_down"
     assert trace == []  # already correct — no correction logged
 
 
@@ -146,7 +165,9 @@ def test_ensure_executable_action_downgrades_invented_flag_for_unmapped_service(
     import agents.rca_agent.agent as agent_mod
 
     monkeypatch.setattr(
-        agent_mod, "_live_flag_names", lambda: {"paymentFailure", "cartFailure", "adFailure"}
+        agent_mod,
+        "_live_flag_names",
+        lambda: {"payment_service.redis_down", "order_service.http_500", "adFailure"},
     )
     steps = [
         RankedFixStep(
@@ -170,7 +191,7 @@ def test_ensure_executable_action_keeps_real_flag_for_unmapped_service(monkeypat
     import agents.rca_agent.agent as agent_mod
 
     monkeypatch.setattr(
-        agent_mod, "_live_flag_names", lambda: {"emailMemoryLeak", "paymentFailure"}
+        agent_mod, "_live_flag_names", lambda: {"emailMemoryLeak", "payment_service.redis_down"}
     )
     steps = [
         RankedFixStep(

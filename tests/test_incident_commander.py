@@ -52,7 +52,7 @@ def _in_memory_db(monkeypatch):
 def _alert() -> Alert:
     return Alert(
         alert_id="ALT-IC-1",
-        service="product-catalog",
+        service="user-service",
         metric="latency_p95",
         value=5.2,
         threshold=1.0,
@@ -63,7 +63,7 @@ def _alert() -> Alert:
 
 def _flow_result(severity: Severity) -> ReactiveFlowResult:
     verdict = TriageVerdict(
-        affected_service="product-catalog",
+        affected_service="user-service",
         severity=severity,
         confidence_score=0.9,
         alert_summary="product-catalog p95 latency 5.2s above 1.0s",
@@ -130,11 +130,11 @@ def test_sev1_engages_runs_rca_and_emits_comms(monkeypatch):
     client = _CapturingClient()
     monkeypatch.setattr(ic, "get_client", lambda: client)
 
-    result = command(_alert(), scenario_id="slow-product-catalog")
+    result = command(_alert(), scenario_id="user_service_mysql_down")
 
     assert result.engaged is True
     assert result.severity == "Sev-1"
-    assert result.affected_service == "product-catalog"
+    assert result.affected_service == "user-service"
     assert result.handoff_requested is True
 
     # RCA ran (read-only) and produced a verdict bundle.
@@ -142,14 +142,15 @@ def test_sev1_engages_runs_rca_and_emits_comms(monkeypatch):
     assert "root_cause" in result.rca
     assert result.rca["ranked_fix_steps"]  # at least one step
     # Deterministic fallback for the locked scenario names the injected flag.
-    assert "productCatalogFailure" in result.rca["root_cause"]
+    # Prose root cause; the failure key is on the fix step, not in the sentence.
+    assert "MySQL" in result.rca["root_cause"]
 
     # Postmortem seed pre-filled with facts.
     seed = result.postmortem_seed
     assert seed is not None
-    assert seed.affected_service == "product-catalog"
+    assert seed.affected_service == "user-service"
     assert seed.ticket_id == "INC-42"
-    assert seed.root_cause and "productCatalogFailure" in seed.root_cause
+    assert seed.root_cause and "MySQL" in seed.root_cause
     assert seed.contributing_signals  # RA-001 trace carried over
 
     # Timeline scribed across stages, including the RA-007 correlate step.
@@ -184,7 +185,7 @@ def test_engaged_path_runs_ra007_and_feeds_rca(monkeypatch):
 
     monkeypatch.setattr(ic, "rca_analyze", _spy)
 
-    result = command(_alert(), scenario_id="slow-product-catalog", emit_comms=False)
+    result = command(_alert(), scenario_id="user_service_mysql_down", emit_comms=False)
 
     # RCA received a correlation evidence pack (dict), not None.
     assert isinstance(captured["correlation"], dict)
@@ -196,7 +197,13 @@ def test_engaged_path_runs_ra007_and_feeds_rca(monkeypatch):
     assert "RA-007" in correlate_entries[0].detail
     assert "skipped" not in correlate_entries[0].detail.lower()
     # RCA still produced its verdict via the locked-scenario fallback.
-    assert result.rca and "productCatalogFailure" in result.rca["root_cause"]
+    # The root cause reads as prose; the machine-readable failure key lives on
+    # the fix step's `flag` field, not embedded in the sentence.
+    assert result.rca and "MySQL" in result.rca["root_cause"]
+    assert any(
+        step.get("flag") == "user_service.mysql_down"
+        for step in result.rca.get("ranked_fix_steps", [])
+    )
 
 
 def test_sev4_does_not_engage(monkeypatch):
@@ -216,7 +223,7 @@ def test_sev4_does_not_engage(monkeypatch):
     # RA-007 correlation runs on the engaged path only — not for Sev-4.
     assert "correlate" not in {e.stage for e in result.timeline}
     # Reactive pipeline still ran and is surfaced.
-    assert result.reactive["verdict"]["affected_service"] == "product-catalog"
+    assert result.reactive["verdict"]["affected_service"] == "user-service"
     # Metrics still derived for the reactive stages, but no handoff happened.
     assert result.metrics is not None
     assert result.metrics.time_to_triage_seconds is not None
@@ -228,7 +235,7 @@ def test_emit_comms_false_suppresses_send(monkeypatch):
     client = _CapturingClient()
     monkeypatch.setattr(ic, "get_client", lambda: client)
 
-    result = command(_alert(), scenario_id="slow-product-catalog", emit_comms=False)
+    result = command(_alert(), scenario_id="user_service_mysql_down", emit_comms=False)
 
     assert result.engaged is True
     assert result.handoff_requested is True  # decided, just not emitted
@@ -243,10 +250,10 @@ def test_run_eval_contract(monkeypatch):
 
     out = ic.run(
         {
-            "scenario_id": "slow-product-catalog",
+            "scenario_id": "user_service_mysql_down",
             "alert": {
                 "alert_id": "ALT-IC-run-1",
-                "service": "product-catalog",
+                "service": "user-service",
                 "metric": "latency_p95",
                 "value": 5.2,
                 "threshold": 1.0,
@@ -282,7 +289,7 @@ def test_all_adapters_failing_marks_handoff_not_delivered(monkeypatch):
 
     monkeypatch.setattr(ic, "get_client", lambda: _FailingClient())
 
-    result = command(_alert(), scenario_id="slow-product-catalog")
+    result = command(_alert(), scenario_id="user_service_mysql_down")
 
     assert result.engaged is True
     # Delivery failed on every sink → don't claim a handoff we couldn't deliver.
@@ -307,7 +314,7 @@ def test_timeline_uses_real_event_timestamps(monkeypatch):
     client = _CapturingClient()
     monkeypatch.setattr(ic, "get_client", lambda: client)
 
-    result = command(_alert(), scenario_id="slow-product-catalog")
+    result = command(_alert(), scenario_id="user_service_mysql_down")
 
     by_stage = {e.stage: e for e in result.timeline}
     # Reactive stages reflect their own recorded times, read off the flow...
@@ -327,7 +334,7 @@ def test_timeline_has_detected_anchor_sorted_and_metrics(monkeypatch):
     client = _CapturingClient()
     monkeypatch.setattr(ic, "get_client", lambda: client)
 
-    result = command(_alert(), scenario_id="slow-product-catalog")
+    result = command(_alert(), scenario_id="user_service_mysql_down")
 
     # T0 anchor: first beat is detection, stamped at the alert's timestamp.
     assert result.timeline[0].stage == "detected"

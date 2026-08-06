@@ -1,0 +1,21 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+psycopg[binary]==3.2.3
+sqlalchemy==2.0.35
+httpx==0.27.2
+pydantic==2.9.2
+prometheus-client==0.21.0
+python-json-logger==2.0.7
+# OpenTelemetry (traces + auto-instrumentation of FastAPI and httpx so the
+# order->payment call shows up as a linked span). No-op if endpoint unset.
+opentelemetry-sdk==1.27.0
+opentelemetry-exporter-otlp==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+opentelemetry-instrumentation-httpx==0.48b0
+# opentelemetry-instrumentation 0.48b0 still imports pkg_resources, which ships
+# with setuptools — and python:3.12-slim no longer bundles setuptools. Without
+# this, OTel init fails with "No module named 'pkg_resources'" and each service
+# logs "otel init failed; continuing without tracing" (silent: the app still
+# serves traffic, it just exports no spans). Drop this line only after moving to
+# opentelemetry-instrumentation >= 0.49b0, which uses importlib.metadata.
+setuptools==75.1.0

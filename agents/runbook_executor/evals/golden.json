@@ -1,51 +1,20 @@
 {
   "agent": "RA-004",
   "version": "v1",
-  "description": "Golden fixtures for the Runbook Executor. The eval path runs with skip_approval=True (no approver), so destructive steps deterministically resolve to 'denied' at the HITL gate while non-destructive steps execute autonomously. Cases assert selection + the resolution status + step accounting, not exact LLM strings (RA-004 uses no LLM).",
+  "description": "Golden fixtures for the Runbook Executor. The eval path runs with skip_approval=True (no approver), so destructive steps deterministically resolve to 'denied' at the HITL gate while non-destructive steps execute autonomously. Cases assert selection + the resolution status + step accounting, not exact LLM strings (RA-004 uses no LLM). Retargeted from the OTel Demo services (payment/cart/checkout) to the ecommerce SUT when those runbooks were deleted in the migration.",
   "cases": [
     {
-      "id": "payment_crashloop_selects_and_gates",
-      "description": "Payment OOM crashloop selects the payment runbook; the destructive restart is gated -> denied; the safe drain step ran.",
+      "id": "payment_generic_restart_selects_and_gates",
+      "description": "A payment-service incident with no specific fault tag selects the generic restart runbook; the safe drain step runs, the destructive restart is gated -> denied.",
       "input": {
         "incident_id": "INC-2001",
-        "service": "payment",
-        "severity": "sev1",
-        "tags": ["crash", "oom"]
-      },
-      "expected": {
-        "selected_runbook": "payment-restart",
-        "runbook_title_contains": "payment",
-        "status": "denied",
-        "steps_total": 2,
-        "destructive_steps": 1,
-        "min_steps_executed": 1
-      }
-    },
-    {
-      "id": "payment_service_spelling_still_matches",
-      "description": "Service 'payment-service' normalizes to 'payment' and still selects the payment runbook.",
-      "input": {
-        "incident_id": "INC-2002",
         "service": "payment-service",
-        "severity": "Sev-1",
-        "tags": ["crashloop"]
+        "severity": "sev3",
+        "tags": ["restart", "generic"]
       },
       "expected": {
-        "selected_runbook": "payment-restart",
-        "status": "denied"
-      }
-    },
-    {
-      "id": "cart_latency_selects_scale_runbook",
-      "description": "Cart latency under load selects the scale-up runbook; snapshot runs, scale-up is gated.",
-      "input": {
-        "incident_id": "INC-2003",
-        "service": "cart",
-        "severity": "sev2",
-        "tags": ["latency", "load"]
-      },
-      "expected": {
-        "selected_runbook": "cartservice-scale-up",
+        "selected_runbook": "payment-service-restart",
+        "runbook_title_contains": "payment-service",
         "status": "denied",
         "steps_total": 3,
         "destructive_steps": 1,
@@ -53,10 +22,57 @@
       }
     },
     {
+      "id": "payment_service_spelling_still_matches",
+      "description": "'paymentservice' normalizes to the same service as 'payment-service' and still selects the runbook.",
+      "input": {
+        "incident_id": "INC-2002",
+        "service": "paymentservice",
+        "severity": "Sev-3",
+        "tags": ["restart"]
+      },
+      "expected": {
+        "selected_runbook": "payment-service-restart",
+        "status": "denied"
+      }
+    },
+    {
+      "id": "memory_leak_selects_fault_clearing_runbook",
+      "description": "An OOM incident selects the memory-leak runbook over the generic restart, because tag overlap outscores a service-only match. Its clear_fault step is destructive, so it is gated.",
+      "input": {
+        "incident_id": "INC-2003",
+        "service": "order-service",
+        "severity": "sev1",
+        "tags": ["memory", "oom"]
+      },
+      "expected": {
+        "selected_runbook": "order-service-memory-leak",
+        "runbook_title_contains": "memory leak",
+        "status": "denied",
+        "steps_total": 2,
+        "destructive_steps": 1
+      }
+    },
+    {
+      "id": "mysql_down_selects_dependency_runbook",
+      "description": "A database dependency outage selects the MySQL runbook, which clears the fault, waits on the datastore, then verifies the app.",
+      "input": {
+        "incident_id": "INC-2004",
+        "service": "user-service",
+        "severity": "sev1",
+        "tags": ["database", "mysql"]
+      },
+      "expected": {
+        "selected_runbook": "user-service-mysql-down",
+        "status": "denied",
+        "steps_total": 3,
+        "destructive_steps": 1
+      }
+    },
+    {
       "id": "unknown_service_has_no_runbook",
       "description": "A service with no matching runbook returns a clean 'no_runbook' outcome rather than guessing.",
       "input": {
-        "incident_id": "INC-2004",
+        "incident_id": "INC-2005",
         "service": "telemetry-aggregator",
         "severity": "sev2",
         "tags": ["lag"]

@@ -1,0 +1,33 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: user_service_high_cpu
+title: High CPU usage
+service: user-service
+failure_key: user_service.high_cpu
+severity: high
+inject:
+  command: python -m failure_injection inject user_service.high_cpu
+recover:
+  command: python -m failure_injection recover user_service.high_cpu
+load:
+  url: http://localhost:8001/login
+  method: POST
+  body:
+    email: load@test.dev
+    password: x
+  duration_seconds: 60
+detection:
+  l1: user-service container CPU > 90%
+  l2: A single process pegged on CPU; latency climbs under load
+  http_status:
+  - 200
+  - 401
+  metrics:
+  - name: login_latency_seconds
+    expect: p95 climbs under load
+  container:
+  - signal: cpu_percent
+    expect: '> 90'
+expected_rca: Application CPU saturation
+truth_file: truth_files/user_service_high_cpu.json
+settle_seconds: 20

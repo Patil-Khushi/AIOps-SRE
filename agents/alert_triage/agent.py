@@ -67,6 +67,17 @@ _CUSTOMER_FACING = {
     "ad",
     "recommendation",
     "shipping",
+    # ecommerce SUT (demo/ecommerce). Both sit directly in the purchase path:
+    # user-service owns login/registration and order-service owns checkout, so
+    # an outage in either is visible to a customer immediately.
+    #
+    # This is not cosmetic. _classify_severity_rule_based consults
+    # _is_customer_facing on the value/threshold ratio path, so omitting them
+    # downgraded real outages — a MySQL-down alert with no severity hint scored
+    # Sev-4. "payment-service" was already covered, but only by accidentally
+    # substring-matching the OTel Demo's "payment".
+    "user-service",
+    "order-service",
 }
 _DEDUP_WINDOW = timedelta(minutes=5)
 _EMBEDDING_SIM_THRESHOLD = 0.85

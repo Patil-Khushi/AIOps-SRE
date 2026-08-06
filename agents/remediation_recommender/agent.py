@@ -80,11 +80,11 @@ _MTTR_BY_BLAST_RADIUS: dict[BlastRadius, int] = {
 # action types without a wired executor leave the field None — Auto-
 # Healer surfaces those as instructions rather than firing them.
 _TOOL_CAPABILITY_BY_ACTION: dict[ActionType, str | None] = {
-    ActionType.SET_FLAG: "feature_flags.set_variant",
+    ActionType.SET_FLAG: "automation.fault.clear",
     ActionType.ROLLBACK_DEPLOY: "k8s.deployment.rollback",
     ActionType.SCALE: "k8s.deployment.scale",
     ActionType.RESTART: "k8s.deployment.restart",
-    ActionType.CIRCUIT_BREAKER: "feature_flags.set_variant",
+    ActionType.CIRCUIT_BREAKER: "automation.fault.clear",
     ActionType.MANUAL: None,
 }
 

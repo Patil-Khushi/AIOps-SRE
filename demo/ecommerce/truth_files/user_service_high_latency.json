@@ -1,0 +1,77 @@
+{
+  "id": "user_service_high_latency",
+  "scenario": "scenarios/user_service_high_latency.yaml",
+  "failure_key": "user_service.high_latency",
+  "service": "user-service",
+  "severity": "high",
+  "fault_category": "latency",
+  "root_cause": "Application processing delay on the login endpoint",
+  "root_cause_keywords": [
+    "latency",
+    "slow",
+    "login",
+    "delay",
+    "processing"
+  ],
+  "remediation": "Remove the artificial delay in the login handler; profile and optimize the slow path.",
+  "expected_signals": {
+    "http_status": [
+      200
+    ],
+    "metrics": [
+      {
+        "name": "login_latency_seconds",
+        "expect": "p95 > 5s"
+      }
+    ],
+    "logs": [
+      {
+        "level": "INFO",
+        "contains": "login successful"
+      }
+    ],
+    "container": [],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "latency",
+      "slow",
+      "login",
+      "delay",
+      "processing"
+    ],
+    "must_identify_service": "user-service",
+    "must_identify_category": "latency"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-user-service-high-latency",
+    "service": "user-service",
+    "metric": "order_latency_seconds",
+    "value": 10.4,
+    "threshold": 2.0,
+    "severity_hint": "high",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommerceOrderLatencyHigh",
+      "severity": "high",
+      "service": "user-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "user-service",
+      "severity_in": [
+        "Sev-2"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Identity Team"
+    }
+  }
+}

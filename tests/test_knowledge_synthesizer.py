@@ -27,35 +27,44 @@ def _hermetic(monkeypatch, tmp_path):
     state_pkg.reset_engine_for_tests()
 
 
-def _bundle(incident_id: str = "INC-PCAT-1", **overrides):
+def _bundle(incident_id: str = "INC-MYSQL-1", **overrides):
+    """A resolved incident bundle for an ecommerce scenario.
+
+    Retargeted from the OTel Demo's slow-product-catalog when that app was
+    removed. user_service_mysql_down is chosen deliberately: a seed runbook
+    exists for it (rb-user-service-mysql-down), which is what lets
+    test_runbook_suggestion_updates_existing_seed_runbook exercise the *update*
+    path rather than the *new* path.
+    """
     bundle = {
         "incident_id": incident_id,
-        "scenario_id": "slow-product-catalog",
-        "resolved_at": "2026-06-11T10:10:00Z",
+        "scenario_id": "user_service_mysql_down",
+        "resolved_at": "2026-08-03T10:10:00Z",
         "triage_verdict": {
-            "affected_service": "productcatalogservice",
-            "severity": "Sev-2",
-            "alert_summary": "Product catalog GetProduct p95 latency above 5s",
-            "audit_metadata": {"created_at": "2026-06-11T10:00:00Z"},
+            "affected_service": "user-service",
+            "severity": "Sev-1",
+            "alert_summary": "user-service cannot reach MySQL; all logins failing",
+            "audit_metadata": {"created_at": "2026-08-03T10:00:00Z"},
         },
         "rca_verdict": {
-            "affected_service": "productcatalogservice",
+            "affected_service": "user-service",
             "root_cause": (
-                "The flagd feature flag `productCatalogFailure` is on, injecting a "
-                "~5s delay into productcatalogservice GetProduct calls."
+                "The MySQL StatefulSet was scaled to zero, so user-service could not "
+                "open a database connection and returned HTTP 500 on every login."
             ),
             "ranked_fix_steps": [
                 {
-                    "description": "Set flagd flag productCatalogFailure to off.",
+                    "description": "Clear the user_service.mysql_down fault "
+                    "(scale the MySQL StatefulSet back to 1).",
                     "blast_radius": "low",
-                    "rollback": "Re-flip the flag back to on — instant.",
+                    "rollback": "Scale MySQL back to 0 — instant, PVC retained.",
                     "action_type": "set_flag",
-                    "flag": "productCatalogFailure",
+                    "flag": "user_service.mysql_down",
                     "variant": "off",
                 }
             ],
             "confidence_score": 0.85,
-            "audit_metadata": {"created_at": "2026-06-11T10:05:00Z"},
+            "audit_metadata": {"created_at": "2026-08-03T10:05:00Z"},
         },
     }
     bundle.update(overrides)
@@ -69,13 +78,13 @@ def test_synthesize_creates_pending_review_article():
     res = synthesize(_bundle())
     assert res.dedup_action == "create"
     assert res.status.value == "pending_review"
-    assert res.affected_service == "productcatalogservice"
-    assert "productCatalogFailure" in res.root_cause
+    assert res.affected_service == "user-service"
+    assert "MySQL" in res.root_cause
     assert res.kb_article_id is not None
     # Persisted as a pending-review draft.
     stored = repo.get_kb_article(res.kb_article_id)
     assert stored["status"] == "pending_review"
-    assert stored["incident_id"] == "INC-PCAT-1"
+    assert stored["incident_id"] == "INC-MYSQL-1"
 
 
 def test_postmortem_has_reconstructed_timeline():
@@ -90,7 +99,15 @@ def test_postmortem_has_reconstructed_timeline():
 def test_runbook_suggestion_updates_existing_seed_runbook():
     res = synthesize(_bundle())
     assert res.runbook_mode == "update"
-    assert res.related_runbook_id == "rb-product-catalog-latency"
+    # Matched by SERVICE, and user-service has more than one seed runbook
+    # (mysql-down and crashloop), so which of them wins is not part of the
+    # contract — asserting a specific id here would encode iteration order.
+    # What matters is that an existing seed was found rather than a new
+    # runbook invented.
+    assert res.related_runbook_id in {
+        "rb-user-service-mysql-down",
+        "rb-user-service-crashloop",
+    }
     assert "## Resolution steps" in res.runbook_suggestion.body_markdown
 
 
@@ -163,7 +180,7 @@ def test_different_service_is_not_deduped():
 
 def test_run_returns_serializable_dict():
     out = run(_bundle())
-    assert out["affected_service"] == "productcatalogservice"
+    assert out["affected_service"] == "user-service"
     assert out["status"] == "pending_review"
     assert out["dedup_action"] == "create"
     assert "postmortem" in out and "kb_article" in out

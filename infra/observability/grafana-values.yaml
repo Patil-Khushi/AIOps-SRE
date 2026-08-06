@@ -1,0 +1,106 @@
+# Grafana for the ecommerce SUT.
+#
+# Chart: grafana/grafana
+#
+# Replaces the Grafana that came as an opentelemetry-demo subchart. The three
+# datasources are declared here rather than left to the sidecar-discovered
+# ConfigMaps the demo chart used, so the whole stack is reproducible from this
+# file alone.
+#
+# Datasource UIDs are kept STABLE across the migration
+# (webstore-metrics / webstore-traces) because saved dashboards and the
+# auto_ticketing panel-render path (RA-003) reference datasources by uid, not
+# by name. Renaming them would silently break every existing panel link.
+
+adminUser: admin
+adminPassword: admin        # demo only; never a real credential
+
+resources:
+  requests: {memory: "256Mi", cpu: "100m"}
+  limits: {memory: "512Mi"}
+
+persistence:
+  enabled: false            # dashboards come from provisioning, not the DB
+
+# Served under /grafana so the existing bookmarks and the RA-003 render URLs
+# keep working after frontend-proxy (an OTel Demo component) goes away.
+grafana.ini:
+  server:
+    root_url: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+    serve_from_sub_path: true
+  auth.anonymous:
+    enabled: true
+    org_role: Viewer
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: webstore-metrics
+        type: prometheus
+        access: proxy
+        url: http://prometheus-server.observability.svc.cluster.local
+        isDefault: true
+
+      - name: Loki
+        uid: ecommerce-logs
+        type: loki
+        access: proxy
+        # Loki is a SEPARATE helm release and deliberately stays where it is —
+        # moving it would drop its PVC and every log line collected so far.
+        url: http://loki.otel-demo.svc.cluster.local:3100
+        jsonData:
+          maxLines: 1000
+
+      - name: Jaeger
+        uid: webstore-traces
+        type: jaeger
+        access: proxy
+        # allInOne exposes one Service named `jaeger` with every port; there is
+        # no `jaeger-query` Service in this mode.
+        url: http://jaeger.observability.svc.cluster.local:16686
+
+      # ── application databases ────────────────────────────────────────────
+      # The SUT's own data, browsable in Grafana Explore next to the metrics,
+      # logs and traces — so "what did the app actually store?" is one click
+      # away from "what did the alert say?", instead of a kubectl exec.
+      #
+      # These are the demo credentials from demo/ecommerce/k8s/01-config.yaml.
+      # They guard nothing real. Do NOT copy this pattern for a datastore with
+      # actual data in it — use Grafana's secure JSON fields and a read-only
+      # database role instead.
+      - name: MySQL (users)
+        uid: ecommerce-mysql
+        type: mysql
+        url: mysql.ecommerce.svc.cluster.local:3306
+        database: users
+        user: appuser
+        secureJsonData:
+          password: apppass
+        jsonData:
+          maxOpenConns: 5
+
+      - name: PostgreSQL (orders)
+        uid: ecommerce-postgres
+        type: postgres
+        url: postgres.ecommerce.svc.cluster.local:5432
+        database: orders
+        user: appuser
+        secureJsonData:
+          password: apppass
+        jsonData:
+          # The StatefulSet runs plain postgres with no TLS, so requiring SSL
+          # here would fail every query with "server does not support SSL".
+          sslmode: disable
+          maxOpenConns: 5
+
+# Server-side panel rendering, so RA-003 Auto-Ticketing can attach the
+# breaching panel as a PNG to a ServiceNow incident. Kept from the demo chart's
+# configuration: the stock Grafana image lacks the Chromium libs the in-pod
+# plugin needs, so the separate renderer pod is the supported route.
+imageRenderer:
+  enabled: true
+  resources:
+    requests: {memory: "128Mi", cpu: "50m"}
+    limits: {memory: "384Mi"}

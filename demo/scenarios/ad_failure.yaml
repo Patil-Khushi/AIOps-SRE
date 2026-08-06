@@ -1,9 +1,0 @@
-id: ad_failure
-category: errors
-flag: adFailure
-alert: AdErrorRateHigh
-service: ad
-title: Ad service failure
-description: Ad service returns 5xx errors — banners disappear from the homepage.
-eta_seconds: 90
-severity: high

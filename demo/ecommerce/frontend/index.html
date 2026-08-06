@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>orbit · ecommerce SRE demo</title>
+    <!-- Cuts the render-blocking round-trip on the Google Fonts @import in
+         styles.css. Harmless if the demo runs air-gapped; the font stack
+         then falls back to the system sans/mono. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Runtime config, generated at container start from env vars. MUST stay
+         before the module script — client.js reads window.__APP_CONFIG__ at
+         module-evaluation time. -->
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

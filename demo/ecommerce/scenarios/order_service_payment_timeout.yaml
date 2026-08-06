@@ -1,0 +1,42 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: order_service_payment_timeout
+title: Payment service timeout
+service: order-service
+failure_key: order_service.payment_timeout
+severity: high
+inject:
+  command: python -m failure_injection inject order_service.payment_timeout
+recover:
+  command: python -m failure_injection recover order_service.payment_timeout
+load:
+  url: http://localhost:8002/orders
+  method: POST
+  body:
+    items:
+    - sku: widget
+      qty: 1
+      price: 12.0
+    amount: 12.0
+  duration_seconds: 60
+detection:
+  l1: order_latency_seconds high; payment_timeout_total rising; 504 on /orders
+  l2: Trace shows the order->payment span stalling on the downstream gateway
+  http_status:
+  - 504
+  metrics:
+  - name: payment_timeout_total
+    expect: increases
+  - name: orders_failed_total{reason="payment_timeout"}
+    expect: increases
+  - name: order_latency_seconds
+    expect: p95 near timeout
+  logs:
+  - level: ERROR
+    contains: 'order failed: payment timeout'
+  trace:
+    path: ecommerce-order-service -> ecommerce-payment-service
+    note: span stalls on downstream gateway
+expected_rca: Payment dependency timeout (slow external gateway)
+truth_file: truth_files/order_service_payment_timeout.json
+settle_seconds: 20

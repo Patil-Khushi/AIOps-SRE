@@ -1,13 +1,21 @@
 # One-command bring-up for the Adaptive AIOps demo.
 #
 # Does (in order):
-#   1. Ensures the k3d cluster 'aiops' is running
-#   2. Brings up port-forwards for Prometheus (9090), Jaeger (16686), frontend-proxy (8080)
+#   1. Verifies Rancher Desktop k3s is reachable and the workloads are deployed
+#   2. Port-forwards Prometheus (9090), Jaeger (16686), Grafana (3001), Loki (3100)
 #   3. Starts the FastAPI demo server (demo/ui/server.py) at http://localhost:8765
 #   4. Opens the browser
 #
+# This does NOT deploy anything. Two one-time installs come first:
+#   .\infra\observability\install.ps1          # Prometheus/Grafana/Jaeger/Collector
+#   cd demo\ecommerce; .\k8s\build-images.ps1  # then kubectl apply -f k8s\
+# See demo/ecommerce/k8s/README.md.
+#
+# The ecommerce app itself needs no port-forward — it is exposed on NodePorts
+# 30080-30083 (see demo/ecommerce/k8s/20-app.yaml).
+#
 # Pass -Fresh to wipe demo state before bring-up (DEMO-4 / #56):
-#   - resets every flag-driven scenario in flagd to ``off``
+#   - recovers every injected ecommerce failure scenario
 #   - deletes data/state.db so verdict_id / cluster ids start at 1
 #   - archives demo/audit/chatops.jsonl to chatops.jsonl.bak-<utc-timestamp>
 # Default is off — iterative dev keeps state across runs.
@@ -16,7 +24,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$Namespace = 'otel-demo',
+    # The observability stack moved out of the OTel Demo umbrella chart into
+    # its own namespace (infra/observability/). Loki did NOT move: it is a
+    # separate helm release, and reinstalling it would drop its PVC and every
+    # log line collected so far.
+    [string]$Namespace = 'observability',
+    [string]$LokiNamespace = 'otel-demo',
+    [string]$AppNamespace = 'ecommerce',
     # Precedence: explicit -UiPort > $env:AIOPS_UI_PORT > 8765. The env var
     # path lets ``.env`` (loaded inside the FastAPI process by aiops._dotenv)
     # and the start script agree without two places to keep in sync (#63).
@@ -72,6 +86,45 @@ if ($probeExit -ne 0) {
 }
 Write-Host "    cluster API reachable" -ForegroundColor Green
 
+# --- 1.2 workloads deployed? ---
+# This script only port-forwards; it deploys nothing. Without these checks a
+# missing install shows up as four silently-dead port-forward jobs and a
+# dashboard full of empty panels, which is a genuinely confusing failure to
+# debug. Fail here instead, naming the install command.
+Write-Step '1.2' "checking workloads..."
+
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$null = & kubectl -n $Namespace get svc prometheus-server 2>&1
+$obsExit = $LASTEXITCODE
+$null = & kubectl -n $AppNamespace get deploy order-service 2>&1
+$appExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+
+if ($obsExit -ne 0) {
+    Write-Host ''
+    Write-Host "Observability stack not found in namespace '$Namespace'." -ForegroundColor Yellow
+    Write-Host "  Install it once with:  .\infra\observability\install.ps1"
+    throw "Missing observability stack (svc/prometheus-server in '$Namespace')."
+}
+Write-Host "    observability stack present in '$Namespace'" -ForegroundColor Green
+
+if ($appExit -ne 0) {
+    # A warning, not a throw: the agents, dashboard and HITL console are all
+    # useful against a stack with no system under test. Only the scenario
+    # pages need the app.
+    # ASCII only inside PowerShell STRINGS in this file. It has no BOM, so
+    # PS 5.1 decodes it as CP1252: an em-dash (UTF-8 e2 80 94) becomes the three
+    # characters 'a-hat, euro, double-quote' — and that embedded quote
+    # terminates the string early, silently swallowing the lines after it.
+    # (Comments can keep their em-dashes; mangled text after a # is still a
+    # comment.) Same CP1252 trap as the chatops.jsonl note in CLAUDE.md.
+    Write-Warning "ecommerce app not found in namespace '$AppNamespace' - scenario inject/reset will fail."
+    Write-Host "  Deploy it with:  cd demo\ecommerce; .\k8s\build-images.ps1; kubectl apply -f k8s\" -ForegroundColor DarkGray
+} else {
+    Write-Host "    ecommerce app present in '$AppNamespace'" -ForegroundColor Green
+}
+
 # --- 1.5 -Fresh cleanup (DEMO-4 / #56) ---
 # Wipe demo state so the run starts from a clean slate. Three pieces of state
 # survive a stop/start cycle by default:
@@ -84,16 +137,18 @@ Write-Host "    cluster API reachable" -ForegroundColor Green
 if ($Fresh) {
     Write-Step '1.5' "fresh cleanup (-Fresh)..."
 
-    # 1. Clear every flag-driven scenario back to its 'off' variant.
-    # The feature_flags seam talks to flagd-config via the kubernetes Python
-    # client (ARCH-1 / #70) so it needs the cluster up — which we just
-    # verified above — but no port-forward.
-    Write-Host "    flagd: resetting all scenarios to 'off'..." -ForegroundColor DarkGray
-    cmd /c "uv run python -m demo.failure_injection.inject --clear >NUL 2>&1"
+    # 1. Recover every injected failure scenario.
+    # Was `demo.failure_injection.inject --clear`, which flipped flagd flags.
+    # flagd shipped with the OTel Demo chart and is gone; faults are now env
+    # vars and scaled-down StatefulSets, recovered through the ecommerce
+    # failure_injection package. Needs the cluster up (verified above) but no
+    # port-forward — it shells kubectl directly.
+    Write-Host "    scenarios: recovering all injected faults..." -ForegroundColor DarkGray
+    cmd /c "uv run python -c ""from demo.ui import scenario_provider as sp; sp.reset_all(sp.load())"" >NUL 2>&1"
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "    flagd reset returned exit $LASTEXITCODE; scenarios may still be on. Run 'uv run python -m demo.failure_injection.inject --clear' manually to see the error."
+        Write-Warning "    scenario reset returned exit $LASTEXITCODE; some faults may still be injected. Run 'uv run python -c ""from demo.ui import scenario_provider as sp; print(sp.reset_all(sp.load()))""' to see the error."
     } else {
-        Write-Host "    flagd: all scenarios reset" -ForegroundColor Green
+        Write-Host "    scenarios: all faults recovered" -ForegroundColor Green
     }
 
     # 2. Drop data/state.db. ``init_db()`` recreates the schema on the first
@@ -128,11 +183,15 @@ if ($Fresh) {
 Write-Step 2 "starting port-forwards..."
 Get-Job -Name 'pf-*' -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job | Out-Null
 
+# NOTE the RemotePort values. prometheus-server and grafana listen on :80,
+# not on the port they are forwarded to locally — the standalone charts differ
+# from the OTel Demo subcharts here, and a 9090:9090 forward silently fails.
+# Each entry carries its own namespace because Loki did not move.
 $forwards = @(
-    @{ Name = 'prometheus';     Svc = 'svc/prometheus';     LocalPort = 9090;  RemotePort = 9090  }
-    @{ Name = 'jaeger';         Svc = 'svc/jaeger';         LocalPort = 16686; RemotePort = 16686 }
-    @{ Name = 'loki';           Svc = 'svc/loki';           LocalPort = 3100;  RemotePort = 3100  }
-    @{ Name = 'frontend-proxy'; Svc = 'svc/frontend-proxy'; LocalPort = 8080;  RemotePort = 8080  }
+    @{ Name = 'prometheus'; Ns = $Namespace;     Svc = 'svc/prometheus-server'; LocalPort = 9090;  RemotePort = 80    }
+    @{ Name = 'jaeger';     Ns = $Namespace;     Svc = 'svc/jaeger';            LocalPort = 16686; RemotePort = 16686 }
+    @{ Name = 'grafana';    Ns = $Namespace;     Svc = 'svc/grafana';           LocalPort = 3001;  RemotePort = 80    }
+    @{ Name = 'loki';       Ns = $LokiNamespace; Svc = 'svc/loki';              LocalPort = 3100;  RemotePort = 3100  }
 )
 foreach ($fwd in $forwards) {
     $job = Start-Job -Name "pf-$($fwd.Name)" -ScriptBlock {
@@ -141,8 +200,8 @@ foreach ($fwd in $forwards) {
             $env:Path = "$kubectlDir;$env:Path"
         }
         kubectl port-forward -n $ns $svc "${local}:${remote}"
-    } -ArgumentList $Namespace, $fwd.Svc, $fwd.LocalPort, $fwd.RemotePort, $standaloneKubectl
-    Write-Host ("    started {0,-15} -> http://localhost:{1}  (job {2})" -f $fwd.Name, $fwd.LocalPort, $job.Id) -ForegroundColor Green
+    } -ArgumentList $fwd.Ns, $fwd.Svc, $fwd.LocalPort, $fwd.RemotePort, $standaloneKubectl
+    Write-Host ("    started {0,-12} {1,-14} -> http://localhost:{2}  (job {3})" -f $fwd.Name, $fwd.Ns, $fwd.LocalPort, $job.Id) -ForegroundColor Green
 }
 Start-Sleep -Seconds 3   # let pf jobs bind their ports
 
@@ -356,11 +415,15 @@ Write-Host "  Classifier:   http://localhost:$UiPort/classifier   (RA-002 SPA)"
 Write-Host "  HITL console: http://localhost:$UiPort/hitl          (approver UI)"
 Write-Host "  Demo UI:      http://localhost:$UiPort/             (vanilla)"
 Write-Host "  API docs:     http://localhost:$UiPort/docs         (Swagger)"
-Write-Host "  Grafana:      http://localhost:8080/grafana/"
-Write-Host "  Jaeger UI:    http://localhost:8080/jaeger/ui/"
-Write-Host "  flagd UI:     http://localhost:8080/feature/"
+Write-Host ''
+Write-Host "  Storefront:   http://localhost:30080/            (ecommerce SUT)"
+Write-Host "  user-service: http://localhost:30081/health"
+Write-Host "  order-service:http://localhost:30082/health"
+Write-Host ''
+Write-Host "  Grafana:      http://localhost:3001/grafana/     (admin / admin)"
 Write-Host "  Prometheus:   http://localhost:9090/"
-Write-Host "  Jaeger (raw): http://localhost:16686/"
+Write-Host "  Alertmanager: kubectl -n $Namespace port-forward svc/prometheus-alertmanager 9093:9093"
+Write-Host "  Jaeger UI:    http://localhost:16686/"
 Write-Host "  Loki (raw):   http://localhost:3100/"
 Write-Host ''
 Write-Host "Manage background jobs:"

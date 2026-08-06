@@ -8,7 +8,7 @@ the actual graph that breached the threshold (DEMO-8 / #60).
 
 Requires server-side rendering to be enabled on the target Grafana.  The
 OTel demo's Grafana ships *without* it by default; enable it via the
-``grafana.imageRenderer`` block in ``demo/otel-demo/values.yaml`` (DEMO-8
+``imageRenderer`` block in ``infra/observability/grafana-values.yaml`` (DEMO-8
 / #60), which deploys the ``grafana-image-renderer`` as a sidecar pod, or
 set ``GF_INSTALL_PLUGINS=grafana-image-renderer`` on the Grafana pod
 directly.  Without a renderer the endpoint returns a 500 — the renderer

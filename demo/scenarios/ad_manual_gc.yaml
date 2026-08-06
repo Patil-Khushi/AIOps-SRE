@@ -1,9 +1,0 @@
-id: ad_manual_gc
-category: latency
-flag: adManualGc
-alert: AdLatencyP95High
-service: ad
-title: Ad service GC stall
-description: Ad service triggers manual GC pauses — p95 latency spikes.
-eta_seconds: 120
-severity: warning

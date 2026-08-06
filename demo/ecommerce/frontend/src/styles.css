@@ -1,0 +1,73 @@
+/* Orbit design system.
+ *
+ * @import MUST be the first statement in the file — CSS only allows @charset
+ * and @layer before it. Placed after the @tailwind directives, PostCSS warns
+ * and hoists it anyway.
+ */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Kept alongside the Tailwind theme because per-product brand colours are
+     runtime hex values that Tailwind's JIT cannot see (see Tile.jsx). */
+  :root {
+    --canvas: #FAF8F4;
+    --ink: #1B1B2F;
+    --coral: #FF5A36;
+    --coral-dark: #E14D26;
+    --pine: #2F6F5E;
+    --gold: #FFC857;
+    --muted: #6B7280;
+    --line: #E5E1D8;
+    --card: #FFFFFF;
+  }
+
+  body {
+    @apply bg-canvas text-ink antialiased;
+  }
+
+  h1, h2, h3 {
+    @apply font-display;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5
+           text-sm font-semibold transition
+           disabled:opacity-50 disabled:cursor-not-allowed
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-coral/40;
+  }
+  /* Only two button variants exist by design. Do not add a third. */
+  .btn-primary { @apply btn bg-coral text-white hover:bg-coral-dark; }
+  .btn-outline { @apply btn border border-coral text-coral hover:bg-coral/5; }
+
+  .surface { @apply bg-card border border-line rounded-2xl; }
+  .lift { @apply transition duration-200 hover:-translate-y-0.5 hover:shadow-lift; }
+
+  .chip {
+    @apply shrink-0 rounded-full border border-line bg-white px-4 py-1.5
+           text-sm font-medium transition hover:border-ink/40;
+  }
+  .chip-active { @apply border-ink bg-ink text-white hover:border-ink; }
+
+  .field {
+    @apply w-full rounded-lg border border-line bg-white px-3 py-2 text-sm
+           placeholder:text-muted/70
+           focus:outline-none focus:ring-2 focus:ring-coral/40 focus:border-coral;
+  }
+
+  /* Product-tile studio backdrop. A long gradient reads better as a component
+     class than as an arbitrary-value utility repeated on every tile. */
+  .tile-bg {
+    background: radial-gradient(120% 120% at 50% 20%, #FFFFFF 0%, #F2EFE8 55%, #E9E5DA 100%);
+  }
+  .tile-floor {
+    @apply absolute bottom-[16%] left-1/2 h-3 w-1/2 -translate-x-1/2 rounded-[50%] bg-ink/20 blur-md;
+  }
+
+  .mono { @apply font-mono tabular-nums; }
+}

@@ -160,17 +160,18 @@ def test_seeded_runbooks_are_grounded_and_published():
     rb.seed_from_dir(SEED_DIR)
     by_id = {r.id: r for r in rb.list_runbooks()}
     assert {
-        "rb-product-catalog-latency",
-        "rb-payment-failure",
-        "rb-cart-failure",
-        "rb-recommendation-cache-failure",
-        "rb-ad-failure",
+        "rb-user-service-mysql-down",
+        "rb-payment-service-redis-down",
+        "rb-order-service-memory-leak",
+        "rb-order-service-payment-timeout",
+        "rb-user-service-crashloop",
     } <= set(by_id)
-    pay = by_id["rb-payment-failure"]
+    pay = by_id["rb-payment-service-redis-down"]
     assert pay.status is ReviewStatus.PUBLISHED
     assert pay.source == "seed"
-    assert pay.service == "payment"
-    assert "paymentFailure" in pay.body  # real flagd flag, not invented
+    assert pay.service == "payment-service"
+    # A real failure key from the injection registry, not an invented handle.
+    assert "payment_service.redis_down" in pay.body
 
 
 def test_delete_runbook():

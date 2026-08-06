@@ -1,0 +1,86 @@
+{
+  "id": "user_service_crashloop",
+  "scenario": "scenarios/user_service_crashloop.yaml",
+  "failure_key": "user_service.crashloop",
+  "service": "user-service",
+  "severity": "critical",
+  "fault_category": "startup_config_error",
+  "root_cause": "Startup configuration failure (bad MYSQL_HOST)",
+  "root_cause_keywords": [
+    "crashloop",
+    "startup",
+    "config",
+    "configuration",
+    "mysql_host",
+    "restart"
+  ],
+  "remediation": "Fix the invalid MYSQL_HOST (or missing env var) and redeploy with correct configuration.",
+  "expected_signals": {
+    "http_status": [],
+    "metrics": [
+      {
+        "name": "mysql_connection_status",
+        "expect": "== 0 / no data"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "startup schema init failed"
+      }
+    ],
+    "container": [
+      {
+        "signal": "restart_count",
+        "expect": "increasing"
+      },
+      {
+        "signal": "state",
+        "expect": "never healthy"
+      }
+    ],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "crashloop",
+      "startup",
+      "config",
+      "configuration",
+      "mysql_host",
+      "restart"
+    ],
+    "must_identify_service": "user-service",
+    "must_identify_category": "startup_config_error"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-user-service-crashloop",
+    "service": "user-service",
+    "metric": "up",
+    "value": 0.0,
+    "threshold": 1.0,
+    "severity_hint": "critical",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommerceServiceDown",
+      "severity": "critical",
+      "service": "user-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "user-service",
+      "severity_in": [
+        "Sev-1"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Identity Team"
+    }
+  }
+}

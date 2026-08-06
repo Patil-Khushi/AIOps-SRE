@@ -1,0 +1,77 @@
+{
+  "id": "payment_service_http_500",
+  "scenario": "scenarios/payment_service_http_500.yaml",
+  "failure_key": "payment_service.http_500",
+  "service": "payment-service",
+  "severity": "high",
+  "fault_category": "application_error",
+  "root_cause": "Payment application failure",
+  "root_cause_keywords": [
+    "500",
+    "error",
+    "payment",
+    "application",
+    "failure"
+  ],
+  "remediation": "Roll back the faulty change or fix the failing code path in the payment handler.",
+  "expected_signals": {
+    "http_status": [
+      500
+    ],
+    "metrics": [
+      {
+        "name": "payment_failures_total{reason=\"injected_500\"}",
+        "expect": "increases"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "injected HTTP 500 on payment"
+      }
+    ],
+    "container": [],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "500",
+      "error",
+      "payment",
+      "application",
+      "failure"
+    ],
+    "must_identify_service": "payment-service",
+    "must_identify_category": "application_error"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-payment-service-http-500",
+    "service": "payment-service",
+    "metric": "orders_failed_total",
+    "value": 1.6,
+    "threshold": 0.0,
+    "severity_hint": "high",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommerceOrderErrorRateHigh",
+      "severity": "high",
+      "service": "payment-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "payment-service",
+      "severity_in": [
+        "Sev-2"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Payments Team"
+    }
+  }
+}

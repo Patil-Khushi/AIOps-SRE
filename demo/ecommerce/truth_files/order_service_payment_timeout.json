@@ -1,0 +1,88 @@
+{
+  "id": "order_service_payment_timeout",
+  "scenario": "scenarios/order_service_payment_timeout.yaml",
+  "failure_key": "order_service.payment_timeout",
+  "service": "order-service",
+  "severity": "high",
+  "fault_category": "dependency_timeout",
+  "root_cause": "Payment dependency timeout (slow external gateway)",
+  "root_cause_keywords": [
+    "payment",
+    "timeout",
+    "gateway",
+    "dependency",
+    "slow"
+  ],
+  "remediation": "Restore the payment/gateway path; add sane timeouts, retries, and a circuit breaker.",
+  "expected_signals": {
+    "http_status": [
+      504
+    ],
+    "metrics": [
+      {
+        "name": "payment_timeout_total",
+        "expect": "increases"
+      },
+      {
+        "name": "orders_failed_total{reason=\"payment_timeout\"}",
+        "expect": "increases"
+      },
+      {
+        "name": "order_latency_seconds",
+        "expect": "p95 near timeout"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "order failed: payment timeout"
+      }
+    ],
+    "container": [],
+    "trace": {
+      "path": "ecommerce-order-service -> ecommerce-payment-service",
+      "note": "span stalls on downstream gateway"
+    }
+  },
+  "grading": {
+    "match_any_keyword": [
+      "payment",
+      "timeout",
+      "gateway",
+      "dependency",
+      "slow"
+    ],
+    "must_identify_service": "order-service",
+    "must_identify_category": "dependency_timeout"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-order-service-payment-timeout",
+    "service": "order-service",
+    "metric": "payment_timeout_total",
+    "value": 1.8,
+    "threshold": 0.0,
+    "severity_hint": "high",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommercePaymentTimeouts",
+      "severity": "high",
+      "service": "order-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "order-service",
+      "severity_in": [
+        "Sev-2"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Order Experience"
+    }
+  }
+}

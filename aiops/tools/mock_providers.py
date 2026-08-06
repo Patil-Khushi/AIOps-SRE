@@ -279,24 +279,31 @@ _DEPENDENCIES_MAPPING: dict[str, list[str]] = {
 
 
 def _maybe_reset_feature_flag(action: str, target: str) -> dict[str, Any] | None:
-    """If a runbook step is a feature-flag reset (``action='reset_feature_flag'``,
-    ``target='flag/<name>'``), perform the REAL flip through the feature-flags
-    seam so the injected demo scenario actually clears — instead of a mock no-op.
+    """If a runbook step clears an injected fault (``action='clear_fault'``,
+    ``target='fault/<failure_key>'``), perform the REAL recovery through the
+    ``automation.fault.clear`` seam so the injected scenario actually clears —
+    instead of a mock no-op.
 
-    Returns ``None`` when the step isn't a flag reset (caller falls back to the
-    normal mock). Degrades gracefully: if the seam is unreachable (no flagd /
-    off-cluster) it reports ``seam_ok=False`` but the *step* still succeeds, so
-    the executor demo completes either way."""
-    if action != "reset_feature_flag" or not target.startswith("flag/"):
+    Was ``reset_feature_flag`` / ``flag/<name>`` when faults were flagd flags.
+    The old spelling is still accepted so a hand-written runbook that predates
+    the migration keeps working rather than silently becoming a mock no-op.
+
+    Returns ``None`` when the step isn't a fault clear (caller falls back to the
+    normal mock). Degrades gracefully: if the seam is unreachable (off-cluster)
+    it reports ``seam_ok=False`` but the *step* still succeeds, so the executor
+    demo completes either way."""
+    if action not in ("clear_fault", "reset_feature_flag"):
+        return None
+    if not (target.startswith("fault/") or target.startswith("flag/")):
         return None
     flag = target.split("/", 1)[1].strip()
     if not flag:
         return None
-    seam_ok, detail = False, "feature-flags seam unavailable — simulated"
+    seam_ok, detail = False, "fault-clear seam unavailable — simulated"
     try:
         from aiops.tools import get_registry
 
-        res = get_registry().call("feature_flags.set_variant", flag=flag, variant="off")
+        res = get_registry().call("automation.fault.clear", fault=flag, target="off")
         seam_ok = bool(res.ok)
         detail = res.data if res.ok else (res.error or detail)
     except Exception as exc:  # registry/seam not wired in this context

@@ -1,0 +1,78 @@
+{
+  "id": "user_service_high_cpu",
+  "scenario": "scenarios/user_service_high_cpu.yaml",
+  "failure_key": "user_service.high_cpu",
+  "service": "user-service",
+  "severity": "high",
+  "fault_category": "resource_saturation_cpu",
+  "root_cause": "Application CPU saturation",
+  "root_cause_keywords": [
+    "cpu",
+    "saturation",
+    "resource",
+    "high",
+    "load"
+  ],
+  "remediation": "Identify and fix the CPU-bound code path; scale out or restart the service to shed load.",
+  "expected_signals": {
+    "http_status": [
+      200,
+      401
+    ],
+    "metrics": [
+      {
+        "name": "login_latency_seconds",
+        "expect": "p95 climbs under load"
+      }
+    ],
+    "logs": [],
+    "container": [
+      {
+        "signal": "cpu_percent",
+        "expect": "> 90"
+      }
+    ],
+    "trace": null
+  },
+  "grading": {
+    "match_any_keyword": [
+      "cpu",
+      "saturation",
+      "resource",
+      "high",
+      "load"
+    ],
+    "must_identify_service": "user-service",
+    "must_identify_category": "resource_saturation_cpu"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-user-service-high-cpu",
+    "service": "user-service",
+    "metric": "order_latency_seconds",
+    "value": 4.2,
+    "threshold": 2.0,
+    "severity_hint": "high",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommerceOrderLatencyHigh",
+      "severity": "high",
+      "service": "user-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "user-service",
+      "severity_in": [
+        "Sev-2"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Identity Team"
+    }
+  }
+}

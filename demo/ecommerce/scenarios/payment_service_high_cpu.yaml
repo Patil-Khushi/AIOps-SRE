@@ -1,0 +1,32 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: payment_service_high_cpu
+title: High CPU usage
+service: payment-service
+failure_key: payment_service.high_cpu
+severity: high
+inject:
+  command: python -m failure_injection inject payment_service.high_cpu
+recover:
+  command: python -m failure_injection recover payment_service.high_cpu
+load:
+  url: http://localhost:8003/payments
+  method: POST
+  body:
+    order_id: 1
+    amount: 12.0
+  duration_seconds: 60
+detection:
+  l1: payment-service container CPU > 90%
+  l2: Resource consumption analysis shows a process pegged on CPU
+  http_status:
+  - 200
+  metrics:
+  - name: payment_latency_seconds
+    expect: p95 climbs under load
+  container:
+  - signal: cpu_percent
+    expect: '> 90'
+expected_rca: Application resource exhaustion
+truth_file: truth_files/payment_service_high_cpu.json
+settle_seconds: 20

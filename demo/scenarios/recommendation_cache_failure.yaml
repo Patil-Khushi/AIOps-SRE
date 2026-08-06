@@ -1,9 +1,0 @@
-id: recommendation_cache_failure
-category: latency
-flag: recommendationCacheFailure
-alert: RecommendationLatencyP95High
-service: recommendation
-title: Recommendation cache miss
-description: Recommendation service slows down — every request bypasses the cache.
-eta_seconds: 120
-severity: high

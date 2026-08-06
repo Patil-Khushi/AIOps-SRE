@@ -63,8 +63,9 @@ def test_discover_truth_files_skips_template_and_includes_others() -> None:
     assert paths, "expected at least one truth file"
     names = {p.stem for p in paths}
     assert "template" not in names
-    # Backfilled in this PR — proves we have at least one opted-in truth file
-    assert "payment_failure" in names
+    # The OTel Demo suite (payment_failure.yaml et al.) was deleted with the
+    # demo app; the ecommerce suite is now the only source of truth files.
+    assert "user_service_mysql_down" in names
 
 
 # ─── run_truth_file ────────────────────────────────────────────────────
@@ -108,18 +109,18 @@ def test_run_truth_file_only_payload_no_exercises_returns_empty(tmp_path: Path) 
 
 
 def test_run_truth_file_runs_alert_triage_end_to_end() -> None:
-    """Against a real backfilled truth file (payment_failure.yaml), the
+    """Against a real truth file (user_service_mysql_down.json), the
     harness should call alert_triage.run() with the payload and score
     against the exercises block. We don't assert pass/fail here (the LLM
     may be stub-mode); we assert the result was actually produced and has
     the right shape."""
-    truth = REPO_ROOT / "demo" / "truth_files" / "payment_failure.yaml"
+    truth = REPO_ROOT / "demo" / "ecommerce" / "truth_files" / "user_service_mysql_down.json"
     assert truth.exists()
     result = run_truth_file(truth)
-    assert result.scenario_id == "payment_failure"
+    assert result.scenario_id == "user_service_mysql_down"
     assert len(result.results) == 1
     case_result = result.results[0]
-    assert case_result.case_id == "payment_failure::alert_triage"
+    assert case_result.case_id == "user_service_mysql_down::alert_triage"
     # Score is a number in [0, 1]; passed reflects the score-vs-expected match
     assert 0.0 <= case_result.score <= 1.0
     assert case_result.duration_ms >= 0

@@ -1,0 +1,84 @@
+{
+  "id": "payment_service_gateway_timeout",
+  "scenario": "scenarios/payment_service_gateway_timeout.yaml",
+  "failure_key": "payment_service.gateway_timeout",
+  "service": "payment-service",
+  "severity": "high",
+  "fault_category": "dependency_timeout",
+  "root_cause": "Payment gateway unavailable / slow",
+  "root_cause_keywords": [
+    "gateway",
+    "timeout",
+    "external",
+    "dependency",
+    "slow"
+  ],
+  "remediation": "Restore the external gateway; add timeouts, retries, and a circuit breaker on the gateway call.",
+  "expected_signals": {
+    "http_status": [
+      504
+    ],
+    "metrics": [
+      {
+        "name": "payment_failures_total{reason=\"gateway_timeout\"}",
+        "expect": "increases"
+      },
+      {
+        "name": "payment_latency_seconds",
+        "expect": "p95 near timeout"
+      }
+    ],
+    "logs": [
+      {
+        "level": "ERROR",
+        "contains": "payment failed: gateway timeout"
+      }
+    ],
+    "container": [],
+    "trace": {
+      "path": "ecommerce-payment-service -> mock-payment-gateway",
+      "note": "span stalls on external gateway"
+    }
+  },
+  "grading": {
+    "match_any_keyword": [
+      "gateway",
+      "timeout",
+      "external",
+      "dependency",
+      "slow"
+    ],
+    "must_identify_service": "payment-service",
+    "must_identify_category": "dependency_timeout"
+  },
+  "expected_alert_payload": {
+    "alert_id": "ALT-payment-service-gateway-timeout",
+    "service": "payment-service",
+    "metric": "payment_timeout_total",
+    "value": 1.5,
+    "threshold": 0.0,
+    "severity_hint": "high",
+    "timestamp": "2026-08-03T10:00:00Z",
+    "source": "Prometheus",
+    "labels": {
+      "alertname": "EcommercePaymentTimeouts",
+      "severity": "high",
+      "service": "payment-service",
+      "namespace": "ecommerce"
+    }
+  },
+  "exercises": {
+    "alert_triage": {
+      "affected_service": "payment-service",
+      "severity_in": [
+        "Sev-2"
+      ],
+      "status_in": [
+        "Active",
+        "Suppressed"
+      ],
+      "min_confidence_score": 0.6,
+      "assigned_team": "Payments Team"
+    }
+  }
+}

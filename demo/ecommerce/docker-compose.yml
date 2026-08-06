@@ -1,0 +1,185 @@
+# ecommerce — full stack for SRE / AIOps failure testing
+# Brings up: frontend + 3 microservices + mock gateway + MySQL/Postgres/Redis.
+# Observability (Prometheus/Loki/Tempo) is intentionally NOT defined here —
+# each service exposes /metrics, structured logs, and OTel traces, and gets
+# added as a scrape/log/trace source in the repo's existing central stack.
+
+services:
+  # ---------------------------------------------------------------- Frontend
+  frontend:
+    build: ./frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    environment:
+      - VITE_USER_SERVICE_URL=http://localhost:${USER_SERVICE_PORT:-8001}
+      - VITE_ORDER_SERVICE_URL=http://localhost:${ORDER_SERVICE_PORT:-8002}
+    depends_on:
+      - user-service
+      - order-service
+    networks:
+      - ecommerce
+
+  # ------------------------------------------------------------ User Service
+  user-service:
+    build: ./user-service
+    ports:
+      - "${USER_SERVICE_PORT:-8001}:8000"
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER:-appuser}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-apppass}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-users}
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-prod}
+      - JWT_EXPIRY_MINUTES=${JWT_EXPIRY_MINUTES:-60}
+      # failure-injection toggles (default off)
+      - INJECT_LATENCY_SECONDS=${USER_INJECT_LATENCY_SECONDS:-0}
+      - INJECT_CPU_LOAD=${USER_INJECT_CPU_LOAD:-false}
+      - OTEL_SERVICE_NAME=ecommerce-user-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  # ----------------------------------------------------------- Order Service
+  order-service:
+    build: ./order-service
+    ports:
+      - "${ORDER_SERVICE_PORT:-8002}:8000"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-appuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-apppass}
+      - POSTGRES_DB=${POSTGRES_DB:-orders}
+      - USER_SERVICE_URL=http://user-service:8000
+      - PAYMENT_SERVICE_URL=http://payment-service:8000
+      - PAYMENT_TIMEOUT_SECONDS=${PAYMENT_TIMEOUT_SECONDS:-5}
+      # failure-injection toggles (default off)
+      - INJECT_HTTP_500=${ORDER_INJECT_HTTP_500:-false}
+      - INJECT_MEMORY_LEAK=${ORDER_INJECT_MEMORY_LEAK:-false}
+      - OTEL_SERVICE_NAME=ecommerce-order-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+    networks:
+      - ecommerce
+
+  # --------------------------------------------------------- Payment Service
+  payment-service:
+    build: ./payment-service
+    ports:
+      - "${PAYMENT_SERVICE_PORT:-8003}:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - GATEWAY_URL=http://mock-payment-gateway:8000
+      - GATEWAY_TIMEOUT_SECONDS=${GATEWAY_TIMEOUT_SECONDS:-5}
+      # failure-injection toggles (default off)
+      - INJECT_HTTP_500=${PAYMENT_INJECT_HTTP_500:-false}
+      - INJECT_CPU_LOAD=${PAYMENT_INJECT_CPU_LOAD:-false}
+      - OTEL_SERVICE_NAME=ecommerce-payment-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      mock-payment-gateway:
+        condition: service_started
+    networks:
+      - ecommerce
+
+  # --------------------------------------------------- Mock Payment Gateway
+  mock-payment-gateway:
+    build: ./mock-payment-gateway
+    ports:
+      - "${GATEWAY_PORT:-8004}:8000"
+    environment:
+      # simulate a slow external processor (0 = respond immediately)
+      - INJECT_DELAY_SECONDS=${GATEWAY_INJECT_DELAY_SECONDS:-0}
+    networks:
+      - ecommerce
+
+  # ------------------------------------------------------------- Log shipper
+  # Promtail tails this project's container stdout and pushes it to the k3s
+  # Loki over the NodePort in observability/nodeports.yaml. It is a SHIPPER,
+  # not a datastore — the "no second Prometheus/Loki/Tempo here" rule in the
+  # README still holds. If Loki is unreachable it retries with backoff and the
+  # app is unaffected, so this is safe to leave enabled.
+  promtail:
+    image: grafana/promtail:3.0.0
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      # Read-only Docker API access: how promtail discovers containers and
+      # reads their logs without touching the application code.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - ecommerce
+
+  # --------------------------------------------------------------- Databases
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpass}
+      - MYSQL_USER=${MYSQL_USER:-appuser}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-apppass}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-users}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ecommerce
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-appuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-apppass}
+      - POSTGRES_DB=${POSTGRES_DB:-orders}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-appuser} -d ${POSTGRES_DB:-orders}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ecommerce
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ecommerce
+
+networks:
+  ecommerce:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  postgres-data:
+  redis-data:

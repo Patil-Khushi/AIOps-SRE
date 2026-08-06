@@ -1,0 +1,28 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: order_service_postgres_down
+title: PostgreSQL database down
+service: order-service
+failure_key: order_service.postgres_down
+severity: critical
+inject:
+  command: python -m failure_injection inject order_service.postgres_down
+recover:
+  command: python -m failure_injection recover order_service.postgres_down
+load: null
+detection:
+  l1: orders_failed_total{reason=db_error} rising; HTTP 500 on /orders; postgres_connection_status=0
+  l2: 'Logs: ''database connection failed'' / connection refused to postgres:5432'
+  http_status:
+  - 500
+  metrics:
+  - name: orders_failed_total{reason="db_error"}
+    expect: increases
+  - name: postgres_connection_status
+    expect: == 0
+  logs:
+  - level: ERROR
+    contains: database connection failed
+expected_rca: PostgreSQL database unavailable
+truth_file: truth_files/order_service_postgres_down.json
+settle_seconds: 20

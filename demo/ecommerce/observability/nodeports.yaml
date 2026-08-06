@@ -1,0 +1,66 @@
+# NodePort bridges: k3s -> reachable from the Docker Compose network.
+#
+# The ecommerce app runs in Docker Compose; Prometheus/Loki/Jaeger/Grafana run
+# in Rancher Desktop's k3s. Both live in the same Rancher Desktop VM network
+# (192.168.127.0/24), so a NodePort is all that's needed — no port-forward, no
+# tunnel, and nothing to keep alive in a terminal.
+#
+# Verified reachable from a Compose container:
+#   k3s node    = 192.168.127.2      (compose -> cluster, via these NodePorts)
+#   host gateway= 192.168.127.254    (cluster -> compose, for Prometheus scrape)
+#
+# Apply:  kubectl apply -f observability/nodeports.yaml
+# Remove: kubectl delete -f observability/nodeports.yaml
+#
+# These are additive Services. They do NOT modify the collector/Loki Deployments
+# or the Helm-managed `otel-collector` / `loki` Services, so `helm upgrade` and
+# `infra/teardown.ps1` behave exactly as before.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-ecommerce
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: ecommerce-bridge
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/instance: otel-demo
+    app.kubernetes.io/name: opentelemetry-collector
+    component: agent-collector
+  ports:
+    # The ecommerce services export spans over OTLP/gRPC (see each service's
+    # main.py — it uses the grpc trace exporter, not http/protobuf).
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      nodePort: 30317
+      protocol: TCP
+    # Exposed too, so a curl/HTTP client can push OTLP without a gRPC stack.
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      nodePort: 30318
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-ecommerce
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/part-of: ecommerce-bridge
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/component: single-binary
+    app.kubernetes.io/instance: loki
+    app.kubernetes.io/name: loki
+  ports:
+    # Promtail (running in Compose) pushes to /loki/api/v1/push here.
+    - name: http
+      port: 3100
+      targetPort: 3100
+      nodePort: 30310
+      protocol: TCP

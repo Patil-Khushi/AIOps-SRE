@@ -126,6 +126,20 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "observability.traces.services": AutonomyLevel.NONE,
     "itsm.cmdb.lookup": AutonomyLevel.NONE,
     "oncall.schedule.lookup": AutonomyLevel.NONE,
+    # SCM (aiops/tools/scm/): read-only source, IaC and deployment-config
+    # access for change correlation. Same reasoning as observability.* above —
+    # a GET cannot change the system, so gating it on a human would only add
+    # latency to every RCA. Listed explicitly rather than left to the OPTIONAL
+    # default, because "a human may approve this read" is not the intent.
+    #
+    # A future write path (opening a remediation PR) must register as a
+    # SEPARATE capability — e.g. scm.pr.create at REQUIRED — never by relaxing
+    # these.
+    "scm.file.read": AutonomyLevel.NONE,
+    "scm.repo.tree": AutonomyLevel.NONE,
+    "scm.commit.history": AutonomyLevel.NONE,
+    "scm.diff": AutonomyLevel.NONE,
+    "scm.pr.list": AutonomyLevel.NONE,
     # RA-006 War-Room Assembler: create a Slack war-room channel + invite SMEs.
     # Non-destructive (a channel/invite, reversible) — agent acts by default;
     # a tenant can switch on a human gate (matches the agent's HITL=Optional).

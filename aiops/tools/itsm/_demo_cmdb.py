@@ -45,6 +45,27 @@ CMDB_TABLE: dict[str, dict[str, str | None]] = {
     "email": {"team": "Communications", "runbook": None},
     "accounting": {"team": "Finance Systems", "runbook": None},
     "image-provider": {"team": "Assets Team", "runbook": None},
+    # ─── ecommerce SUT (demo/ecommerce) ──────────────────────────────────
+    # The system under test after the OTel Demo migration. Without these
+    # entries every ecommerce alert routes to the Platform On-Call default,
+    # which makes the notification/ticketing demo look like ownership lookup
+    # isn't working.
+    #
+    # Note "payment-service" already resolved to Payments Team before this
+    # block existed — it substring-matched the OTel Demo's "payment". That was
+    # accidental, not designed; it is now an explicit row.
+    "user-service": {
+        "team": "Identity Team",
+        "runbook": "https://runbooks.example.com/user-service",
+    },
+    "order-service": {
+        "team": "Order Experience",
+        "runbook": "https://runbooks.example.com/order-service",
+    },
+    "mock-payment-gateway": {
+        "team": "Payments Team",
+        "runbook": None,
+    },
 }
 
 CMDB_DEFAULT: dict[str, str | None] = {"team": "Platform On-Call", "runbook": None}

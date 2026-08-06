@@ -1,0 +1,28 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: payment_service_redis_down
+title: Redis down
+service: payment-service
+failure_key: payment_service.redis_down
+severity: critical
+inject:
+  command: python -m failure_injection inject payment_service.redis_down
+recover:
+  command: python -m failure_injection recover payment_service.redis_down
+load: null
+detection:
+  l1: payment_failures_total{reason=redis_error} rising; 500 on /payments; redis_connection_status=0
+  l2: 'Logs: ''redis connection error'' / connection refused to redis:6379'
+  http_status:
+  - 500
+  metrics:
+  - name: payment_failures_total{reason="redis_error"}
+    expect: increases
+  - name: redis_connection_status
+    expect: == 0
+  logs:
+  - level: ERROR
+    contains: redis connection error
+expected_rca: Redis unavailable
+truth_file: truth_files/payment_service_redis_down.json
+settle_seconds: 20

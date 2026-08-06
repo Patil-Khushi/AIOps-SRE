@@ -1,9 +1,0 @@
-id: loadgen_homepage_flood
-category: capacity
-flag: loadGeneratorFloodHomepage
-alert: FrontendTrafficSurge
-service: frontend
-title: Homepage traffic surge
-description: Loadgenerator floods the homepage (> 10 req/s).
-eta_seconds: 60
-severity: warning

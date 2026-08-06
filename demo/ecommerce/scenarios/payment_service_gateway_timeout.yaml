@@ -1,0 +1,37 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: payment_service_gateway_timeout
+title: External gateway timeout
+service: payment-service
+failure_key: payment_service.gateway_timeout
+severity: high
+inject:
+  command: python -m failure_injection inject payment_service.gateway_timeout
+recover:
+  command: python -m failure_injection recover payment_service.gateway_timeout
+load:
+  url: http://localhost:8003/payments
+  method: POST
+  body:
+    order_id: 1
+    amount: 12.0
+  duration_seconds: 60
+detection:
+  l1: payment_latency_seconds high; payment_failures_total{reason=gateway_timeout} rising; 504 on /payments
+  l2: Trace shows the payment->gateway span stalling; external dependency slow
+  http_status:
+  - 504
+  metrics:
+  - name: payment_failures_total{reason="gateway_timeout"}
+    expect: increases
+  - name: payment_latency_seconds
+    expect: p95 near timeout
+  logs:
+  - level: ERROR
+    contains: 'payment failed: gateway timeout'
+  trace:
+    path: ecommerce-payment-service -> mock-payment-gateway
+    note: span stalls on external gateway
+expected_rca: Payment gateway unavailable / slow
+truth_file: truth_files/payment_service_gateway_timeout.json
+settle_seconds: 20

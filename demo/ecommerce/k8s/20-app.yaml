@@ -1,0 +1,259 @@
+# The four backend services of the ecommerce SUT.
+#
+# Images are built locally and never pushed: Rancher Desktop's k3s uses dockerd
+# as its runtime (`containerRuntimeVersion: docker://29.5.3`), so anything
+# `docker build` produces is already visible to the cluster. That is why
+# imagePullPolicy is IfNotPresent — with :dev tags that exist only on this
+# machine, Always would fail trying to reach Docker Hub.
+# Build them with k8s/build-images.ps1 before applying this file.
+#
+# Every pod carries:
+#   prometheus.io/* annotations  -> picked up by the chart's `kubernetes-pods`
+#                                   scrape job automatically, no static config
+#   service_name label           -> joins metrics to Loki logs and Jaeger spans
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: ecommerce
+spec:
+  type: NodePort            # browser reaches it directly; the SPA is client-side
+  selector:
+    app: user-service
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: ecommerce
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+        service_name: ecommerce-user-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: user-service
+          image: ecommerce/user-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: {name: ecommerce-config}
+            - secretRef: {name: ecommerce-secrets}
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: ecommerce-user-service
+            # Scenario user_service_high_latency / _high_cpu read these.
+            - name: INJECT_LATENCY_SECONDS
+              valueFrom: {configMapKeyRef: {name: ecommerce-config, key: USER_INJECT_LATENCY_SECONDS}}
+            - name: INJECT_CPU_LOAD
+              valueFrom: {configMapKeyRef: {name: ecommerce-config, key: USER_INJECT_CPU_LOAD}}
+          resources:
+            requests: {memory: "128Mi", cpu: "50m"}
+            limits: {memory: "256Mi", cpu: "1000m"}
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          # NOTE: /health returns HTTP 200 even when the database is down (the
+          # body says status=degraded). That is deliberate — a MySQL outage must
+          # NOT restart this pod, or the mysql_down scenario would turn into a
+          # crashloop scenario and the truth file would no longer match.
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: ecommerce
+spec:
+  type: NodePort
+  selector:
+    app: order-service
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30082
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: ecommerce
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+        service_name: ecommerce-order-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: order-service
+          image: ecommerce/order-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: {name: ecommerce-config}
+            - secretRef: {name: ecommerce-secrets}
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: ecommerce-order-service
+            - name: INJECT_HTTP_500
+              valueFrom: {configMapKeyRef: {name: ecommerce-config, key: ORDER_INJECT_HTTP_500}}
+            - name: INJECT_MEMORY_LEAK
+              valueFrom: {configMapKeyRef: {name: ecommerce-config, key: ORDER_INJECT_MEMORY_LEAK}}
+          resources:
+            requests: {memory: "128Mi", cpu: "50m"}
+            # 256Mi is chosen so ORDER_INJECT_MEMORY_LEAK=true reaches OOMKilled
+            # in a demo-friendly time. Raise it and the memory_leak scenario
+            # takes too long to fire; remove it and the node OOMs instead of
+            # the pod, which kills unrelated workloads.
+            limits: {memory: "256Mi", cpu: "1000m"}
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: ecommerce
+spec:
+  # NodePort, even though the browser never calls it: three failure scenarios
+  # (payment_service.{high_cpu,http_500,gateway_timeout}) drive load straight at
+  # POST /payments to make the fault observable. Compose published it on 8003
+  # for the same reason. Without this the load generator gets connection
+  # refused and the scenario produces no signal at all.
+  type: NodePort
+  selector:
+    app: payment-service
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30083
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: ecommerce
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+        service_name: ecommerce-payment-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: payment-service
+          image: ecommerce/payment-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: {name: ecommerce-config}
+            - secretRef: {name: ecommerce-secrets}
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: ecommerce-payment-service
+            - name: INJECT_HTTP_500
+              valueFrom: {configMapKeyRef: {name: ecommerce-config, key: PAYMENT_INJECT_HTTP_500}}
+            - name: INJECT_CPU_LOAD
+              valueFrom: {configMapKeyRef: {name: ecommerce-config, key: PAYMENT_INJECT_CPU_LOAD}}
+          resources:
+            requests: {memory: "128Mi", cpu: "50m"}
+            limits: {memory: "256Mi", cpu: "1000m"}
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-payment-gateway
+  namespace: ecommerce
+spec:
+  selector:
+    app: mock-payment-gateway
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-payment-gateway
+  namespace: ecommerce
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-payment-gateway
+  template:
+    metadata:
+      labels:
+        app: mock-payment-gateway
+        service_name: ecommerce-mock-payment-gateway
+    spec:
+      containers:
+        - name: mock-payment-gateway
+          image: ecommerce/mock-payment-gateway:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            # Raising this above PAYMENT_TIMEOUT_SECONDS is how the
+            # payment_timeout / gateway_timeout scenarios fire.
+            - name: INJECT_DELAY_SECONDS
+              valueFrom: {configMapKeyRef: {name: ecommerce-config, key: GATEWAY_INJECT_DELAY_SECONDS}}
+          resources:
+            requests: {memory: "64Mi", cpu: "50m"}
+            limits: {memory: "128Mi", cpu: "500m"}

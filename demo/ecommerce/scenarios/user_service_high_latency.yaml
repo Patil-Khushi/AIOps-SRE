@@ -1,0 +1,32 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: user_service_high_latency
+title: High API latency (/login)
+service: user-service
+failure_key: user_service.high_latency
+severity: high
+inject:
+  command: python -m failure_injection inject user_service.high_latency
+recover:
+  command: python -m failure_injection recover user_service.high_latency
+load:
+  url: http://localhost:8001/login
+  method: POST
+  body:
+    email: load@test.dev
+    password: x
+  duration_seconds: 60
+detection:
+  l1: login_latency_seconds p95/p99 breaches threshold (~10s)
+  l2: Latency isolated to the login handler; DB and CPU normal
+  http_status:
+  - 200
+  metrics:
+  - name: login_latency_seconds
+    expect: p95 > 5s
+  logs:
+  - level: INFO
+    contains: login successful
+expected_rca: Application processing delay on the login endpoint
+truth_file: truth_files/user_service_high_latency.json
+settle_seconds: 20

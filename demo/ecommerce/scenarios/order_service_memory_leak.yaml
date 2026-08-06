@@ -1,0 +1,38 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: order_service_memory_leak
+title: Memory leak / OOMKilled
+service: order-service
+failure_key: order_service.memory_leak_oom
+severity: critical
+inject:
+  command: python -m failure_injection inject order_service.memory_leak_oom
+recover:
+  command: python -m failure_injection recover order_service.memory_leak_oom
+load:
+  url: http://localhost:8002/orders
+  method: POST
+  body:
+    items:
+    - sku: widget
+      qty: 1
+      price: 12.0
+    amount: 12.0
+  duration_seconds: 60
+detection:
+  l1: order-service memory usage climbing toward the limit
+  l2: Container restarted with reason OOMKilled
+  http_status:
+  - 201
+  - 401
+  metrics:
+  - name: orders_created_total
+    expect: may plateau at restart
+  container:
+  - signal: mem_usage
+    expect: climbs toward 256m limit
+  - signal: restart_reason
+    expect: OOMKilled
+expected_rca: Memory leak caused OOMKilled
+truth_file: truth_files/order_service_memory_leak.json
+settle_seconds: 20

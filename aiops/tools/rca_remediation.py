@@ -25,9 +25,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# Side-effect import: registers the feature_flags.* capabilities (set_variant)
-# this executor delegates to.
-import aiops.tools.feature_flags  # noqa: F401
 from aiops.tools.registry import ToolResult, get_registry, tool
 
 # Action verbs the agent may annotate on a fix step. Kept as plain strings so
@@ -73,9 +70,19 @@ def execute_rca_fix_step(
     if action == _ACTION_SET_FLAG:
         if not flag:
             return ToolResult(ok=False, error="set_flag action requires a 'flag' name")
-        # Delegate to the feature-flags seam (CLAUDE.md: flag mutation goes
-        # through the seam, never a direct kubectl patch).
-        return get_registry().call("feature_flags.set_variant", flag=flag, variant=variant)
+        # Delegate to whichever provider serves `automation.fault.clear`.
+        #
+        # This used to call `feature_flags.set_variant` directly, because the
+        # OTel Demo's faults WERE flagd flags. That app is gone; ecommerce
+        # faults are env vars and replica counts, cleared via kubectl.
+        #
+        # The capability is deliberately generic and the provider lives in the
+        # demo layer (demo/ui/fault_clear.py). aiops/ must not import demo/ —
+        # the dependency arrow runs demo → aiops — so the executor dispatches by
+        # capability name and stays ignorant of how a fault is actually undone.
+        # With no provider registered the registry returns ok=False, which is
+        # the same degradation every other unconfigured seam shows.
+        return get_registry().call("automation.fault.clear", fault=flag, target=variant)
     if action in _NO_EXECUTOR_MESSAGE:
         return ToolResult(
             ok=False,

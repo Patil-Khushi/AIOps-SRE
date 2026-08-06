@@ -1,0 +1,29 @@
+# Scenario definition for the ecommerce SRE demo.
+# Generated to stay in sync with failure_injection registry.
+id: user_service_crashloop
+title: CrashLoopBackOff (startup config failure)
+service: user-service
+failure_key: user_service.crashloop
+severity: critical
+inject:
+  command: python -m failure_injection inject user_service.crashloop
+recover:
+  command: python -m failure_injection recover user_service.crashloop
+load: null
+detection:
+  l1: user-service restart count rising; never becomes healthy
+  l2: Startup logs show DB resolution/connection failure; container exits then restarts
+  metrics:
+  - name: mysql_connection_status
+    expect: == 0 / no data
+  logs:
+  - level: ERROR
+    contains: startup schema init failed
+  container:
+  - signal: restart_count
+    expect: increasing
+  - signal: state
+    expect: never healthy
+expected_rca: Startup configuration failure (bad MYSQL_HOST)
+truth_file: truth_files/user_service_crashloop.json
+settle_seconds: 20
