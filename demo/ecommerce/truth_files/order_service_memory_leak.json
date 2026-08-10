@@ -54,14 +54,14 @@
   "expected_alert_payload": {
     "alert_id": "ALT-order-service-memory-leak",
     "service": "order-service",
-    "metric": "up",
-    "value": 0.0,
-    "threshold": 1.0,
+    "metric": "container_memory_working_set_bytes",
+    "value": 0.97,
+    "threshold": 0.9,
     "severity_hint": "critical",
     "timestamp": "2026-08-03T10:00:00Z",
     "source": "Prometheus",
     "labels": {
-      "alertname": "EcommerceServiceDown",
+      "alertname": "EcommerceOrderServiceMemoryHigh",
       "severity": "critical",
       "service": "order-service",
       "namespace": "ecommerce"

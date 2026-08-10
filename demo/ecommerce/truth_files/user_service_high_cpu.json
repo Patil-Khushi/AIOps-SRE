@@ -48,14 +48,14 @@
   "expected_alert_payload": {
     "alert_id": "ALT-user-service-high-cpu",
     "service": "user-service",
-    "metric": "order_latency_seconds",
-    "value": 4.2,
-    "threshold": 2.0,
+    "metric": "container_cpu_usage_seconds_total",
+    "value": 0.85,
+    "threshold": 0.5,
     "severity_hint": "high",
     "timestamp": "2026-08-03T10:00:00Z",
     "source": "Prometheus",
     "labels": {
-      "alertname": "EcommerceOrderLatencyHigh",
+      "alertname": "EcommerceUserServiceCPUHigh",
       "severity": "high",
       "service": "user-service",
       "namespace": "ecommerce"
