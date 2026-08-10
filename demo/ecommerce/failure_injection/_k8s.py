@@ -69,15 +69,36 @@ def _workload(service: str) -> str:
     return f"{kind}/{service}"
 
 
+class KubectlError(RuntimeError):
+    """kubectl exited non-zero.
+
+    Deliberately NOT a ``ChaosUnavailable``: the orchestrator scores that as
+    "this layer cannot run here" and still reports ok. A kubectl failure is the
+    opposite — the layer was supposed to run, tried, and did not succeed — so it
+    must surface as an error and make the whole inject/recover report ok=False.
+    """
+
+
 def run(args: list[str]) -> int:
-    """Run kubectl with the namespace pre-applied."""
+    """Run kubectl with the namespace pre-applied.
+
+    Raises ``KubectlError`` on a non-zero exit. The exit code used to be
+    returned and every caller discarded it, so a failed ``kubectl set env`` —
+    no cluster, wrong context, deleted deployment — produced a silent success:
+    ``recover()`` raised nothing, the orchestrator marked the layer "ran", and
+    the remediation chain above it reported a fault cleared that was still
+    firing.
+    """
     cmd = [_kubectl.resolve(), "-n", NAMESPACE, *args]
     printable = " ".join(["kubectl", "-n", NAMESPACE, *args])
     if DRY_RUN:
         print(f"[dry-run] {printable}")
         return 0
     print(f"+ {printable}")
-    return subprocess.call(cmd)
+    code = subprocess.call(cmd)
+    if code != 0:
+        raise KubectlError(f"`{printable}` exited {code}")
+    return code
 
 
 # --- scale to zero / back ---------------------------------------------------
