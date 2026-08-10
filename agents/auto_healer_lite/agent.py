@@ -392,9 +392,16 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
             )
         )
 
-    try:
-        result = get_registry().call(tool_capability, **tool_args)
-    except KeyError:
+    def _unregistered_capability_verdict() -> ExecutionVerdict:
+        """Verdict for "the gate cleared but nothing can run this".
+
+        Reachable two ways, which must stay indistinguishable to callers:
+        a direct ``by_capability`` KeyError, and — since the registry started
+        reporting a missing provider as a structured result rather than an
+        exception — ``ToolResult(ok=False, metadata={"missing_provider": True})``.
+        Note ``tool_result`` stays unset: no tool ran, so there is no result to
+        report, and callers distinguish this case by ``tool_result is None``.
+        """
         trace.append(f"tool_capability={tool_capability!r} NOT registered")
         return _finalise(
             ExecutionVerdict(
@@ -414,6 +421,13 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
                 audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
             )
         )
+
+    try:
+        result = get_registry().call(tool_capability, **tool_args)
+    except KeyError:
+        # Retained for callers holding a registry that still raises (the test
+        # fakes do), even though the real registry now returns a result instead.
+        return _unregistered_capability_verdict()
     except Exception as exc:  # boundary: a buggy tool can't crash the verdict
         trace.append(f"tool dispatch raised: {type(exc).__name__}: {exc}")
         logger.exception("auto_heal.lite.execute: tool dispatch raised")
@@ -432,6 +446,9 @@ def execute(request: ExecutionRequest) -> ExecutionVerdict:
                 audit_metadata=AuditMetadata(created_at=datetime.now(UTC), decision_trace=trace),
             )
         )
+
+    if (getattr(result, "metadata", None) or {}).get("missing_provider"):
+        return _unregistered_capability_verdict()
 
     # ToolResult shape: {ok: bool, data: any, error: str | None, metadata: ...}
     tool_result_dict: dict[str, Any] = {

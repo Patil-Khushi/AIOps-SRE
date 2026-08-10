@@ -40,7 +40,11 @@ from aiops.tools.topology.base import HealthStatus, ProviderStatus, TopologyResu
 
 logger = logging.getLogger(__name__)
 
-_NAMESPACE = os.environ.get("AIOPS_K8S_NAMESPACE", "otel-demo")
+# `ecommerce` is where the system under test runs. The previous `otel-demo`
+# default dates from the astronomy-shop era; that namespace now holds only Loki,
+# so discovery there would find no workloads and report an empty topology as if
+# the services genuinely had no dependencies.
+_NAMESPACE = os.environ.get("AIOPS_K8S_NAMESPACE", "ecommerce")
 _TIMEOUT = float(os.environ.get("AIOPS_K8S_TIMEOUT", "5"))
 
 # Env var names that conventionally carry a service address. Matched on the

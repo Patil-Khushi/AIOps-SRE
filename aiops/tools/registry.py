@@ -12,6 +12,15 @@ HITL is enforced **at the registry boundary**, not inside agent code. Every
 invoking the tool function. REQUIRED-level actions without an approver return
 ``ToolResult(ok=False, ...)`` rather than executing — this is the platform
 implementation of CLAUDE.md principle #3.
+
+``call()`` never raises for a routing or policy problem. Both boundary
+conditions come back as ``ToolResult(ok=False)`` with a marker in ``metadata``:
+
+    blocked by the HITL gate  -> ``metadata["blocked_by"] == "hitl_gate"``
+    no provider registered    -> ``metadata["missing_provider"] is True``
+
+``by_capability()`` still raises ``KeyError`` — several callers use it as a
+health probe and rely on that. See the comment inside ``call()``.
 """
 
 from __future__ import annotations
@@ -79,7 +88,28 @@ class ToolRegistry:
         hitl_context: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> ToolResult:
-        t = self.by_capability(capability)
+        # Resolve the provider BEFORE consulting the gate. Asking a human to
+        # approve an action that provably cannot run would open an approval
+        # prompt and block for the full approval timeout before failing.
+        #
+        # by_capability() raises rather than returning None, and that is load
+        # bearing — aiops/tools/topology/providers/{cmdb,otel,snow}.py,
+        # aiops/tools/change_context/providers.py and agents/alert_triage/agent.py
+        # all call it directly as a "is this capability wired up?" probe and
+        # catch KeyError to report unavailability. Catch it here instead of
+        # softening it there.
+        try:
+            t = self.by_capability(capability)
+        except KeyError:
+            return ToolResult(
+                ok=False,
+                error=(
+                    f"no provider registered for capability {capability!r} — the module "
+                    "that registers it was never imported in this process"
+                ),
+                metadata={"missing_provider": True, "capability": capability},
+            )
+
         decision = get_gate().check(capability, hitl_context)
         if not decision.allowed:
             return ToolResult(

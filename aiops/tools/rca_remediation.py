@@ -80,8 +80,11 @@ def execute_rca_fix_step(
         # demo layer (demo/ui/fault_clear.py). aiops/ must not import demo/ —
         # the dependency arrow runs demo → aiops — so the executor dispatches by
         # capability name and stays ignorant of how a fault is actually undone.
-        # With no provider registered the registry returns ok=False, which is
-        # the same degradation every other unconfigured seam shows.
+        # With no provider registered the registry returns ok=False carrying
+        # metadata["missing_provider"], which request_fix_step surfaces as an
+        # "error" outcome naming the capability. That is now true by
+        # construction; it previously only *looked* true because the KeyError
+        # raised in here was laundered by the outer call()'s except-Exception.
         return get_registry().call("automation.fault.clear", fault=flag, target=variant)
     if action in _NO_EXECUTOR_MESSAGE:
         return ToolResult(

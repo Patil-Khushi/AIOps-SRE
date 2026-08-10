@@ -33,7 +33,9 @@ from aiops.tools.change_context.base import (
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = float(os.environ.get("AIOPS_CHANGE_CONTEXT_TIMEOUT", "5"))
-_NAMESPACE = os.environ.get("AIOPS_K8S_NAMESPACE", "otel-demo")
+# `ecommerce` is where the system under test runs. The previous `otel-demo`
+# default dates from the astronomy-shop era; that namespace now holds only Loki.
+_NAMESPACE = os.environ.get("AIOPS_K8S_NAMESPACE", "ecommerce")
 
 
 def _unavailable(provider: str, source: str, note: str, started: float) -> ChangeContextResult:

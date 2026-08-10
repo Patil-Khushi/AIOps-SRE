@@ -23,6 +23,7 @@ Embedding dedup: optional dependency ``sentence-transformers`` (install via
 from __future__ import annotations
 
 import logging
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -515,6 +516,48 @@ def _escape_promql_label_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
+# Namespace the system under test runs in. Same env var, same default, as the
+# topology and change-context providers — see aiops/tools/topology/providers/k8s.py.
+_K8S_NAMESPACE = os.environ.get("AIOPS_K8S_NAMESPACE", "ecommerce")
+
+# RE2 metacharacters. Deliberately excludes `-`: it is only special inside a
+# character class, and this never builds one.
+_RE2_META = re.compile(r"([\\.+*?()|\[\]{}^$])")
+
+
+def _pod_prefix(service: str) -> str:
+    """Workload name for a service, safe to embed in a PromQL regex matcher.
+
+    Takes the RAW service name — not the output of
+    ``_escape_promql_label_value`` — because two different escapes have to be
+    applied in a specific order, and doing the string one first corrupts the
+    regex one.
+
+    Telemetry names carry an ``ecommerce-`` prefix (``OTEL_SERVICE_NAME``, and
+    therefore every ``service_name`` label); the Kubernetes Deployment does not.
+    Strip it so ``ecommerce-user-service`` matches pods named ``user-service-*``.
+
+    Then escape twice, innermost first:
+
+    1. ``_RE2_META`` — the pod matcher is ``=~``, a regex. An unescaped ``.*`` in
+       a service name would not be an injection (RE2 cannot break out of PromQL)
+       but it would silently widen the match to every pod in the namespace, and
+       the alert would be enriched with a neighbouring service's CPU. Wrong data
+       presented as right is worse than no data.
+    2. ``_escape_promql_label_value`` — the regex then has to survive being a
+       double-quoted PromQL string literal.
+
+    ``re.escape`` would also be correct here but not equivalent: it escapes ``-``
+    too, rendering every service as ``user\\-service``. RE2 accepts that, but
+    these queries are echoed into the operator-facing decision trace, and a
+    hyphen is only ever a metacharacter inside a character class — which this
+    never builds. Escaping the real metacharacters keeps the common case
+    readable without giving anything up.
+    """
+    name = service[len("ecommerce-") :] if service.startswith("ecommerce-") else service
+    return _escape_promql_label_value(_RE2_META.sub(r"\\\1", name))
+
+
 def _build_promql_queries(alert: Alert) -> dict[str, str]:
     """Build a small bundle of PromQL queries that give the LLM real context.
 
@@ -523,7 +566,8 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
     outbound calls). 5-minute rate window leaves enough samples even when
     a service's traffic is sparse.
     """
-    svc = _escape_promql_label_value(alert.service.lower().strip())
+    raw_svc = alert.service.lower().strip()
+    svc = _escape_promql_label_value(raw_svc)
     metric = alert.metric.lower()
     queries: dict[str, str] = {
         # Request rate (calls/s) by service
@@ -546,12 +590,31 @@ def _build_promql_queries(alert: Alert) -> dict[str, str]:
         ),
     }
     # Metric-specific add-on for alerts that name CPU / memory explicitly.
+    #
+    # These read cAdvisor's per-container series, which is what the alert rules
+    # in infra/observability/prometheus-values.yaml already fire on. They used to
+    # read `otelcol_process_cpu_seconds_total` / `otelcol_process_memory_rss_bytes`
+    # — the OpenTelemetry Collector's own process metrics. That was doubly wrong:
+    # those describe the collector's resource use, not the alerting service's,
+    # and the collector no longer exists (the app exports OTLP straight to
+    # Jaeger). The series would simply never resolve, and a CPU alert would be
+    # enriched with nothing while looking like it had been enriched.
+    #
+    # cAdvisor labels by pod/namespace, not service_name, so match the pod-name
+    # prefix. Deployment pods are `<name>-<replicaset>-<pod>`, hence the `-.*`.
+    # The `ecommerce-` telemetry prefix is stripped because workload names carry
+    # no prefix: OTEL_SERVICE_NAME is `ecommerce-user-service`, the Deployment
+    # (and therefore the pod) is plain `user-service`.
     if "cpu" in metric:
         queries["cpu_seconds_rate"] = (
-            f'sum(rate(otelcol_process_cpu_seconds_total{{service_name="{svc}"}}[5m]))'
+            f"sum(rate(container_cpu_usage_seconds_total"
+            f'{{namespace="{_K8S_NAMESPACE}",pod=~"{_pod_prefix(raw_svc)}-.*",container!=""}}[5m]))'
         )
     elif "memory" in metric or "mem" in metric:
-        queries["memory_bytes"] = f'avg(otelcol_process_memory_rss_bytes{{service_name="{svc}"}})'
+        queries["memory_bytes"] = (
+            f"sum(container_memory_working_set_bytes"
+            f'{{namespace="{_K8S_NAMESPACE}",pod=~"{_pod_prefix(raw_svc)}-.*",container!=""}})'
+        )
     return queries
 
 

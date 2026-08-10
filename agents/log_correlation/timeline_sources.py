@@ -42,7 +42,12 @@ _K8S_ENABLED = os.environ.get("AIOPS_TIMELINE_K8S", "false").strip().lower() in 
     "true",
     "yes",
 }
-_NAMESPACE = os.environ.get("AIOPS_K8S_NAMESPACE", "otel-demo")
+# The system under test lives in `ecommerce`. `otel-demo` was the old default,
+# from when the astronomy shop was the SUT; that namespace still exists but now
+# holds only Loki, so the old default would list ConfigMaps and Events for
+# workloads that are not there and report "no change events" as though it had
+# looked in the right place.
+_NAMESPACE = os.environ.get("AIOPS_K8S_NAMESPACE", "ecommerce")
 _K8S_TIMEOUT = float(os.environ.get("AIOPS_TIMELINE_K8S_TIMEOUT", "3"))
 
 # Kubernetes Event reasons that represent a deployment-shaped change or failure.

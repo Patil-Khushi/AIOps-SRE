@@ -30,6 +30,13 @@ level := "optional" if input.action == "chatops.war_room.create"
 level := "none"     if input.action == "automation.runbook.simulate"
 level := "none"     if input.action == "automation.runbook.apply"
 
+# Clearing an injected demo fault. An INNER hop only: every route to it
+# (rca.fix_step.execute, automation.runbook.execute) is already "required", so
+# the human has approved upstream. Gating it again would refuse that approved
+# call, because the inner dispatch forwards no approval context. It can also
+# only ever recover — the provider refuses any target but "off".
+level := "none"     if input.action == "automation.fault.clear"
+
 # Phase: Proactive
 level := "none"     if input.action == "topology.discover"
 level := "optional" if input.action == "anomaly.report"

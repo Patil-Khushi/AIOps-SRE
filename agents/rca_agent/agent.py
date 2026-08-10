@@ -40,7 +40,7 @@ from agents.rca_agent.prompts import (
     CHANGE_EVIDENCE_BLOCK,
     CORRELATION_EVIDENCE_BLOCK,
     RCA_PROMPT_USER_V1,
-    SYSTEM_PROMPT_V5,
+    SYSTEM_PROMPT_V6,
 )
 from agents.rca_agent.remediation_map import flag_for_service
 from aiops.llm import Message
@@ -631,7 +631,7 @@ def analyze(
         # parse defensively. 1500 tokens covers reasoning + a 2-3 step plan.
         resp = llm_complete(
             messages=[
-                Message(role="system", content=SYSTEM_PROMPT_V5),
+                Message(role="system", content=SYSTEM_PROMPT_V6),
                 Message(role="user", content=user_prompt),
             ],
             provider=_RCA_PROVIDER,

@@ -12,7 +12,8 @@ stack, and hands the results to the model as evidence:
     Is a dependency gauge down?      -> mysql/postgres/redis_connection_status
     Are errors counting, and why?    -> orders_failed_total by reason
     Are calls timing out?            -> payment_timeout_total
-    Is latency the symptom?          -> order_latency_seconds p95
+    Which hop is slow?               -> order/login/payment p95
+    Is the container starved?        -> container CPU cores, memory vs limit
     Did the pod die, and how?        -> OOMKilled vs Error vs CrashLoopBackOff
     What is actually alerting?       -> Prometheus /alerts
     What changed just before?        -> scm.commit.history
@@ -118,11 +119,76 @@ def error_breakdown() -> list[str]:
     return out
 
 
+# p95 histograms each service publishes. order_latency_seconds is the one the
+# alert rule keys on; the other two are what localise a latency symptom to a
+# service. Without login/payment p95 the model can see "something is slow" but
+# not "the slow hop is /login", which is the difference between diagnosing
+# user_service.high_latency and guessing.
+_LATENCY_HISTOGRAMS = {
+    "order_latency_seconds_bucket": ("order", 2.0),
+    "login_latency_seconds_bucket": ("login (user-service)", None),
+    "payment_latency_seconds_bucket": ("payment (payment-service)", None),
+}
+
+# limits.cpu is 1000m on all three services, so CPU is reported in cores and
+# 1.0 == the limit. These are REPORTING floors, not alert thresholds — anything
+# quieter is idle noise that would bury the signal in a wall of near-zero rows.
+_CPU_REPORT_FLOOR_CORES = 0.2
+_MEM_REPORT_FLOOR_RATIO = 0.8
+
+
 def latency() -> list[str]:
-    p95 = _scalar("histogram_quantile(0.95, sum by (le) (rate(order_latency_seconds_bucket[5m])))")
-    if p95 is None:
-        return []
-    return [f"order p95 latency: {p95:.2f}s" + ("  (ABOVE the 2s threshold)" if p95 > 2 else "")]
+    out: list[str] = []
+    for bucket, (label, threshold) in _LATENCY_HISTOGRAMS.items():
+        p95 = _scalar(f"histogram_quantile(0.95, sum by (le) (rate({bucket}[5m])))")
+        if p95 is None:
+            continue
+        note = "  (ABOVE the 2s threshold)" if threshold and p95 > threshold else ""
+        out.append(f"{label} p95 latency: {p95:.2f}s{note}")
+    return out
+
+
+def resource_saturation() -> list[str]:
+    """Container CPU and memory against their limits.
+
+    The alert rules for CPU and memory fire on these series, and the prompt
+    forbids citing a metric absent from the observation block — so without this
+    the agent could see a "…CPUHigh" alert firing and have nothing to justify a
+    root cause with. It would either report low confidence or invent a number.
+
+    Keyed on `pod`, NOT `container`. This cluster's cAdvisor publishes only
+    pod-level rollups — the series carry `id`, `job`, `namespace` and `pod` and
+    no `container` label at all — so a `container="user-service"` selector
+    silently matches nothing. Each app pod runs a single container, so the
+    rollup is the container figure.
+
+    The `> 0` on the limit denominator is not decoration: an unlimited container
+    reports a limit of 0, and `x / 0` is `+Inf`, which clears any threshold.
+    """
+    out: list[str] = []
+    for row in _q(
+        'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="ecommerce"}[2m]))'
+    ):
+        pod = (row.get("metric") or {}).get("pod", "?")
+        try:
+            cores = float(row["value"][1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if cores >= _CPU_REPORT_FLOOR_CORES:
+            out.append(f"pod {pod}: cpu={cores:.2f} cores (limit 1)")
+
+    for row in _q(
+        'max by (pod) (container_memory_working_set_bytes{namespace="ecommerce"} / '
+        '(container_spec_memory_limit_bytes{namespace="ecommerce"} > 0))'
+    ):
+        pod = (row.get("metric") or {}).get("pod", "?")
+        try:
+            ratio = float(row["value"][1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if ratio >= _MEM_REPORT_FLOOR_RATIO:
+            out.append(f"pod {pod}: memory={ratio:.0%} of its limit")
+    return out
 
 
 def pod_state() -> list[str]:
@@ -223,6 +289,7 @@ def gather(service: str) -> dict[str, list[str]]:
         ("error_breakdown", error_breakdown),
         ("latency", latency),
         ("pod_state", pod_state),
+        ("resource_saturation", resource_saturation),
     ):
         try:
             if rows := fn():
@@ -250,6 +317,7 @@ def render(ev: dict[str, list[str]]) -> str:
         "dependency_health": "Dependency health (from the services' own gauges)",
         "error_breakdown": "Error counters by reason",
         "latency": "Latency",
+        "resource_saturation": "Container CPU and memory against limits",
         "pod_state": "Pod restarts and termination reasons",
         "recent_logs": "Recent error log lines",
         "recent_changes": "Recent commits touching this service",
@@ -265,6 +333,10 @@ def render(ev: dict[str, list[str]]) -> str:
         "firing_alerts": "no alerts are currently firing",
         "error_breakdown": "no error counter is incrementing; no order failures recorded",
         "pod_state": "no pod restarts and no abnormal terminations",
+        # Same reasoning as the others, and load-bearing for the CPU and memory
+        # alerts: "no container is saturated" is what rules OUT a resource cause
+        # when a shared alert could mean either that or a slow code path.
+        "resource_saturation": ("no container is above 20% CPU or 80% of its memory limit"),
     }
 
     parts = ["", "Live observation from the running system:"]

@@ -435,7 +435,130 @@ def _lookback_str(window: TimeWindow) -> str:
 
 # service_key -> (signal templates, suspect components). Each template is
 # (source, signature, severity, sample, offset_fraction-in-window).
+#
+# Keys are the output of ``_normalize_service``, which lowercases and strips a
+# trailing "service" — so ``ecommerce-order-service`` looks up ``ecommerce-order``.
+#
+# Two catalogs, matching the two call graphs in
+# ``aiops/tools/mock_providers._DEPENDENCIES_MAPPING``. The ``ecommerce-*``
+# entries are the current system under test; their signatures and log samples
+# are lifted from the real failure modes rather than invented — every ``logs``
+# sample below is a message string that genuinely appears in
+# ``demo/ecommerce/*/src/`` (grep for it), and each entry lines up with the
+# matching truth file in ``demo/ecommerce/truth_files/``. The unprefixed
+# astronomy-shop entries stay because the golden evals are keyed on them.
+#
+# Note the deliberate absence of a bare ``payment`` ecommerce alias:
+# ``payment-service`` normalises to ``payment``, which is already the astronomy
+# shop's key and is asserted on by the ``payment_failure`` golden case. The
+# ``ecommerce-payment`` key carries the ecommerce behaviour instead, and that is
+# the key the live telemetry labels actually produce.
 _SYNTH = {
+    # ── ecommerce SUT ───────────────────────────────────────────────────────
+    # user-service: the failure that matters is MySQL going away
+    # (truth_files/user_service_mysql_down.json).
+    "ecommerce-user": (
+        [
+            (
+                "logs",
+                "database connection failed",
+                "critical",
+                'level=error msg="database connection failed" op=login',
+                0.1,
+            ),
+            (
+                "traces",
+                "POST /login span ~30ms (error status)",
+                "error",
+                "trace_id=usr101 spans=2 status=ERROR",
+                0.25,
+            ),
+            (
+                "metrics",
+                "mysql_connection_status == 0",
+                "critical",
+                "mysql_connection_status=0 threshold=1",
+                0.5,
+            ),
+        ],
+        ["mysql"],
+    ),
+    # order-service: symptom here, cause downstream in payment
+    # (truth_files/order_service_payment_timeout.json).
+    "ecommerce-order": (
+        [
+            (
+                "logs",
+                "order failed: payment timeout",
+                "error",
+                'level=error msg="order failed: payment timeout" order_id=1042',
+                0.15,
+            ),
+            (
+                "traces",
+                "POST /orders -> POST /payments span ~5010ms (downstream stall)",
+                "error",
+                "trace_id=ord202 spans=6 error_span=ecommerce-payment-service",
+                0.2,
+            ),
+            (
+                "metrics",
+                "payment_timeout_total increasing (~1.8/s)",
+                "error",
+                "rate(payment_timeout_total)=1.8/s threshold=0",
+                0.5,
+            ),
+        ],
+        ["ecommerce-payment-service"],
+    ),
+    # payment-service: the external gateway is slow, payment is the victim
+    # (truth_files/payment_service_gateway_timeout.json).
+    "ecommerce-payment": (
+        [
+            (
+                "logs",
+                "payment failed: gateway timeout",
+                "error",
+                'level=error msg="payment failed: gateway timeout" order_id=1042',
+                0.1,
+            ),
+            (
+                "traces",
+                "POST /payments span ~5008ms (stalled on gateway)",
+                "error",
+                "trace_id=pay303 spans=3 error_span=ecommerce-mock-payment-gateway",
+                0.25,
+            ),
+            (
+                "metrics",
+                "gateway_timeout_total increasing (~2.1/s)",
+                "error",
+                "rate(gateway_timeout_total)=2.1/s threshold=0",
+                0.55,
+            ),
+        ],
+        ["ecommerce-mock-payment-gateway"],
+    ),
+    "ecommerce-frontend": (
+        [
+            (
+                "logs",
+                "upstream returned <n> for /api/orders",
+                "error",
+                'level=error msg="upstream 504" upstream=ecommerce-order-service',
+                0.1,
+            ),
+            (
+                "metrics",
+                "5xx error rate elevated (~2.2/s)",
+                "error",
+                "http 5xx rate=2.2/s",
+                0.5,
+            ),
+        ],
+        ["ecommerce-order-service"],
+    ),
+    # ── OpenTelemetry Demo (astronomy shop) — retained for the golden evals ──
     "product-catalog": (
         [
             (
