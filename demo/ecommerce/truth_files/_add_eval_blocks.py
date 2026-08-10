@@ -43,7 +43,14 @@ ALERTS: dict[str, tuple[str, str, float, float]] = {
     ),
     "payment_service_redis_down": ("EcommerceRedisDown", "redis_connection_status", 0.0, 1.0),
     "user_service_crashloop": ("EcommerceServiceDown", "up", 0.0, 1.0),
-    "order_service_memory_leak": ("EcommerceServiceDown", "up", 0.0, 1.0),
+    # Fires on the memory climb (working_set/limit) rather than after the
+    # OOMKill has already taken the pod down, so the value is a ratio.
+    "order_service_memory_leak": (
+        "EcommerceOrderServiceMemoryHigh",
+        "container_memory_working_set_bytes",
+        0.97,
+        0.9,
+    ),
     "order_service_payment_timeout": (
         "EcommercePaymentTimeouts",
         "payment_timeout_total",
@@ -59,14 +66,31 @@ ALERTS: dict[str, tuple[str, str, float, float]] = {
     "order_service_http_500": ("EcommerceOrderErrorRateHigh", "orders_failed_total", 1.84, 0.0),
     "payment_service_http_500": ("EcommerceOrderErrorRateHigh", "orders_failed_total", 1.6, 0.0),
     "user_service_high_latency": ("EcommerceOrderLatencyHigh", "order_latency_seconds", 10.4, 2.0),
-    "user_service_high_cpu": ("EcommerceOrderLatencyHigh", "order_latency_seconds", 4.2, 2.0),
-    "payment_service_high_cpu": ("EcommerceOrderLatencyHigh", "order_latency_seconds", 3.8, 2.0),
+    # CPU scenarios report cores against a 1-core limit. They previously claimed
+    # EcommerceOrderLatencyHigh, an order-service p95 rule that neither fault
+    # moves. The injected burn caps at 0.85 by design.
+    "user_service_high_cpu": (
+        "EcommerceUserServiceCPUHigh",
+        "container_cpu_usage_seconds_total",
+        0.85,
+        0.5,
+    ),
+    "payment_service_high_cpu": (
+        "EcommercePaymentServiceCPUHigh",
+        "container_cpu_usage_seconds_total",
+        0.85,
+        0.5,
+    ),
 }
 
 # The truth files' own `severity` field drives the expected verdict. This is the
 # rule-based path in _classify_severity_rule_based: a severity_hint containing
 # "critical" returns Sev-1 at 0.95; "high" returns Sev-2 at 0.90.
-SEVERITY_TO_VERDICT = {"critical": "Sev-1", "high": "Sev-2"}
+#
+# "warning" is included because tests/test_scenarios_yaml.py accepts it as a
+# valid scenario severity — without it, authoring a scenario that way crashes
+# this generator with a KeyError instead of producing a truth file.
+SEVERITY_TO_VERDICT = {"critical": "Sev-1", "high": "Sev-2", "warning": "Sev-3"}
 
 # Expected on-call team per service.
 #
