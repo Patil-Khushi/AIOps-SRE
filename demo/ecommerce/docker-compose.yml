@@ -112,17 +112,6 @@ services:
   # not a datastore — the "no second Prometheus/Loki/Tempo here" rule in the
   # README still holds. If Loki is unreachable it retries with backoff and the
   # app is unaffected, so this is safe to leave enabled.
-  promtail:
-    image: grafana/promtail:3.0.0
-    command: -config.file=/etc/promtail/config.yml
-    volumes:
-      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
-      # Read-only Docker API access: how promtail discovers containers and
-      # reads their logs without touching the application code.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - ecommerce
-
   # --------------------------------------------------------------- Databases
   mysql:
     image: mysql:8.0

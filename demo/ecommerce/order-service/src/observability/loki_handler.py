@@ -73,6 +73,7 @@ class LokiHandler(logging.Handler):
         self._labels = dict(labels)
         self._queue: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX_RECORDS)
         self._dropped = 0
+        self._drop_lock = threading.Lock()
         self._muted_until = 0.0
         # Loki drops an entry whose (timestamp, line) exactly matches one already
         # in the stream. ``record.created`` resolves to ~15ms on Windows, so a
@@ -83,9 +84,7 @@ class LokiHandler(logging.Handler):
         # ascending at a resolution no one will ever read.
         self._ts_lock = threading.Lock()
         self._last_ts = 0
-        self._thread = threading.Thread(
-            target=self._run, name="loki-shipper", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="loki-shipper", daemon=True)
         self._thread.start()
         atexit.register(self.close)
 
@@ -112,7 +111,8 @@ class LokiHandler(logging.Handler):
                 self._queue.put_nowait(item)
             except (queue.Empty, queue.Full):
                 pass
-            self._dropped += 1
+            with self._drop_lock:
+                self._dropped += 1
 
     # -- consumer side (background thread) ----------------------------------
 
@@ -142,6 +142,10 @@ class LokiHandler(logging.Handler):
             return
         now = time.monotonic()
         if now < self._muted_until:
+            # Batch being skipped due to backoff: count it as dropped so RA-007
+            # sees the full impact of the Loki outage, not just queue overflows.
+            with self._drop_lock:
+                self._dropped += len(batch)
             return
 
         # One Loki stream per distinct label set. Only `level` varies per
@@ -155,7 +159,8 @@ class LokiHandler(logging.Handler):
         # error-severity lines to decide whether there was a spike, and a
         # silently truncated stream would understate an incident at exactly the
         # moment the service was loudest. Reported once, then the counter clears.
-        dropped, self._dropped = self._dropped, 0
+        with self._drop_lock:
+            dropped, self._dropped = self._dropped, 0
         if dropped:
             streams.setdefault("warning", []).append(
                 [
@@ -200,8 +205,9 @@ class LokiHandler(logging.Handler):
             self._muted_until = now + _BACKOFF_SECONDS
             # Put the drop count back — this push carried the notice and did not
             # land, so zeroing it here would lose the only record that anything
-            # was discarded.
-            self._dropped += dropped
+            # was discarded. Also count this batch as dropped since it failed to send.
+            with self._drop_lock:
+                self._dropped += dropped + len(batch)
 
     def close(self) -> None:
         if getattr(self, "_closed", False):
@@ -215,9 +221,7 @@ class LokiHandler(logging.Handler):
         super().close()
 
 
-def build_loki_handler(
-    formatter: logging.Formatter, service_name: str
-) -> LokiHandler | None:
+def build_loki_handler(formatter: logging.Formatter, service_name: str) -> LokiHandler | None:
     """Construct the handler from the environment, or ``None`` if disabled.
 
     Returns ``None`` when ``LOKI_URL`` is unset — the same "blank disables it"
