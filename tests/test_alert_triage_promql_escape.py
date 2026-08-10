@@ -59,27 +59,41 @@ def _alert_with_service(service: str) -> Any:
     )
 
 
+# Queries come in two families with different matchers, so a blanket
+# "every query contains service_name=" assertion no longer holds:
+#
+#   - OTLP HTTP metrics are labelled by service and use an exact matcher,
+#     ``service_name="<svc>"``.
+#   - cAdvisor container metrics are labelled by pod, not service, and use a
+#     regex matcher, ``pod=~"<workload>-.*"``. They also drop the ``ecommerce-``
+#     telemetry prefix, because the Deployment carries no prefix.
+#
+# Both must survive a hostile service name; the assertion just has to know
+# which family it is looking at.
+_POD_MATCHER_QUERIES = {"cpu_seconds_rate", "memory_bytes"}
+
+
+def _assert_quotes_balanced(name: str, q: str) -> None:
+    """No unescaped quote may break out of a label-matcher value."""
+    unescaped_quotes = sum(1 for i, c in enumerate(q) if c == '"' and (i == 0 or q[i - 1] != "\\"))
+    assert unescaped_quotes % 2 == 0, (
+        f"{name}: odd number of unescaped quotes — matcher broken: {q}"
+    )
+
+
 def test_service_with_quote_is_escaped_in_promql(monkeypatch) -> None:
     """A service name containing ``"`` must NOT terminate the label-matcher
-    string. Result: ``service_name="foo\\"bar"`` — exactly one matcher,
-    with the inner quote escaped."""
+    string — in either matcher family."""
     from agents.alert_triage.agent import _build_promql_queries
 
     queries = _build_promql_queries(_alert_with_service('foo"bar'))
+    assert _POD_MATCHER_QUERIES & set(queries), "expected a container-metric query for metric=cpu"
     for name, q in queries.items():
-        # The literal escaped form appears in every query.
-        assert 'service_name="foo\\"bar"' in q, f"{name}: {q}"
-        # Sanity: there are exactly two unescaped `"` characters bracketing
-        # the value — no third one from a broken-out matcher.
-        # Count quotes that are NOT preceded by a backslash.
-        unescaped_quotes = sum(
-            1 for i, c in enumerate(q) if c == '"' and (i == 0 or q[i - 1] != "\\")
-        )
-        # Each query has multiple service_name="..." matchers (and possibly
-        # http_status_code=~"..."), so just verify it's even.
-        assert unescaped_quotes % 2 == 0, (
-            f"{name}: odd number of unescaped quotes — matcher broken: {q}"
-        )
+        if name in _POD_MATCHER_QUERIES:
+            assert 'pod=~"foo\\"bar-.*"' in q, f"{name}: {q}"
+        else:
+            assert 'service_name="foo\\"bar"' in q, f"{name}: {q}"
+        _assert_quotes_balanced(name, q)
 
 
 def test_service_with_backslash_is_escaped(monkeypatch) -> None:
@@ -87,7 +101,55 @@ def test_service_with_backslash_is_escaped(monkeypatch) -> None:
 
     queries = _build_promql_queries(_alert_with_service("foo\\bar"))
     for name, q in queries.items():
-        assert 'service_name="foo\\\\bar"' in q, f"{name}: {q}"
+        if name in _POD_MATCHER_QUERIES:
+            # Two escapes compose here: the backslash is escaped once for RE2,
+            # then both are escaped again for the PromQL string literal.
+            assert 'pod=~"foo\\\\\\\\bar-.*"' in q, f"{name}: {q}"
+        else:
+            assert 'service_name="foo\\\\bar"' in q, f"{name}: {q}"
+        _assert_quotes_balanced(name, q)
+
+
+def test_pod_matcher_neutralizes_regex_metacharacters() -> None:
+    """The pod matcher is a regex, so a service name of ``.*`` must not widen
+    the match to every pod in the namespace and enrich the alert with a
+    neighbouring service's CPU."""
+    from agents.alert_triage.agent import _build_promql_queries
+
+    q = _build_promql_queries(_alert_with_service(".*"))["cpu_seconds_rate"]
+    assert 'pod=~"\\\\.\\\\*-.*"' in q, q
+    # The bare, executable form must not survive anywhere in the matcher value.
+    matcher = q.split('pod=~"', 1)[1].split('",', 1)[0]
+    assert matcher == "\\\\.\\\\*-.*", matcher
+
+
+def test_pod_matcher_strips_the_ecommerce_telemetry_prefix() -> None:
+    """``OTEL_SERVICE_NAME`` is ``ecommerce-user-service``; the Deployment — and
+    therefore the pod — is plain ``user-service``. Without the strip, the pod
+    matcher never matches and CPU/memory enrichment silently returns nothing."""
+    from agents.alert_triage.agent import _build_promql_queries
+
+    q = _build_promql_queries(_alert_with_service("ecommerce-user-service"))["cpu_seconds_rate"]
+    assert 'pod=~"user-service-.*"' in q, q
+
+
+def test_container_queries_replaced_collector_self_metrics() -> None:
+    """The CPU/memory enrichment used to read ``otelcol_process_*`` — the
+    OpenTelemetry Collector's own process metrics. Those described the
+    collector's resource use rather than the alerting service's, and the
+    collector no longer exists (services export OTLP straight to Jaeger), so the
+    series would never resolve."""
+    from agents.alert_triage.agent import _build_promql_queries
+
+    cpu = _build_promql_queries(_alert_with_service("order-service"))["cpu_seconds_rate"]
+    assert "otelcol_" not in cpu, cpu
+    assert "container_cpu_usage_seconds_total" in cpu, cpu
+
+    mem_alert = _alert_with_service("order-service")
+    mem_alert.metric = "memory"
+    mem = _build_promql_queries(mem_alert)["memory_bytes"]
+    assert "otelcol_" not in mem, mem
+    assert "container_memory_working_set_bytes" in mem, mem
 
 
 def test_query_injection_attempt_is_neutralized(monkeypatch) -> None:

@@ -396,3 +396,135 @@ signal to weigh — subject to the correlation-not-causation rule given with the
 recent-changes evidence — never a directive.""",
 )
 assert SYSTEM_PROMPT_V5 != SYSTEM_PROMPT_V4  # guards against a silent typo above
+
+# V6 — resource saturation becomes observable, and three alerts change meaning.
+#
+# Adding CPU and memory rules to the ecommerce group split EcommerceOrderLatencyHigh
+# (which no longer covers CPU) and gave the memory leak an alert that fires on
+# the climb rather than after the pod is already gone. At the same time
+# evidence.py started collecting container CPU and memory, so the disambiguation
+# advice "use which service's CPU is saturated" finally refers to something the
+# model can actually see — before, it named evidence the system never provided
+# while EVIDENCE RULE 2 forbade asserting it.
+#
+# Three edits, applied as separate replaces so a drift in any one of them fails
+# loudly at import rather than silently shipping a half-updated prompt.
+
+_V6_MECHANISMS_OLD = """HOW FAILURES ACTUALLY OCCUR HERE — exactly two mechanisms:"""
+_V6_MECHANISMS_NEW = """HOW FAILURES ACTUALLY OCCUR HERE — three mechanisms:"""
+
+_V6_THIRD_MECHANISM_ANCHOR = """DISAMBIGUATION"""
+_V6_THIRD_MECHANISM = """3. An out-of-band process runs INSIDE a pod, leaving the Deployment spec
+   untouched. Nothing in the pod template changes, so there is no env var to
+   read and no toggle to unset — the tell-tale is resource or dependency
+   pressure with a clean application configuration.
+     user_service.pool_exhaustion   holds MySQL sessions until the server's
+                                    max_connections is exhausted; login fails
+                                    with db_error while MySQL itself is UP
+     order_service.memory_exhaust   holds ~200MB resident until the container
+                                    sits at its memory limit. Does NOT OOMKill:
+                                    the kernel reclaims, so restartCount stays
+                                    put
+     payment_service.dns_failure    overwrites /etc/resolv.conf; outbound name
+                                    resolution fails
+   For these the remediation is to kill the holding process or restart the pod.
+   Do NOT propose unsetting an environment variable — there is not one.
+
+DISAMBIGUATION"""
+
+_V6_DISAMBIGUATION_OLD = """DISAMBIGUATION — these pairs share an alert, so use the evidence, not the alert
+name:
+- EcommerceServiceDown fires for BOTH crashloop and memory_leak_oom.
+  terminated reason=OOMKilled -> memory leak. reason=Error with no HTTP log
+  lines -> crashloop.
+- EcommerceOrderLatencyHigh fires for user_service.high_latency,
+  user_service.high_cpu and payment_service.high_cpu. Use which service's CPU
+  is saturated, and whether /login or /payments is the slow hop.
+- EcommerceOrderErrorRateHigh fires for order_service.http_500 and
+  payment_service.http_500. Use the `reason` label: injected_500 means the
+  order service failed on its own; payment_failed means payment rejected it.
+- EcommercePaymentTimeouts: the fault is on mock-payment-gateway, NOT on the
+  service that reports the timeout. Name the gateway as the cause."""
+
+_V6_KEYS_OLD = """                  `flag` MUST be one of these exact keys:
+                    user_service.mysql_down       user_service.crashloop
+                    user_service.high_latency     user_service.high_cpu
+                    order_service.postgres_down   order_service.http_500
+                    order_service.memory_leak_oom order_service.payment_timeout
+                    payment_service.redis_down    payment_service.http_500
+                    payment_service.high_cpu      payment_service.gateway_timeout"""
+
+_V6_KEYS_NEW = """                  `flag` MUST be one of these exact keys:
+                    user_service.mysql_down       user_service.crashloop
+                    user_service.high_latency     user_service.high_cpu
+                    user_service.pool_exhaustion
+                    order_service.postgres_down   order_service.http_500
+                    order_service.memory_leak_oom order_service.payment_timeout
+                    order_service.memory_exhaust
+                    payment_service.redis_down    payment_service.http_500
+                    payment_service.high_cpu      payment_service.gateway_timeout
+                    payment_service.dns_failure"""
+
+_V6_DISAMBIGUATION_NEW = """DISAMBIGUATION — several alerts are shared, so use the evidence, not the alert
+name:
+- EcommerceServiceDown fires for BOTH crashloop and memory_leak_oom.
+  terminated reason=OOMKilled -> memory leak. reason=Error with no HTTP log
+  lines -> crashloop.
+- EcommerceOrderLatencyHigh now means user_service.high_latency specifically:
+  order p95 crosses 2s because orders block on the slow /login hop. CPU has its
+  own alerts and no longer shares this one. Confirm with login p95 elevated,
+  CPU normal, dependency gauges REACHABLE.
+- EcommerceUserServiceCPUHigh / EcommercePaymentServiceCPUHigh each name their
+  own service, so there is no cross-service ambiguity. Confirm from the CPU line
+  in the observation block — roughly 0.85 cores against a 1-core limit — with
+  that service's own latency elevated. If no CPU line appears, the cause is not
+  CPU: the observation block reports every container above 20% of a core.
+- EcommerceOrderServiceMemoryHigh fires for BOTH order_service.memory_leak_oom
+  and order_service.memory_exhaust. Do NOT separate them by restart count: the
+  external one does not OOMKill, because the kernel reclaims before the limit
+  bites. terminated reason=OOMKilled present -> the application leak.
+  Memory pinned at the limit with NO restart and NO OOMKill -> external
+  pressure, application heap normal.
+- EcommerceRedisDown alone does NOT establish that Redis is down. payment-service
+  re-pings Redis inside its /metrics handler and zeroes the gauge on ANY
+  exception, so anything that breaks name resolution drives it to 0 within one
+  scrape while Redis is perfectly healthy. If EcommercePaymentGatewayUnreachable
+  is also firing, or payment_failures_total reason=gateway_error is moving, the
+  cause is DNS on payment-service. A genuine Redis outage shows reason=redis_error
+  and leaves the gateway path working.
+- EcommerceUserLoginFailures fires for BOTH user_service.pool_exhaustion and
+  user_service.mysql_down. mysql_connection_status pinned at 0 with
+  EcommerceMySQLDown firing -> MySQL is scaled to zero. The gauge flapping while
+  MySQL is up -> the server's connection limit is exhausted by an external
+  client and user-service is the victim, not the cause.
+- EcommerceOrderErrorRateHigh fires for order_service.http_500 and
+  payment_service.http_500. Use the `reason` label: injected_500 means the
+  order service failed on its own; payment_failed means payment rejected it.
+- EcommercePaymentTimeouts: the fault is on mock-payment-gateway, NOT on the
+  service that reports the timeout. Name the gateway as the cause."""
+
+SYSTEM_PROMPT_V6 = (
+    SYSTEM_PROMPT_V5.replace(_V6_MECHANISMS_OLD, _V6_MECHANISMS_NEW)
+    .replace(_V6_THIRD_MECHANISM_ANCHOR, _V6_THIRD_MECHANISM, 1)
+    .replace(_V6_DISAMBIGUATION_OLD, _V6_DISAMBIGUATION_NEW)
+    .replace(_V6_KEYS_OLD, _V6_KEYS_NEW)
+)
+# Each replace must have landed. A silent no-op would ship a prompt that still
+# describes the old alert semantics, which is worse than an import error.
+assert _V6_MECHANISMS_NEW in SYSTEM_PROMPT_V6
+assert _V6_DISAMBIGUATION_OLD not in SYSTEM_PROMPT_V6
+assert _V6_KEYS_OLD not in SYSTEM_PROMPT_V6
+for _key in (
+    "user_service.pool_exhaustion",
+    "order_service.memory_exhaust",
+    "payment_service.dns_failure",
+):
+    assert _key in SYSTEM_PROMPT_V6, _key
+for _alert in (
+    "EcommerceUserServiceCPUHigh",
+    "EcommercePaymentServiceCPUHigh",
+    "EcommerceOrderServiceMemoryHigh",
+    "EcommerceUserLoginFailures",
+    "EcommercePaymentGatewayUnreachable",
+):
+    assert _alert in SYSTEM_PROMPT_V6, _alert

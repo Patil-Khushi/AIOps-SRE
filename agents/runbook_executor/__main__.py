@@ -30,6 +30,26 @@ from aiops.policy import (
 app = typer.Typer(add_completion=False, help=__doc__)
 
 
+def _register_demo_providers() -> None:
+    """Wire up the demo-supplied ``automation.fault.clear`` provider.
+
+    Lives here rather than in ``agents/runbook_executor/agent.py`` on purpose:
+    the agent package must stay independently sellable, and importing ``demo``
+    from it would drag the whole system-under-test into any install. This module
+    is explicitly the *demo* CLI runner, so the import belongs at this layer.
+
+    Tolerates absence so an install that ships ``agents/`` without ``demo/``
+    still runs — a ``clear_fault`` step then fails honestly rather than
+    reporting success against a provider that was never there.
+    """
+    try:
+        from demo.providers import register_demo_providers
+    except ImportError:
+        rprint("[yellow]demo providers unavailable — clear_fault steps will fail[/yellow]")
+        return
+    register_demo_providers()
+
+
 @app.command()
 def main(
     service: str = typer.Option("payment", "--service", "-s"),
@@ -42,6 +62,8 @@ def main(
     approver: str = typer.Option("demo-cli", "--approver"),
     no_approve: bool = typer.Option(False, "--no-approve", help="Never approve; expect denied."),
 ) -> None:
+    _register_demo_providers()
+
     reg = get_approval_registry()
     if not no_approve:
         get_gate().set_approver(ApprovalRequester(reg, timeout_seconds=timeout))

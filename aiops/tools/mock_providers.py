@@ -248,9 +248,53 @@ def mock_oncall_lookup(team: str) -> ToolResult:
     )
 
 
-# Service → list of services it depends on. Curated against the OTel demo
-# call graph so RA-002's dependencies field has realistic content.
+# Service → list of services it depends on. Two call graphs live here.
+#
+# The `ecommerce-*` block is the CURRENT system under test (demo/ecommerce/) and
+# is derived from the real wiring, not sketched: each edge below corresponds to
+# an env var the caller actually reads — USER_SERVICE_URL / PAYMENT_SERVICE_URL
+# in order-service, GATEWAY_URL + REDIS_HOST in payment-service, MYSQL_HOST in
+# user-service (see demo/ecommerce/k8s/01-config.yaml and docker-compose.yml).
+#
+# The unprefixed block is the OpenTelemetry Demo (astronomy shop) call graph.
+# Those workloads are scaled to zero, but the entries stay: the log_correlation
+# golden evals in agents/log_correlation/evals/golden.json are keyed on these
+# names and gate CI at --min-pass-rate 0.85. Deleting them would fail the build
+# to no purpose. They are inert once nothing queries those service names.
+#
+# Both naming forms of the ecommerce services are listed because both are in
+# live use: OTEL_SERVICE_NAME (and therefore the Prometheus / Loki / Jaeger
+# `service_name` label) carries the `ecommerce-` prefix, while the truth files,
+# scenario YAMLs and alert payloads in demo/ecommerce/ use the bare name.
+# Lookup is an exact dict hit on a lowercased key — no normalisation — so an
+# alias that is missing simply resolves to "no topology".
 _DEPENDENCIES_MAPPING: dict[str, list[str]] = {
+    # ── ecommerce SUT — telemetry naming (OTEL_SERVICE_NAME) ────────────────
+    "ecommerce-frontend": ["ecommerce-user-service", "ecommerce-order-service"],
+    "ecommerce-user-service": ["mysql"],
+    "ecommerce-order-service": [
+        "ecommerce-user-service",
+        "ecommerce-payment-service",
+        "postgres",
+    ],
+    "ecommerce-payment-service": ["ecommerce-mock-payment-gateway", "redis"],
+    "ecommerce-mock-payment-gateway": [],
+    # ── ecommerce SUT — bare naming (truth files, scenarios, alert payloads) ─
+    # No bare "frontend" alias: that key belongs to the astronomy shop below and
+    # the ecommerce SPA is only ever labelled `ecommerce-frontend`. Claiming the
+    # shared key would silently hand astronomy-shop dependencies to whichever
+    # caller asked first.
+    "user-service": ["mysql"],
+    "order-service": ["user-service", "payment-service", "postgres"],
+    "payment-service": ["mock-payment-gateway", "redis"],
+    "mock-payment-gateway": [],
+    # Datastores are leaves: they are the bottom of this graph, and saying so
+    # explicitly is not the same as failing to find them. `matched` in the
+    # ToolResult metadata is what distinguishes "leaf" from "unknown service".
+    "mysql": [],
+    "postgres": [],
+    "redis": [],
+    # ── OpenTelemetry Demo (astronomy shop) — retained for the golden evals ──
     "frontend": [
         "cart",
         "checkout",
@@ -278,42 +322,52 @@ _DEPENDENCIES_MAPPING: dict[str, list[str]] = {
 }
 
 
-def _maybe_reset_feature_flag(action: str, target: str) -> dict[str, Any] | None:
-    """If a runbook step clears an injected fault (``action='clear_fault'``,
-    ``target='fault/<failure_key>'``), perform the REAL recovery through the
-    ``automation.fault.clear`` seam so the injected scenario actually clears —
-    instead of a mock no-op.
+def _maybe_clear_fault(action: str, target: str) -> dict[str, Any] | None:
+    """Perform the REAL recovery for a fault-clearing runbook step.
 
-    Was ``reset_feature_flag`` / ``flag/<name>`` when faults were flagd flags.
-    The old spelling is still accepted so a hand-written runbook that predates
-    the migration keeps working rather than silently becoming a mock no-op.
+    Recognises ``action='clear_fault'`` with ``target='fault/<failure_key>'``
+    and dispatches to the ``automation.fault.clear`` seam. Returns ``None`` when
+    the step is not a fault clear, so the caller falls back to the normal mock.
 
-    Returns ``None`` when the step isn't a fault clear (caller falls back to the
-    normal mock). Degrades gracefully: if the seam is unreachable (off-cluster)
-    it reports ``seam_ok=False`` but the *step* still succeeds, so the executor
-    demo completes either way."""
+    ``reset_feature_flag`` / ``flag/<name>`` is the pre-migration spelling from
+    when faults were flagd flags; still accepted so a hand-written runbook that
+    predates the migration keeps working rather than silently becoming a no-op.
+
+    **This never reports success it did not achieve.** ``fault_cleared`` says
+    whether the fault is actually gone, and the caller turns that straight into
+    ``ToolResult.ok``. It previously returned ``feature_flag_reset: True``
+    unconditionally with the real outcome buried in ``seam_ok``, which nothing
+    read — so a human-approved destructive step reported "executed" while the
+    fault was still firing. Tests that need this to pass off-cluster register a
+    stub provider for the capability rather than relying on the tool to lie.
+    """
     if action not in ("clear_fault", "reset_feature_flag"):
         return None
     if not (target.startswith("fault/") or target.startswith("flag/")):
         return None
-    flag = target.split("/", 1)[1].strip()
-    if not flag:
+    fault = target.split("/", 1)[1].strip()
+    if not fault:
         return None
-    seam_ok, detail = False, "fault-clear seam unavailable — simulated"
-    try:
-        from aiops.tools import get_registry
 
-        res = get_registry().call("automation.fault.clear", fault=flag, target="off")
-        seam_ok = bool(res.ok)
-        detail = res.data if res.ok else (res.error or detail)
-    except Exception as exc:  # registry/seam not wired in this context
-        detail = f"{type(exc).__name__}: {exc}"
+    from aiops.tools import get_registry
+
+    try:
+        res = get_registry().call("automation.fault.clear", fault=fault, target="off")
+    except Exception as exc:  # boundary: a broken seam must not crash the executor
+        return {
+            "fault_cleared": False,
+            "fault": fault,
+            "seam_ok": False,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
+
+    missing = bool((res.metadata or {}).get("missing_provider"))
     return {
-        "feature_flag_reset": True,
-        "flag": flag,
-        "variant": "off",
-        "seam_ok": seam_ok,
-        "detail": detail,
+        "fault_cleared": bool(res.ok),
+        "fault": fault,
+        "seam_ok": bool(res.ok),
+        "missing_provider": missing,
+        "detail": res.data if res.ok else (res.error or "fault-clear seam reported failure"),
     }
 
 
@@ -394,19 +448,31 @@ def mock_runbook_execute(
         "actual_side_effects": _side_effects_for(action, target),
         "duration_ms": _estimated_duration_ms(action),
     }
-    # A real feature-flag reset is performed ONLY here, on the REQUIRED-HITL
+    # A real fault clear is performed ONLY here, on the REQUIRED-HITL
     # ``execute`` capability — so the live mutation physically cannot fire
     # without passing the human-approval gate (CLAUDE.md principle #3). The
-    # ``apply`` (autonomous) path never mutates. Forward execute resets the flag
-    # to off; a rollback re-injects it (back to the variant it was at).
+    # ``apply`` (autonomous) path never mutates. Forward execute clears the
+    # fault; a rollback would re-inject it, which this capability refuses.
+    #
+    # `ok` here answers "is the fault cleared?", never "did the mock run?".
+    # This is the one action on this path with a real side effect, and it was
+    # approved by a human — overstating it is the worst outcome available.
+    # Everything else on this path stays a mock and keeps returning ok=True.
     if mode != "rollback":
-        ff = _maybe_reset_feature_flag(action, target)
-        if ff is not None:
-            data |= ff
+        cleared = _maybe_clear_fault(action, target)
+        if cleared is not None:
+            data |= cleared
+            if cleared["fault_cleared"]:
+                provider = "ecommerce-fault-seam"
+            elif cleared.get("missing_provider"):
+                provider = "unregistered"
+            else:
+                provider = "seam-failed"
             return ToolResult(
-                ok=True,
+                ok=cleared["fault_cleared"],
                 data=data,
-                metadata={"provider": "feature-flags-seam" if ff["seam_ok"] else "mock"},
+                error=None if cleared["fault_cleared"] else str(cleared["detail"]),
+                metadata={"provider": provider, "fault_cleared": cleared["fault_cleared"]},
             )
     return ToolResult(ok=True, data=data, metadata={"provider": "mock"})
 

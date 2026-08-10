@@ -71,11 +71,66 @@ def test_tool_registry_dispatches_by_capability():
     assert result.metadata["provider"] == "mock"
 
 
-def test_tool_registry_unknown_capability():
+def test_call_on_unregistered_capability_returns_structured_result():
+    """``call()`` reports a missing provider, it does not raise.
+
+    Previously the KeyError escaped and each caller invented its own handling —
+    or, worse, an inner ``call()`` inside a tool body got laundered by the outer
+    ``call()``'s except-Exception into ``error="KeyError: ..."``, which is what
+    an operator saw after approving a fix. The marker in metadata is the
+    contract callers branch on.
+    """
+    from aiops.tools import get_registry
+
+    res = get_registry().call("does.not.exist")
+    assert res.ok is False
+    assert res.metadata["missing_provider"] is True
+    assert res.metadata["capability"] == "does.not.exist"
+    assert "does.not.exist" in (res.error or "")
+
+
+def test_by_capability_still_raises_for_probe_callers():
+    """``by_capability`` must keep raising — several callers probe with it.
+
+    aiops/tools/topology/providers/{cmdb,otel,snow}.py,
+    aiops/tools/change_context/providers.py and agents/alert_triage/agent.py all
+    call it directly and catch KeyError to report "capability not wired up".
+    Softening it to return None would make every one of them report healthy for
+    a capability that cannot run, and the topology resolver would burn a tier on
+    a call that must fail.
+    """
     from aiops.tools import get_registry
 
     with pytest.raises(KeyError):
-        get_registry().call("does.not.exist")
+        get_registry().by_capability("does.not.exist")
+
+
+def test_missing_provider_short_circuits_before_the_hitl_gate(monkeypatch):
+    """A capability nobody can serve must not open an approval prompt.
+
+    ``call()`` resolves the provider before consulting the gate. Reversed, an
+    operator would be asked to approve an action that provably cannot run, and
+    the call would block for the full approval timeout before failing.
+    """
+    from aiops.policy import ApproverResult, get_gate
+    from aiops.tools import get_registry, mock_providers  # noqa: F401
+
+    asked = {"n": 0}
+
+    def _counting_approver(action, ctx):
+        asked["n"] += 1
+        return ApproverResult(approver="should-not-have-been-asked")
+
+    get_gate().set_approver(_counting_approver)
+    reg = get_registry()
+    # automation.runbook.execute is REQUIRED-level; drop its provider so the
+    # lookup fails while the gate would otherwise demand approval.
+    monkeypatch.delitem(reg._active, "automation.runbook.execute", raising=False)
+
+    res = reg.call("automation.runbook.execute", runbook_id="rb-1")
+    assert res.ok is False
+    assert res.metadata["missing_provider"] is True
+    assert asked["n"] == 0
 
 
 # --- aiops.policy -------------------------------------------------------

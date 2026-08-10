@@ -157,6 +157,22 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "knowledge.publish": AutonomyLevel.REQUIRED,
     "chaos.experiment.run": AutonomyLevel.REQUIRED,
     "rca.fix_step.execute": AutonomyLevel.REQUIRED,
+    # Clearing an injected demo fault. NONE is deliberate, and listed explicitly
+    # rather than left to the AIOPS_HITL_DEFAULT fall-through, for three reasons:
+    #
+    #  1. It is an INNER hop. Both routes that reach it — rca.fix_step.execute
+    #     and automation.runbook.execute — are already REQUIRED, so the human
+    #     has approved before this capability is ever called. Gating it again
+    #     would deadlock that approved call: the inner dispatch forwards no
+    #     hitl_context, so it would hit _no_approver and be refused.
+    #  2. The RCA agent PROBES it. agents/rca_agent/agent.py::_live_flag_names
+    #     calls it with a bogus key on every grounding pass to read the valid
+    #     failure keys out of the error metadata. At REQUIRED each probe would
+    #     mint a pending approval and block for the approval timeout, flooding
+    #     the queue with requests for a fix nobody asked for.
+    #  3. It can only ever RECOVER. demo/ui/fault_clear.py refuses any target
+    #     but "off" — injecting a fault is a scenario action, not a remediation.
+    "automation.fault.clear": AutonomyLevel.NONE,
     # Resolution verifier → close ticket (PRS-007 step 2): a human approves the
     # "verified resolved — close ticket?" card before ServiceNow is touched.
     "itsm.ticket.close": AutonomyLevel.REQUIRED,

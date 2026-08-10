@@ -43,6 +43,29 @@ def test_none_level_action_passes_through(monkeypatch):
     assert "blocked_by" not in res.metadata
 
 
+# ─── automation.fault.clear autonomy pin ──────────────────────────────────
+
+
+def test_fault_clear_is_explicitly_autonomous(monkeypatch):
+    """``automation.fault.clear`` must stay NONE, even under a stricter default.
+
+    It is an inner hop: both routes to it (``rca.fix_step.execute`` and
+    ``automation.runbook.execute``) are REQUIRED, so the human has already
+    approved by the time it runs, and the inner dispatch forwards no
+    hitl_context — gating it again would refuse an approved fix. The RCA agent
+    also probes it on every grounding pass, which at REQUIRED would mint a
+    pending approval per probe.
+
+    Pinned rather than left to AIOPS_HITL_DEFAULT so setting that to "required"
+    cannot silently deadlock the remediation path.
+    """
+    gate = get_gate()
+    assert gate.level_for("automation.fault.clear") is AutonomyLevel.NONE
+
+    monkeypatch.setenv("AIOPS_HITL_DEFAULT", "required")
+    assert gate.level_for("automation.fault.clear") is AutonomyLevel.NONE
+
+
 # ─── HITL-4 (#104) public approver setter / getter ────────────────────────
 
 
