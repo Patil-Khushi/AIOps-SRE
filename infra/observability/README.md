@@ -1,8 +1,11 @@
 # `infra/observability/` — the standalone observability stack
 
-Prometheus + Alertmanager, Grafana, Jaeger and the OpenTelemetry Collector,
-installed as **four independent Helm releases** into the `observability`
-namespace.
+Prometheus + Alertmanager, Grafana and Jaeger, installed as **three independent
+Helm releases** into the `observability` namespace.
+
+Every signal travels from the application straight to its backend — Prometheus
+scrapes `/metrics`, spans go OTLP to Jaeger, log lines are pushed to Loki by the
+app itself. There is no collector and no log shipper in any of the three paths.
 
 ## Why this replaced the OTel Demo's bundled stack
 
@@ -19,8 +22,8 @@ Splitting them out first made the uninstall a non-event.
 .\infra\observability\install.ps1
 ```
 
-Idempotent (`helm upgrade --install` throughout). Order matters: Jaeger goes in
-before the Collector, whose traces pipeline exports to it.
+Idempotent (`helm upgrade --install` throughout). It also uninstalls a leftover
+`otel-collector` release if it finds one — see below.
 
 ## What is deliberately NOT here
 
@@ -30,11 +33,24 @@ far. Grafana's Loki datasource points at
 `loki.otel-demo.svc.cluster.local:3100` for exactly this reason. Moving it is a
 clean-up task with a real cost and no functional benefit.
 
-**A logs pipeline in the Collector.** The demo's collector had an `otlp`
-receiver and no `filelog`, so pod stdout never reached it — which is why
-`demo/ecommerce/k8s/40-promtail.yaml` exists. Promtail tails the pods and
-writes to Loki directly. Routing logs through the Collector would add a hop and
-a failure mode for nothing.
+**The OpenTelemetry Collector.** It used to sit between the app and Jaeger, but
+its entire configuration was a single `otlp` receiver forwarding to
+`jaeger:4317` — it parsed nothing, sampled nothing and enriched nothing. Jaeger's
+allInOne mode accepts OTLP natively on 4317/4318, so the services now export
+straight to it and the hop is gone, along with a 384Mi pod on a node that was
+already ~92% committed.
+
+`install.ps1` uninstalls the release if it is still present. Leaving it running
+would be worse than useless: its Service stays resolvable, so any pod whose
+ConfigMap had not been rolled yet keeps exporting there, and traces split
+across two paths in a way that reads as random span loss.
+
+**A log shipper.** Promtail used to run as a DaemonSet tailing `/var/log/pods`.
+Each service now pushes its own JSON log lines to Loki's
+`/loki/api/v1/push` from a background thread
+(`demo/ecommerce/*/src/observability/loki_handler.py`), so logs reach the
+backend the same way metrics and traces do. stdout logging is unchanged, so
+`kubectl logs` still works.
 
 ## Two behaviour changes to know about
 
@@ -60,7 +76,13 @@ kubectl -n observability port-forward svc/prometheus-server 9090:80
 kubectl -n observability port-forward svc/grafana 3001:80
 kubectl -n observability port-forward svc/jaeger 16686:16686
 kubectl -n observability port-forward svc/prometheus-alertmanager 9093:9093
+kubectl -n otel-demo      port-forward svc/loki 3100:3100
 ```
+
+The application reaches both write endpoints without any of the above — in-cluster
+DNS from `demo/ecommerce/k8s/01-config.yaml`, or the NodePort bridge in
+`demo/ecommerce/observability/nodeports.yaml` when it runs under Compose. The
+port-forwards are only for you and for the agents running on the host.
 
 Corresponding `.env`:
 
