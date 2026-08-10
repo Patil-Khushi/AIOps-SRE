@@ -123,6 +123,67 @@ def test_yaml_descriptors_match_server_catalog() -> None:
             assert row.get(field), f"{sid}: catalog row is missing {field!r}"
 
 
+# Scenarios whose fault is invisible on an idle SUT, so the UI auto-starts the
+# load generator on inject. Two independent reasons a fault lands here:
+#   * its Prometheus rule is a rate()/histogram over [2m], so zero requests means
+#     zero failures and the counter never moves, or
+#   * the fault is applied per-request (maybe_burn_cpu burns ~2s inside the route
+#     handler; INJECT_LATENCY_SECONDS sleeps in it), so an idle service never spikes.
+# The complement is observable idle: the three *_connection_status gauges are
+# refreshed by Prometheus' own scrape (each service pings its datastore inside
+# /metrics) and crashloop trips up{} == 0.
+TRAFFIC_DEPENDENT = {
+    "order_service_http_500",
+    "order_service_memory_leak",
+    "order_service_payment_timeout",
+    "payment_service_gateway_timeout",
+    "payment_service_high_cpu",
+    "payment_service_http_500",
+    "user_service_high_cpu",
+    "user_service_high_latency",
+}
+
+
+def test_needs_load_matches_registry_loadhint() -> None:
+    """The catalog's ``needs_load`` must agree with the registry's ``Failure.load``.
+
+    The YAMLs are generated from the registry, so these two can drift silently if
+    a scenario file is hand-edited or a LoadHint is added without regenerating.
+    Drift is invisible at runtime and expensive: the UI would decline to start
+    traffic for a fault that needs it, and the operator sees an injected scenario
+    that never raises its alert.
+    """
+    from demo.ecommerce.failure_injection import FAILURES
+    from demo.ui import scenario_provider
+
+    for sid, row in scenario_provider.load().items():
+        failure = FAILURES.get(str(row["flag"]))
+        if failure is None:  # covered by test_failure_key_is_registered
+            continue
+        assert row["needs_load"] == (failure.load is not None), (
+            f"{sid}: catalog needs_load={row['needs_load']} but registry "
+            f"Failure.load is {'set' if failure.load else 'None'} — regenerate the "
+            f"scenario YAML or fix the LoadHint"
+        )
+
+
+def test_traffic_dependent_scenarios_are_flagged_needs_load() -> None:
+    """Pin the traffic-dependent set so a rule/fault change cannot silently unflag one.
+
+    If an alert rule is rewritten from a gauge to a rate(), or a fault moves into
+    the request path, the scenario becomes traffic-dependent and must declare a
+    ``load:`` block — otherwise it is injected and never observable.
+    """
+    from demo.ui import scenario_provider
+
+    catalog = scenario_provider.load()
+    flagged = {sid for sid, row in catalog.items() if row["needs_load"]}
+    assert flagged == TRAFFIC_DEPENDENT, (
+        f"needs_load drift — newly flagged: {sorted(flagged - TRAFFIC_DEPENDENT)}; "
+        f"no longer flagged: {sorted(TRAFFIC_DEPENDENT - flagged)}"
+    )
+
+
 def test_catalog_alertnames_exist_as_prometheus_rules() -> None:
     """Every scenario's alertname must be a rule the stack actually defines.
 

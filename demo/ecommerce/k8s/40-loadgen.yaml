@@ -1,0 +1,129 @@
+# Steady-state load generator for the ecommerce SUT.
+#
+# Why this exists: every metric panel on the Grafana dashboard is a rate() over
+# a 5-minute window. With no traffic those windows empty out and the whole
+# dashboard reads "No data" — not because anything is broken, but because there
+# is nothing to average. A demo that only shows data for five minutes after
+# someone manually clicks through the UI is not a demo.
+#
+# This is the in-cluster twin of demo/load/baseline.js. k6 gives you thresholds
+# and a summary report and is the right tool for a measured run; this Deployment
+# is the thing you leave running so the dashboard is never flat. Use k6 when you
+# want numbers, use this when you want a heartbeat.
+#
+#   kubectl apply -f demo/ecommerce/k8s/40-loadgen.yaml
+#   kubectl -n ecommerce scale deploy/loadgen --replicas=0    # silence it
+#
+# Reuses ecommerce/order-service:dev rather than pulling curl/k6 from the
+# internet: the image is already on the k3s node (pullPolicy IfNotPresent), so
+# this starts instantly and works on a disconnected laptop. Only stdlib urllib
+# is used, so it does not depend on that image's third-party packages either.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: ecommerce
+  labels: {app: loadgen}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen}
+  template:
+    metadata:
+      labels: {app: loadgen}
+      # Deliberately NOT scraped. The generator exposes no /metrics, and a
+      # scrape annotation would add a permanently-down target to Prometheus,
+      # which fires EcommerceServiceDown (up{namespace="ecommerce"} == 0) and
+      # pages someone for a load script.
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      containers:
+        - name: loadgen
+          image: ecommerce/order-service:dev
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests: {memory: "64Mi", cpu: "20m"}
+            limits: {memory: "128Mi", cpu: "100m"}
+          env:
+            - {name: USER_URL, value: "http://user-service:8000"}
+            - {name: ORDER_URL, value: "http://order-service:8000"}
+            # One request roughly every SLEEP_SECONDS. Slow on purpose: the
+            # point is a continuous non-zero baseline, not throughput. Faster
+            # would just burn CPU on a single-node k3s VM and make the CPU
+            # saturation scenarios harder to distinguish from normal load.
+            - {name: SLEEP_SECONDS, value: "5"}
+            - {name: LOAD_EMAIL, value: "loadgen@example.com"}
+            - {name: LOAD_PASSWORD, value: "loadgen123"}
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import json, os, random, time, urllib.error, urllib.request
+
+              USER  = os.environ["USER_URL"].rstrip("/")
+              ORDER = os.environ["ORDER_URL"].rstrip("/")
+              SLEEP = float(os.environ.get("SLEEP_SECONDS", "5"))
+              EMAIL = os.environ["LOAD_EMAIL"]
+              PW    = os.environ["LOAD_PASSWORD"]
+
+              CATALOG = [
+                  ("pulse-wireless-earbuds", 2499.0),
+                  ("aurora-desk-lamp", 1299.0),
+                  ("nimbus-laptop-sleeve", 899.0),
+                  ("vertex-mech-keyboard", 4599.0),
+                  ("halo-usb-c-hub", 1899.0),
+              ]
+
+              def call(url, body=None, token=None, timeout=20):
+                  headers = {"Content-Type": "application/json"}
+                  if token:
+                      headers["Authorization"] = "Bearer " + token
+                  data = json.dumps(body).encode() if body is not None else None
+                  req = urllib.request.Request(url, data=data, headers=headers,
+                                               method="POST" if data else "GET")
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      raw = r.read()
+                      return r.status, (json.loads(raw) if raw else None)
+
+              # Idempotent: a 409 means a previous run already created it.
+              try:
+                  call(USER + "/register",
+                       {"name": "Load Generator", "email": EMAIL, "password": PW})
+                  print("registered", EMAIL, flush=True)
+              except urllib.error.HTTPError as e:
+                  print("register ->", e.code, flush=True)
+              except Exception as e:
+                  print("register failed:", e, flush=True)
+
+              token = None
+              while True:
+                  try:
+                      if token is None:
+                          _, body = call(USER + "/login", {"email": EMAIL, "password": PW})
+                          token = body["access_token"]
+                          print("logged in", flush=True)
+
+                      call(USER + "/profile", token=token)
+
+                      sku, price = random.choice(CATALOG)
+                      qty = random.randint(1, 3)
+                      call(ORDER + "/orders",
+                           {"items": [{"sku": sku, "qty": qty, "price": price}],
+                            "amount": round(price * qty, 2)},
+                           token=token)
+
+                      call(ORDER + "/orders", token=token)
+
+                  except urllib.error.HTTPError as e:
+                      # 401 = the 60-minute JWT aged out; re-login next loop.
+                      if e.code == 401:
+                          token = None
+                      # Everything else is a real fault (an injected scenario,
+                      # a dependency down). Keep looping so the failure keeps
+                      # being measured instead of the generator going quiet at
+                      # exactly the moment the incident starts.
+                      print("http", e.code, flush=True)
+                  except Exception as e:
+                      print("error:", e, flush=True)
+
+                  time.sleep(SLEEP)

@@ -32,6 +32,58 @@ alertmanager:
     requests: {memory: "64Mi", cpu: "50m"}
     limits: {memory: "128Mi"}
 
+  # The webhook URL is a real credential, so it lives in a Secret and is read
+  # from disk — NOT inlined as `slack_api_url` here, because this file is in
+  # git. Create it once with:
+  #
+  #   kubectl create secret generic alertmanager-slack -n observability \
+  #     --from-literal=webhook-url="$AIOPS_SLACK_WEBHOOK_URL"
+  #
+  # Without that Secret the alertmanager pod will not start (the mount fails),
+  # which is the intended failure mode: a silently unconfigured receiver is how
+  # this stack ended up delivering nothing at all for weeks.
+  extraSecretMounts:
+    - name: alertmanager-slack
+      mountPath: /etc/alertmanager/secrets/slack
+      secretName: alertmanager-slack
+      readOnly: true
+
+  config:
+    enabled: true
+    global:
+      slack_api_url_file: /etc/alertmanager/secrets/slack/webhook-url
+
+    # Deliberately ONE catch-all route with no `matchers`. The previous config
+    # had a `default-receiver` with no destination at all, so every alert
+    # Prometheus produced was accepted and dropped — Alertmanager showed as
+    # healthy and wired, and nothing was ever delivered. A severity-filtered
+    # route would reintroduce that class of silence for whatever severity was
+    # not matched; this way an alert firing always means a message.
+    route:
+      receiver: slack-default
+      group_by: ['alertname', 'service']
+      group_wait: 10s
+      # 5m between batches for the same group. The demo's failure scenarios run
+      # for ~2 min, so a longer interval would let a whole scenario start and
+      # finish inside one silence window.
+      group_interval: 5m
+      repeat_interval: 3h
+
+    receivers:
+      - name: slack-default
+        slack_configs:
+          # send_resolved so the channel shows recovery too — without it a
+          # cleared fault looks identical to one nobody noticed.
+          - send_resolved: true
+            channel: '#alerts'
+            title: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }}'
+            text: >-
+              {{ range .Alerts }}*{{ .Labels.severity | toUpper }}* — `{{ .Labels.service }}`
+              {{ .Annotations.summary }}
+              {{ .Annotations.description }}
+              {{ if .Annotations.scenario }}_scenario: {{ .Annotations.scenario }}_{{ end }}
+              {{ end }}
+
 # Components the POC does not use. Each is a pod we would otherwise pay for on
 # a single-node k3s VM.
 prometheus-pushgateway:
@@ -147,3 +199,138 @@ serverFiles:
             summary: '{{ $labels.service_name }} is not responding to scrapes'
             description: target={{ $labels.instance }} has been down for 30s
             scenario: user_service_crashloop
+
+        # ── Resource saturation ───────────────────────────────────────────────
+        #
+        # All five rules below are keyed on `pod`, NOT `container`. This
+        # cluster's cAdvisor publishes pod-level rollups only — the series carry
+        # id/job/namespace/pod and no `container` label at all, so a
+        # `container="user-service"` selector matches nothing and the rule would
+        # never fire. Verified against the live cluster: pod-keyed returns 9
+        # series, container-keyed returns 0. Each app pod runs one container, so
+        # the rollup IS the container figure.
+        #
+        # `[1m]` and not `[2m]`: the CPU scenarios drive load for 120s, and a
+        # burst that tops out at 0.85 cores averaged over a 2m window peaks near
+        # 0.43 — below any threshold worth setting. A 1m window tracks it.
+
+        # Scenario: user_service_high_cpu
+        - alert: EcommerceUserServiceCPUHigh
+          expr: |
+            sum by (pod) (
+              rate(container_cpu_usage_seconds_total{namespace="ecommerce", pod=~"user-service-.*"}[1m])
+            ) > 0.5
+          for: 30s
+          labels:
+            severity: high
+            service: user-service
+            alert_type: resource_saturation_cpu
+          annotations:
+            summary: user-service CPU above 50% of its 1-core limit
+            description: cpu={{ $value }} cores (limit 1) on pod {{ $labels.pod }}
+            scenario: user_service_high_cpu
+
+        # Scenario: payment_service_high_cpu
+        #
+        # Threshold sits at 0.5 because the injected burn deliberately caps at
+        # 0.85 of one core — a flat 100% spin starves /health past its 1s
+        # liveness timeout and the kubelet restarts the container, which turns a
+        # CPU scenario into a crashloop. Idle is ~0.01-0.05 cores, so the window
+        # between noise and the injected value is wide.
+        - alert: EcommercePaymentServiceCPUHigh
+          expr: |
+            sum by (pod) (
+              rate(container_cpu_usage_seconds_total{namespace="ecommerce", pod=~"payment-service-.*"}[1m])
+            ) > 0.5
+          for: 30s
+          labels:
+            severity: high
+            service: payment-service
+            alert_type: resource_saturation_cpu
+          annotations:
+            summary: payment-service CPU above 50% of its 1-core limit
+            description: cpu={{ $value }} cores (limit 1) on pod {{ $labels.pod }}
+            scenario: payment_service_high_cpu
+
+        # Scenarios: order_service_memory_leak / order_service.memory_exhaust
+        #
+        # Keyed on working_set/limit, NOT on restarts or terminated reason:
+        # memory_exhaust does not OOMKill. Measured 81 -> 255 MiB against the
+        # 256Mi limit with restartCount unchanged, because the kernel reclaims
+        # rather than killing. A restart-based rule would miss it entirely.
+        #
+        # The `> 0` on the denominator is load bearing: a container with no
+        # memory limit reports a limit of 0, and x/0 is +Inf, which clears any
+        # threshold. The filter drops those series instead of firing on them.
+        - alert: EcommerceOrderServiceMemoryHigh
+          expr: |
+            max by (pod) (
+              container_memory_working_set_bytes{namespace="ecommerce", pod=~"order-service-.*"}
+              /
+              (container_spec_memory_limit_bytes{namespace="ecommerce", pod=~"order-service-.*"} > 0)
+            ) > 0.9
+          for: 30s
+          labels:
+            severity: high
+            service: order-service
+            alert_type: resource_saturation_memory
+          annotations:
+            summary: order-service working set above 90% of its 256Mi limit
+            description: working_set/limit={{ $value }} on pod {{ $labels.pod }}
+            scenario: order_service_memory_leak
+
+        # Scenario: user_service_pool_exhaustion (also fires for mysql_down)
+        #
+        # The reason="db_error" pin is load bearing. login_failure_total also
+        # counts reason="invalid_credentials", which every load generator
+        # produces by design — the CPU load hint posts a bogus password. An
+        # unfiltered rate would fire whenever any load runs with no fault
+        # injected at all, which is worse than having no rule.
+        - alert: EcommerceUserLoginFailures
+          expr: |
+            sum(rate(login_failure_total{reason="db_error"}[2m])) > 0
+          for: 15s
+          labels:
+            severity: high
+            service: user-service
+            alert_type: error_rate
+          annotations:
+            summary: user-service login failures on database access
+            description: db_error rate={{ $value }}/s
+            scenario: user_service_pool_exhaustion
+
+        # Scenario: payment_service_dns_failure
+        #
+        # `gateway_error` is a connection or name-resolution failure, distinct
+        # from `gateway_timeout` (the INJECT_DELAY_SECONDS scenario, covered by
+        # EcommercePaymentTimeouts). mock-payment-gateway always approves, so
+        # this reason is structurally zero in steady state.
+        #
+        # Why this rule matters beyond coverage: breaking DNS also drives
+        # redis_connection_status to 0, because payment-service re-pings Redis
+        # inside its /metrics handler and the gauge zeroes on ANY exception. So
+        # EcommerceRedisDown fires too, pointing at a perfectly healthy Redis.
+        # The two firing together, with Redis ready, is the DNS fingerprint.
+        - alert: EcommercePaymentGatewayUnreachable
+          expr: |
+            sum(rate(payment_failures_total{reason="gateway_error"}[2m])) > 0
+          for: 15s
+          labels:
+            severity: high
+            service: payment-service
+            alert_type: dependency_unreachable
+          annotations:
+            summary: payment-service cannot reach the payment gateway
+            description: gateway_error rate={{ $value }}/s (connection or name resolution)
+            scenario: payment_service_dns_failure
+
+        # No disk rule, deliberately. payment_service.disk_full writes a bounded
+        # 256MB file to /tmp, which is the containerd overlay — the node's ~1TB
+        # filesystem shared with etcd. That is 0.025%, undetectable at any
+        # threshold that is not itself noise. The alternatives were all worse:
+        # node-exporter is disabled and re-enabling it changes nothing about the
+        # ratio; kubelet_volume_stats_* covers PVC-backed volumes only and these
+        # pods have none; an app-level statvfs gauge reports the node filesystem
+        # for a disk-backed emptyDir. A real signal needs an emptyDir with a
+        # sizeLimit mounted into the pod, which changes the fault's physics.
+        # Until then disk_full stays a CLI-only chaos experiment.

@@ -4,13 +4,38 @@ Entry point: ``correlate(payload: CorrelationInput) -> CorrelationResult``.
 
 Pipeline (each stage appends to ``audit_metadata.decision_trace``):
 
-    1. Resolve topology   (payload.topology, else itsm.cmdb.dependencies)
-    2. Fan-out fetch       (logs / traces / metrics in a ThreadPoolExecutor)
-    3. Synthetic fallback  (deterministic signals when backends unreachable)
-    4. Rule-based correlate(timeline order, signature grouping, first-error,
-                            error-rate spike, suspect components — topology aware)
-    5. LLM summarize/rank  (deterministic template fallback)
-    6. Assemble verdict    (CorrelationResult + AuditMetadata)
+     1. Resolve topology    (payload.topology, else the aiops.tools.topology chain)
+     2. Fan-out fetch       (logs / traces / metrics in a ThreadPoolExecutor)
+     3. Synthetic fallback  (deterministic signals when backends unreachable)
+     4. Rule-based correlate(timeline order, signature grouping, first-error,
+                             error-rate spike, suspect components — topology aware)
+     5. LLM summarize/rank  (deterministic template fallback)
+     6. Structured evidence (immutable findings with stable identity hashes)
+     7. Confidence          (score + full derivation, one implementation)
+     8. Incident timeline   (telemetry unified with topology / change events)
+     9. Similar incidents   (opt-in: AIOPS_INCIDENT_HISTORY)
+    10. Change context      (opt-in: AIOPS_CHANGE_CONTEXT)
+    11. Dependency graph    (multi-hop walk of the topology chain)
+
+Stages 6 and 8–11 are enrichments: each is wrapped so a failure appends an
+``omitted`` trace line rather than costing a verdict that is otherwise complete,
+and each result field is optional. Absent never means empty — ``None`` is "not
+collected", an empty collection with a coverage note is "collected, found
+nothing".
+
+**Stage 7 is deliberately not wrapped.** ``confidence`` is a required field with
+no honest default: catching a scoring failure would mean either inventing a number
+or emitting one the breakdown does not explain, and a fabricated confidence is
+more dangerous downstream than a failed correlation — the RCA agent weights its
+hypotheses by it. So a scoring bug fails the call, loudly, rather than shipping a
+verdict whose headline number is made up.
+
+Ordering note: evidence (6) is built before confidence (7) so the breakdown can
+cite evidence ids. Safe because scoring never reads evidence — it only borrows
+the ids for the explanation.
+
+Full stage-by-stage reference, including what each one logs and four known
+observability gaps: ``docs/log_correlation_execution_flow.md``.
 
 It is read-only — like RA-001 it pulls evidence and emits a verdict; it opens
 no tickets, pages no one, runs no remediation. HITL level is None (the
@@ -24,6 +49,7 @@ so Loki can be swapped for Splunk / Elastic / Datadog by config alone.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -35,6 +61,10 @@ from typing import Any
 # fallback used when no explicit topology is supplied.
 import aiops.tools.mock_providers
 import aiops.tools.observability  # noqa: F401
+from agents.log_correlation.confidence import ConfidenceBreakdown, explain_confidence
+from agents.log_correlation.evidence import Evidence
+from agents.log_correlation.evidence_builder import build_evidence
+from agents.log_correlation.history import SimilarIncidents, retrieve_similar
 from agents.log_correlation.models import (
     AuditMetadata,
     CorrelatedSignal,
@@ -44,9 +74,19 @@ from agents.log_correlation.models import (
     TimeWindow,
 )
 from agents.log_correlation.prompts import SUMMARY_PROMPT_USER, SYSTEM_PROMPT
+from agents.log_correlation.timeline import IncidentTimeline, build_timeline
+from agents.log_correlation.timeline_sources import (
+    fetch_change_events,
+    from_evidence,
+    from_topology,
+)
 from aiops.llm import Message
 from aiops.llm import complete as llm_complete
 from aiops.tools import get_registry
+from aiops.tools.change_context import ChangeContext, collect_change_context
+from aiops.tools.topology import ProviderStatus as TopologyStatus
+from aiops.tools.topology import resolve as topology_resolve
+from aiops.tools.topology.graph_builder import build_resolved_graph
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +97,24 @@ _ERROR_SEVERITIES = {"error", "critical", "fatal", "warn", "warning"}
 _SPIKE_THRESHOLD = 3
 _PROMPT_VALUE_MAX_LEN = 200
 _MAX_LIVE_LOG_LINES = 200
+
+
+def _flag_enabled(name: str) -> bool:
+    """Parse a boolean opt-in env var. Absent or unrecognised means off.
+
+    A named function rather than an inline expression so "defaults to off" can be
+    asserted without reading the ambient environment. The constant below is
+    evaluated at import, which makes any test asserting on it pass or fail
+    according to the developer's ``.env`` rather than the code — the same
+    ``.env``-bleed class as #151 / #174.
+    """
+    return os.environ.get(name, "false").strip().lower() in {"1", "true", "yes"}
+
+
+# Change-context collection is opt-in: it shells out to ``git`` and may reach the
+# Kubernetes API, neither of which belongs on the incident path by default, and the
+# eval harness must stay hermetic.
+_CHANGE_CONTEXT_ENABLED = _flag_enabled("AIOPS_CHANGE_CONTEXT")
 
 
 # ─── prompt-injection sanitization (mirrors alert_triage/agent.py) ──────────
@@ -123,29 +181,100 @@ def _resolve_topology(payload: CorrelationInput, trace: list[str]) -> list[str]:
     """Downstream dependencies of the affected service.
 
     Prefers the explicit ``topology`` on the input (the catalog lists topology
-    as a first-class input). Falls back to the ``itsm.cmdb.dependencies``
-    capability so topology-aware joining still works when the caller didn't
-    supply a map. Defensive against an unregistered capability (KeyError)."""
+    as a first-class input). Otherwise delegates to the pluggable resolution
+    chain in ``aiops.tools.topology``, which walks a priority-ordered list of
+    providers (default ``cmdb,mock``) and returns the first real answer.
+
+    Signature and return type are unchanged from the pre-chain implementation, and
+    the default chain reproduces the previous *dependency* behaviour — effectively a
+    single ``itsm.cmdb.dependencies`` lookup — so downstream suspect derivation is
+    unaffected.
+
+    On trace wording: FOUR lines carry over verbatim (the counted line, the 0-dep
+    line, ``<provider> returned no dependencies``, and
+    ``itsm.cmdb.dependencies not registered; no topology``). The rest are new,
+    including on the default chain — the pre-chain code had no circuit breaker, no
+    provider chain and no budget, so it could not emit ``cmdb circuit open``,
+    ``unknown provider ...``, ``resolution budget exhausted`` or the no-provider
+    line. An earlier version of this docstring claimed all default-path strings were
+    preserved verbatim; that was wrong, and `docs/log_correlation_execution_flow.md`
+    §1 tabulates every line with its trigger.
+
+    These are operator-facing through RA-008 Incident Commander and the ops console,
+    so rewording an existing line silently breaks anyone matching it. Grep the
+    ``topology:`` prefix rather than whole lines.
+    """
     if payload.topology is not None:
         deps = payload.topology.get(payload.service) or payload.topology.get(
             _normalize_service(payload.service), []
         )
         trace.append(f"topology: {len(deps)} downstream dep(s) from supplied map")
         return list(deps)
-    try:
-        res = get_registry().call("itsm.cmdb.dependencies", service=payload.service)
-    except KeyError:
-        trace.append("topology: itsm.cmdb.dependencies not registered; no topology")
+
+    resolution = topology_resolve(payload.service)
+
+    if resolution.resolved:
+        # Historical wording was "... from cmdb"; keep it for the cmdb tier and
+        # attribute other tiers explicitly so a non-default chain is auditable.
+        source = resolution.winning_provider or "topology"
+        trace.append(f"topology: {len(resolution.dependencies)} downstream dep(s) from {source}")
+        return list(resolution.dependencies)
+
+    # Nothing resolved. Report *why*.
+    #
+    # Two precedence rules, in this order, because they answer different questions:
+    #
+    # 1. A FAILED tier ANYWHERE is reported first. An error is the most actionable
+    #    thing that happened during the walk and must not be hidden by a
+    #    higher-priority tier that merely wasn't configured. Scanning for FAILED is
+    #    what the pre-fix code got right, and keying everything off ``attempts[0]``
+    #    threw it away — an UNAVAILABLE top tier then masked a lower tier's error,
+    #    inverting the very bug being fixed.
+    #
+    # 2. Otherwise report ``attempts[0]``: the highest-priority tier consulted. In
+    #    the default chain that tier *is* the historical single
+    #    ``itsm.cmdb.dependencies`` lookup, so its outcomes render the pre-chain
+    #    wording. This is what stops a lower tier's EMPTY from masking it — with
+    #    cmdb UNAVAILABLE the terminal mock tier is unavoidably EMPTY, which used to
+    #    suppress the unavailable branch and claim "cmdb returned no dependencies"
+    #    about a tier that was never asked.
+    #
+    # Every line names its tier, so no outcome is attributable to "something".
+    if resolution.budget_exhausted:
+        # Deliberately first and unconditional: a blown budget means the walk was
+        # cut short, which changes how every other line should be read.
+        trace.append("topology: resolution budget exhausted; no topology")
         return []
-    except Exception as exc:
-        # Defensive: never fail correlation on a topology-lookup error.
-        trace.append(f"topology: lookup error ({type(exc).__name__}); no topology")
+
+    if not resolution.attempts:
+        trace.append("topology: no provider in the resolution chain; no topology")
         return []
-    if res.ok and res.data:
-        deps = list(res.data.get("dependencies", []) or [])
-        trace.append(f"topology: {len(deps)} downstream dep(s) from cmdb")
-        return deps
-    trace.append("topology: cmdb returned no dependencies")
+
+    failed = next((a for a in resolution.attempts if a.status is TopologyStatus.FAILED), None)
+    reported = failed or resolution.attempts[0]
+
+    if reported.status is TopologyStatus.FAILED:
+        trace.append(f"topology: lookup error ({reported.error}); no topology")
+    elif reported.status is TopologyStatus.UNAVAILABLE:
+        # The note carries the attribution. Every producer of an UNAVAILABLE note
+        # names its own tier or capability (see ``_run_provider``), which is what
+        # keeps the legacy "itsm.cmdb.dependencies not registered; no topology" line
+        # byte-exact while still ruling out unattributable lines like the bare
+        # "circuit open" this used to emit.
+        trace.append(
+            f"topology: {reported.note or f'{reported.provider} unavailable'}; no topology"
+        )
+    elif reported.payload_present:
+        # Answered with a record that listed no dependencies. Not the same as
+        # answering with nothing: the pre-chain implementation's ``res.ok and
+        # res.data`` truthiness test passed on the non-empty payload dict, so this
+        # took the counted branch and traced "0 downstream dep(s) from cmdb".
+        trace.append(f"topology: 0 downstream dep(s) from {reported.provider}")
+    else:
+        # Answered with nothing at all — historically "cmdb returned no
+        # dependencies". Named after the tier so a non-default chain is auditable;
+        # the default chain still renders the historical wording verbatim.
+        trace.append(f"topology: {reported.provider} returned no dependencies")
     return []
 
 
@@ -640,23 +769,95 @@ def _confidence(
     suspects: list[str],
     first_error: CorrelatedSignal | None,
     cross_source: bool,
+    *,
+    evidence: list[Evidence] | None = None,
 ) -> float:
-    n_sources = sum(1 for v in signal_counts.values() if v > 0)
-    total = sum(signal_counts.values())
-    if total == 0:
-        return 0.1
-    score = 0.3
-    if n_sources >= 2:
-        score += 0.2
-    if n_sources >= 3:
-        score += 0.15
-    if cross_source:
-        score += 0.1
-    if first_error is not None and first_error.severity.lower() in _ERROR_SEVERITIES:
-        score += 0.15
-    if suspects:
-        score += 0.1
-    return round(min(score, 0.95), 3)
+    """Aggregate confidence for the verdict.
+
+    Delegates to ``explain_confidence``, which owns the arithmetic. Keeping one
+    implementation is what guarantees the number in ``CorrelationResult.confidence``
+    and the number inside ``confidence_breakdown`` cannot diverge — duplicating
+    the rules here and trusting a test to catch drift would be strictly worse.
+
+    Signature is unchanged apart from the keyword-only, defaulted ``evidence``
+    used solely to attach evidence ids to the explanation.
+    """
+    return _confidence_breakdown(
+        signal_counts, top_signatures, suspects, first_error, cross_source, evidence=evidence
+    ).score
+
+
+def _confidence_breakdown(
+    signal_counts: dict[str, int],
+    top_signatures: list[str],
+    suspects: list[str],
+    first_error: CorrelatedSignal | None,
+    cross_source: bool,
+    *,
+    evidence: list[Evidence] | None = None,
+) -> ConfidenceBreakdown:
+    """Full derivation of the confidence score (same computation as above)."""
+    return explain_confidence(
+        signal_counts,
+        top_signatures,
+        suspects,
+        first_error,
+        cross_source,
+        error_severities=_ERROR_SEVERITIES,
+        evidence=evidence,
+    )
+
+
+# ─── incident timeline assembly ──────────────────────────────────────────────
+
+
+def _build_incident_timeline(
+    payload: CorrelationInput,
+    evidence: list[Evidence],
+    topology: list[str],
+    trace: list[str],
+) -> IncidentTimeline | None:
+    """Assemble the six-source incident timeline.
+
+    Returns ``None`` when there is nothing to build from, which is distinct from
+    an empty timeline: absent means "not built", empty would claim "nothing
+    happened".
+
+    The change-event sources (deployment / configuration) are opt-in and their
+    unavailability is recorded in ``coverage_note`` rather than swallowed — an
+    empty deployment list must never read as "nothing was deployed" when the truth
+    is "we did not look".
+    """
+    if not evidence:
+        # Say why, rather than returning a bare None. The timeline is keyed off
+        # evidence, so when stage 6 produced nothing this stage cannot run — and a
+        # null field with no trace line leaves an operator no way to tell that from
+        # a stage that was skipped for some other reason.
+        trace.append("timeline: no evidence to build from; omitted")
+        return None
+
+    correlation_id = evidence[0].correlation_id
+    events = list(from_evidence(evidence))
+    events.extend(from_topology(payload.service, topology, payload.window.start))
+
+    change_events, coverage_note = fetch_change_events(
+        payload.service, payload.window.start, payload.window.end
+    )
+    events.extend(change_events)
+
+    built = build_timeline(
+        correlation_id=correlation_id,
+        service=payload.service,
+        events=events,
+        coverage_note=coverage_note,
+    )
+    trace.append(
+        f"timeline: {len(built.entries)} entr(ies) from {len(built.sources_present)} "
+        f"source(s) {built.sources_present}"
+    )
+    if coverage_note:
+        trace.append(f"timeline: {coverage_note}")
+    return built
 
 
 # ─── entry point ────────────────────────────────────────────────────────────
@@ -749,8 +950,135 @@ def correlate(payload: CorrelationInput, *, force_synthetic: bool = False) -> Co
     )
     decision_trace.append("assembled evidence summary")
 
-    # Stage 6 — assemble
-    confidence = _confidence(signal_counts, top_signatures, suspects, first_error, cross_source)
+    # Stage 6 — structured evidence (additive). Built from the same signals the
+    # timeline already carries, so it introduces no new backend calls and cannot
+    # change any pre-existing field. Failure here must not lose a verdict that is
+    # otherwise complete: evidence is an enrichment, not a prerequisite.
+    #
+    # Ordered before scoring so the confidence breakdown can cite evidence ids.
+    # Safe to reorder: evidence assembly is a pure transformation of the timeline
+    # and topology, and scoring does not depend on it — ``evidence`` only supplies
+    # ids for the explanation, never inputs to the arithmetic.
+    # Stays None on failure rather than falling back to []: an empty list is a
+    # legitimate result ("ran, nothing to derive") and must not be reachable by a
+    # caught exception, or the field cannot answer "did this run?".
+    evidence: list[Evidence] | None = None
+    try:
+        evidence = build_evidence(payload, timeline, topology)
+        decision_trace.append(f"evidence: {len(evidence)} structured object(s)")
+    except Exception as exc:
+        logger.warning("structured evidence build failed: %s", exc)
+        decision_trace.append(f"evidence: build failed ({type(exc).__name__}); omitted")
+
+    # Stage 7 — confidence, with its full derivation.
+    confidence_breakdown = _confidence_breakdown(
+        signal_counts, top_signatures, suspects, first_error, cross_source, evidence=evidence
+    )
+    confidence = confidence_breakdown.score
+    decision_trace.append(
+        f"confidence {confidence} from {len(confidence_breakdown.contributors)} applied rule(s), "
+        f"{len(confidence_breakdown.unapplied)} unapplied"
+        + (", capped" if confidence_breakdown.capped else "")
+    )
+
+    # Stage 8 — incident timeline (additive). Unifies the telemetry evidence with
+    # topology, deployment and configuration events so a change that preceded the
+    # symptoms is visible in order. Same failure posture as evidence: an
+    # enrichment must never cost a verdict that is otherwise complete.
+    incident_timeline: IncidentTimeline | None = None
+    try:
+        incident_timeline = _build_incident_timeline(
+            payload, evidence or [], topology, decision_trace
+        )
+    except Exception as exc:
+        logger.warning("incident timeline build failed: %s", exc)
+        decision_trace.append(f"timeline: build failed ({type(exc).__name__}); omitted")
+
+    # Stage 9 — historical incident retrieval (additive, opt-in). Returns past
+    # incidents that resemble this one and why they matched. Deliberately does no
+    # RCA: it names no cause for *this* incident and recommends nothing, so the
+    # inference stays with the RCA agent where it is attributable.
+    similar_incidents: SimilarIncidents | None = None
+    try:
+        similar_incidents = retrieve_similar(payload.service, top_signatures, topology)
+        if similar_incidents is not None:
+            decision_trace.append(
+                f"history: {len(similar_incidents.matches)} similar incident(s) via "
+                f"{similar_incidents.provider or 'no provider'}"
+                + (
+                    f" — {similar_incidents.coverage_note}"
+                    if similar_incidents.coverage_note
+                    else ""
+                )
+            )
+    except Exception as exc:
+        logger.warning("incident history retrieval failed: %s", exc)
+        decision_trace.append(f"history: retrieval failed ({type(exc).__name__}); omitted")
+
+    # Stage 10 — deployment and configuration context (additive, opt-in). Records
+    # what changed in the window across GitHub, feature flags, Kubernetes rollout
+    # and config. Infers no causality: a change appearing here is a fact, and
+    # whether it explains the incident is the RCA agent's call.
+    deployment_context: ChangeContext | None = None
+    if _CHANGE_CONTEXT_ENABLED:
+        try:
+            deployment_context = collect_change_context(
+                payload.service, payload.window.start, payload.window.end
+            )
+            decision_trace.append(
+                f"change context: {len(deployment_context.records)} record(s) from "
+                f"{deployment_context.sources_collected}"
+                + (
+                    f"; unavailable={deployment_context.sources_unavailable}"
+                    if deployment_context.sources_unavailable
+                    else ""
+                )
+            )
+        except Exception as exc:
+            logger.warning("change context collection failed: %s", exc)
+            decision_trace.append(
+                f"change context: collection failed ({type(exc).__name__}); omitted"
+            )
+
+    # Stage 11 — multi-hop dependency graph. Separate from the one-hop suspect
+    # list: this is the topology as resolved, unfiltered by suspicion, so a
+    # consumer can see the whole blast radius rather than only the services the
+    # evidence happened to implicate.
+    #
+    # An edgeless walk is *kept*, not discarded, so ``None`` means exactly one
+    # thing: no result was produced (skipped or raised). But zero edges is itself
+    # two different facts, and they must not be merged either — ``root_answered``
+    # separates "a tier answered and this is a leaf service" from "no tier could
+    # answer, so the dependencies are unknown". Rendering the second as the first
+    # would turn a resolution failure into a positive "no dependencies" claim,
+    # which is worse than the ambiguous ``None`` this replaced.
+    dependency_graph = None
+    try:
+        dependency_graph = build_resolved_graph(payload.service)
+        if dependency_graph.edges:
+            decision_trace.append(
+                f"graph: {len(dependency_graph.nodes)} node(s), "
+                f"{len(dependency_graph.edges)} edge(s), "
+                f"depth {dependency_graph.max_depth_reached} via {dependency_graph.provider}"
+            )
+        elif dependency_graph.root_answered:
+            # No provider name here on purpose: ``provider`` is the set of tiers that
+            # contributed *edges*, and a leaf contributes none, so it is always the
+            # literal "none" on this branch. Interpolating it produced
+            # "via none (leaf service)", which reads like a failure.
+            decision_trace.append(
+                f"graph: walk found no edges from '{payload.service}' "
+                f"(leaf service — a tier holds a record listing no dependencies)"
+            )
+        else:
+            decision_trace.append(
+                f"graph: no topology tier answered for '{payload.service}'; "
+                f"dependencies unknown, not absent"
+            )
+    except Exception as exc:
+        logger.warning("dependency graph build failed: %s", exc)
+        decision_trace.append(f"graph: build failed ({type(exc).__name__}); omitted")
+
     return CorrelationResult(
         service=payload.service,
         summary=summary,
@@ -764,6 +1092,12 @@ def correlate(payload: CorrelationInput, *, force_synthetic: bool = False) -> Co
             signal_source=signal_source,
             decision_trace=decision_trace,
         ),
+        evidence=evidence,
+        incident_timeline=incident_timeline,
+        confidence_breakdown=confidence_breakdown,
+        similar_incidents=similar_incidents,
+        deployment_context=deployment_context,
+        dependency_graph=dependency_graph,
     )
 
 

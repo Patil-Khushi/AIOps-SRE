@@ -146,8 +146,189 @@ export interface CorrelationAuditMetadata {
   decision_trace: string[];
 }
 
+// ── RA-007 evidence-pack sub-objects ────────────────────────────────────────
+//
+// These six were computed by the agent and returned by /api/correlate long
+// before they were declared here, so the console silently dropped them: the
+// dependency graph, the confidence rule trace, the retrieved history, the change
+// context, the grouped timeline and the structured evidence. Declared now so the
+// page can render what the agent already produces.
+
+export interface DependencyEdgeMetadata {
+  provider?: string | null;
+  protocol?: string | null;
+  call_rate?: number | null;
+  error_rate?: number | null;
+  latency_p95_ms?: number | null;
+  observed_at?: string | null;
+  confidence?: number | null;
+}
+
+export interface DependencyGraphNode {
+  service: string;
+  depth: number;
+  relation: string;
+  health?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface DependencyGraphEdge {
+  source: string;
+  target: string;
+  metadata?: DependencyEdgeMetadata | null;
+}
+
+export interface DependencyGraph {
+  root: string;
+  nodes: DependencyGraphNode[];
+  edges: DependencyGraphEdge[];
+  downstream: string[];
+  /** Empty means "not observable from this provider", NOT "nothing calls this" —
+   *  see coverage_note. Rendering it as "none" would be a factual error. */
+  upstream: string[];
+  max_depth_reached: number;
+  truncated: boolean;
+  coverage_note?: string | null;
+  provider?: string | null;
+  built_at?: string | null;
+  root_answered: boolean;
+}
+
+export interface ConfidenceContribution {
+  rule_id: string;
+  reason?: string | null;
+  delta?: number | null;
+}
+
+export interface ConfidenceUnappliedRule {
+  rule_id: string;
+  reason: string;
+  /** What the score would have gained had the rule applied — this is what makes
+   *  a weak correlation diagnosable rather than just low. */
+  potential_delta?: number | null;
+}
+
+export interface ConfidenceBreakdown {
+  score: number;
+  base: number;
+  explanation: string;
+  contributors: ConfidenceContribution[];
+  deductions: ConfidenceContribution[];
+  unapplied: ConfidenceUnappliedRule[];
+  rule_trace: string[];
+  capped: boolean;
+}
+
+export interface IncidentResolution {
+  resolved: boolean;
+  resolution_summary?: string | null;
+  resolved_at?: string | null;
+  time_to_resolve_minutes?: number | null;
+  resolved_by?: string | null;
+  /** Cause established for THAT past incident. Deliberately not called
+   *  root_cause — it is history, not a verdict on the current incident. */
+  recorded_cause?: string | null;
+  ticket_ref?: string | null;
+  runbook_ref?: string | null;
+}
+
+export interface IncidentMatch {
+  incident_id: string;
+  similarity_score: number;
+  title?: string | null;
+  occurred_at?: string | null;
+  matching_signatures: string[];
+  matching_services: string[];
+  matching_topology: string[];
+  resolution?: IncidentResolution | null;
+  provider: string;
+  match_explanation?: string | null;
+}
+
+export interface SimilarIncidents {
+  matches: IncidentMatch[];
+  /** Which backend answered. A semantic hit from a populated vector store and a
+   *  keyword hit from a 15-row demo corpus are not equivalent evidence. */
+  provider?: string | null;
+  providers_attempted: string[];
+  /** A similarity score is uninterpretable without the population searched. */
+  corpus_size?: number | null;
+  coverage_note?: string | null;
+}
+
+export interface ChangeRecord {
+  change_id: string;
+  change_type: string;
+  source: string;
+  timestamp?: string | null;
+  service?: string | null;
+  summary?: string | null;
+  url?: string | null;
+  rollback_status?: string | null;
+  feature_flags?: Record<string, string>;
+}
+
+export interface ChangeContext {
+  records: ChangeRecord[];
+  sources_collected: string[];
+  /** As material as the records: an empty record list means "nothing changed"
+   *  only when every source actually answered. */
+  sources_unavailable: string[];
+  coverage_note?: string | null;
+}
+
+export interface IncidentTimelineEntry {
+  timestamp: string;
+  event: string;
+  service?: string | null;
+  severity: string;
+  source: string;
+  related_evidence_ids: string[];
+  occurrences: number;
+  group_id?: string | null;
+}
+
+export interface IncidentTimeline {
+  correlation_id: string;
+  service: string;
+  entries: IncidentTimelineEntry[];
+}
+
+export interface EvidenceTelemetry {
+  sample?: string | null;
+  occurrences?: number | null;
+  sources_agreeing: string[];
+  first_seen?: string | null;
+  last_seen?: string | null;
+}
+
+export interface EvidenceTopologyContext {
+  relation?: string | null;
+  implicated_service?: string | null;
+  depth?: number | null;
+  path: string[];
+  upstream_complete?: boolean | null;
+}
+
+export interface CorrelationEvidence {
+  evidence_id: string;
+  correlation_id: string;
+  timestamp: string;
+  source: SignalSource;
+  service: string;
+  signal_type: string;
+  normalized_signature: string;
+  severity: string;
+  confidence: number;
+  supporting_telemetry?: EvidenceTelemetry | null;
+  topology_context?: EvidenceTopologyContext | null;
+}
+
 // The correlated evidence pack RA-007 emits. suspected_dependencies is the
 // catalog's "suspect components"; the whole object is the "evidence pack".
+// Everything below audit_metadata is optional: each is opt-in behind its own
+// env flag, and `null` means "not attempted" — distinct from an empty list
+// meaning "looked and found nothing".
 export interface CorrelationResult {
   service: string;
   summary: string;
@@ -156,6 +337,12 @@ export interface CorrelationResult {
   suspected_dependencies: string[];
   confidence: number;
   audit_metadata: CorrelationAuditMetadata;
+  evidence?: CorrelationEvidence[] | null;
+  incident_timeline?: IncidentTimeline | null;
+  confidence_breakdown?: ConfidenceBreakdown | null;
+  similar_incidents?: SimilarIncidents | null;
+  dependency_graph?: DependencyGraph | null;
+  deployment_context?: ChangeContext | null;
 }
 
 // RA-008 Incident Commander — mirrors agents/incident_commander/models.py.

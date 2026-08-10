@@ -130,13 +130,18 @@ from aiops.tools import (  # noqa: E402
 )
 from aiops.tools.alerts.prometheus_adapter import to_canonical_alert  # noqa: E402
 from aiops.tools.chatops import register_env_adapters  # noqa: E402
-from demo.ui import fault_clear as _fault_clear  # noqa: E402,F401  — automation.fault.clear
+from demo.providers import register_demo_providers  # noqa: E402
 from demo.ui import scenario_provider  # noqa: E402
 from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# Serves automation.fault.clear, which the RCA apply-fix path and the runbook
+# executor's clear_fault steps both dispatch to. Was a bare side-effect import;
+# a named call keeps it from being tidied away as unused.
+register_demo_providers()
 
 STATIC_DIR = Path(__file__).parent / "static"
 FIXTURES_PATH = (
@@ -257,6 +262,31 @@ def _shutdown_hitl_agent_pool() -> None:
     _HITL_AGENT_POOL.shutdown(wait=False, cancel_futures=True)
 
 
+def _warm_incident_history_embeddings() -> None:
+    """Pre-load the RA-007 semantic-retrieval index, off the request path.
+
+    The first embedding search costs ~20s (torch import, model construction, then
+    embedding the corpus) against a 3s per-provider guard, so without this the
+    tier would be cancelled and breaker-tripped on the first few correlations
+    after every restart and quietly answer from the keyword mock instead.
+
+    Non-blocking and best-effort: ``warm()`` spawns a daemon thread and returns.
+    Skipped entirely unless the chain actually names the provider, so a deployment
+    that has not opted in pays nothing.
+    """
+    chain = os.environ.get("AIOPS_INCIDENT_HISTORY_PROVIDERS", "")
+    if "embedding" not in chain:
+        return
+    try:
+        from aiops.tools.incident_history.providers.embedding import warm
+
+        warm()
+        logger.info("incident-history embedding index warming in background")
+    except Exception as exc:
+        # Enrichment only — a failure here must never stop the server booting.
+        logger.warning("incident-history embedding warm-up could not start: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup + shutdown wiring for the demo UI.
@@ -297,6 +327,7 @@ async def lifespan(app: FastAPI):
     from agents.knowledge_synthesizer.snow_watcher import start_watcher
 
     await start_watcher()
+    _warm_incident_history_embeddings()
 
     yield
 
@@ -2929,6 +2960,15 @@ def inject_scenario(scenario_id: str, background_tasks: BackgroundTasks) -> dict
             status_code=404, detail=f"unknown scenario; available: {list(SCENARIOS)}"
         )
     result = _apply_scenario(scenario_id, on=True)
+    # This fault only shows up under traffic (rate()/histogram rules, per-request
+    # CPU burn), so un-pause the load generator before it settles. Otherwise the
+    # fault is active and completely invisible. Scale-up only; see
+    # scenario_provider.ensure_loadgen_running.
+    loadgen = (
+        scenario_provider.ensure_loadgen_running()
+        if s.get("needs_load")
+        else {"action": "not_needed", "detail": "fault is observable on an idle cluster"}
+    )
     # Explicit inject = a fresh incident. Clear the service's dedup clusters
     # so triage yields an Active verdict (not Suppressed against a warm
     # cluster from a prior inject), and mark the synthetic alert id seen so
@@ -2943,6 +2983,7 @@ def inject_scenario(scenario_id: str, background_tasks: BackgroundTasks) -> dict
         **result,
         "expected_alert": s["alert"],
         "triage_triggered": True,
+        "loadgen": loadgen,
     }
 
 

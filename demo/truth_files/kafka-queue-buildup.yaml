@@ -1,0 +1,65 @@
+scenario_id: kafka-queue-buildup
+title: Kafka consumer falls behind, queue grows unbounded
+last_updated: 2026-05-06
+owner: poc-team
+
+real_cause:
+  layer: application
+  component: kafka-consumer (ad / accounting service depending on chart version)
+  description: |
+    The flagd flag `kafkaQueueProblems` injects a delay into the Kafka consumer
+    loop. The producer side is unchanged, so consumer lag grows monotonically.
+    Downstream services that depend on order-processing eventually time out.
+
+expected_rca:
+  cause_summary: |
+    Symptom is checkout 5xx errors, but the chain of evidence points away from
+    the frontend: cart and frontend are healthy; the failing dependency is the
+    order-processing pipeline driven by Kafka. Consumer-lag metric is rising;
+    the consumer pod is healthy but slow per-message. Most recent change is
+    the kafkaQueueProblems flag. Likely cause: consumer-side delay introduced
+    by the feature flag. Confirm by reading the flagd ConfigMap.
+  evidence_signals:
+    - kafka_consumer_lag rising linearly
+    - rate(http_server_duration_count{service_name="frontend",http_status_code=~"5.."}[2m]) > 0
+    - traces show frontend → order pipeline error spans
+    - flagd-config ConfigMap shows kafkaQueueProblems.defaultVariant = "on"
+  ranked_hypotheses:
+    - feature flag kafkaQueueProblems flipped to "on" (correct)
+    - Kafka broker resource saturation (refuted: broker metrics nominal)
+    - consumer pod CPU starvation (refuted: pod metrics nominal)
+  confidence_floor: 0.6
+
+expected_fix_steps:
+  - description: Set flagd flag `kafkaQueueProblems` defaultVariant back to "off".
+    blast_radius: low
+    rollback: re-flip the flag — instant
+    requires_hitl: true
+  - description: After clearing the flag, monitor consumer_lag — should drain within ~5 minutes.
+    blast_radius: low
+    rollback: n/a — observation step
+    requires_hitl: false
+  - description: If lag does not drain, scale the consumer deployment by 1 replica temporarily.
+    blast_radius: medium
+    rollback: kubectl scale deployment back down
+    requires_hitl: true
+
+known_wrong_fixes:
+  - description: Restart the Kafka broker.
+    why_wrong: Broker is healthy; restarting it amplifies the outage.
+  - description: Restart the frontend.
+    why_wrong: Frontend is the symptom side, not the cause.
+  - description: Increase Kafka topic partitions.
+    why_wrong: Lag is consumer-side processing speed, not parallelism.
+
+scoring:
+  rca_must_include:
+    - "kafkaQueueProblems"
+    - "consumer"
+  fix_step_match: any-of
+  max_time_to_rca_seconds: 240
+
+notes: |
+  Tests dependency-aware reasoning — the right answer is not at the symptom
+  service. Good scenario for Dependency Mapper + RCA Agent integration tests
+  in Phase 2.

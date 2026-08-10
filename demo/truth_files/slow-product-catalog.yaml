@@ -1,0 +1,83 @@
+scenario_id: slow-product-catalog
+title: Product catalog service responds slowly under load
+last_updated: 2026-05-06
+owner: poc-team
+
+real_cause:
+  layer: application
+  component: productcatalogservice
+  description: |
+    The flagd flag `productCatalogFailure` is on, which causes the
+    product-catalog service to inject a deterministic 5-second delay into
+    GetProduct calls. From outside the service it looks like a slow upstream
+    or a thread-pool stall; the actual root cause is a feature flag.
+
+expected_rca:
+  cause_summary: |
+    Latency increase is isolated to productcatalogservice. Trace spans for
+    GetProduct show the delay is *inside* the service, not in its dependencies.
+    The most recent change touching this service is the feature-flag toggle
+    on productCatalogFailure (timestamp matches onset). Likely cause: the
+    feature flag was flipped to "on", injecting a delay. Confirm by reading
+    the flagd ConfigMap.
+  evidence_signals:
+    - histogram_quantile(0.95, rate(http_server_duration_bucket{service_name="productcatalogservice"}[1m])) crossed 5s
+    - trace span service.name=productcatalogservice operation=GetProduct duration > 4500ms
+    - logs for productcatalogservice contain "GetProduct" with slow handler durations
+    - flagd-config ConfigMap shows productCatalogFailure.defaultVariant = "on"
+  ranked_hypotheses:
+    - feature flag productCatalogFailure flipped to "on" (correct)
+    - downstream dependency of productcatalogservice slowed
+    - productcatalogservice deploy regression
+  confidence_floor: 0.7
+
+expected_fix_steps:
+  - description: Set flagd flag `productCatalogFailure` defaultVariant back to "off".
+    blast_radius: low
+    rollback: re-flip the flag back to "on" — instant
+    requires_hitl: true
+  - description: If the flag did not actually change recently, roll back the most recent productcatalogservice deploy.
+    blast_radius: medium
+    rollback: helm rollback otel-demo
+    requires_hitl: true
+
+known_wrong_fixes:
+  - description: Restart the productcatalogservice pod.
+    why_wrong: Restart does not unset a feature flag; the issue returns immediately.
+  - description: Scale productcatalogservice horizontally.
+    why_wrong: Each replica injects the same delay; scaling does nothing.
+  - description: Increase HTTP timeouts on the frontend.
+    why_wrong: Masks the symptom, not the cause; user-visible slowness persists.
+
+scoring:
+  rca_must_include:
+    - "productCatalogFailure"
+    - "feature flag"
+  fix_step_match: any-of
+  max_time_to_rca_seconds: 180
+
+# EVAL-1 (#75) — wired into the eval harness.
+expected_alert_payload:
+  alert_id: ALT-product-catalog-latency-p95-high
+  service: product-catalog
+  metric: latency_p95_seconds
+  value: 5.2
+  threshold: 1.0
+  timestamp: "2026-05-21T10:00:00Z"
+  source: Prometheus
+  labels:
+    alertname: ProductCatalogLatencyP95High
+    severity: warning
+    service: product-catalog
+
+exercises:
+  alert_triage:
+    severity_in: ["Sev-2", "Sev-3"]
+    affected_service: product-catalog
+    status_in: ["Active", "Suppressed"]  # see payment_failure.yaml for rationale
+    min_confidence_score: 0.5
+
+notes: |
+  This is the easiest demo failure and a good first target for Alert Triage,
+  Log Correlation, and the RCA Agent. The "obvious" fix (restart) is a known
+  wrong fix — useful for testing that the agent does not pattern-match to it.
