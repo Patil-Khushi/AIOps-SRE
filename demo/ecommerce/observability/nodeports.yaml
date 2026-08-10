@@ -1,7 +1,10 @@
 # NodePort bridges: k3s -> reachable from the Docker Compose network.
 #
-# The ecommerce app runs in Docker Compose; Prometheus/Loki/Jaeger/Grafana run
-# in Rancher Desktop's k3s. Both live in the same Rancher Desktop VM network
+# ONLY needed for the Compose deployment. The k8s deployment (demo/ecommerce/k8s/)
+# reaches both backends over in-cluster DNS and needs none of this.
+#
+# The ecommerce app runs in Docker Compose; Jaeger/Loki/Prometheus/Grafana run in
+# Rancher Desktop's k3s. Both live in the same Rancher Desktop VM network
 # (192.168.127.0/24), so a NodePort is all that's needed — no port-forward, no
 # tunnel, and nothing to keep alive in a terminal.
 #
@@ -12,23 +15,30 @@
 # Apply:  kubectl apply -f observability/nodeports.yaml
 # Remove: kubectl delete -f observability/nodeports.yaml
 #
-# These are additive Services. They do NOT modify the collector/Loki Deployments
-# or the Helm-managed `otel-collector` / `loki` Services, so `helm upgrade` and
-# `infra/teardown.ps1` behave exactly as before.
+# These are additive Services. They do NOT modify the Helm-managed `jaeger` /
+# `loki` Services or their workloads, so `helm upgrade` and `infra/teardown.ps1`
+# behave exactly as before.
+#
+# NOTE the namespaces differ: Jaeger lives in `observability` (installed by
+# infra/observability/install.ps1), Loki in `otel-demo` (its own older release,
+# left there because moving it would drop its PVC). A NodePort Service must sit
+# in the same namespace as the pods it selects, hence one of each.
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: otel-collector-ecommerce
-  namespace: otel-demo
+  name: jaeger-ecommerce
+  namespace: observability
   labels:
     app.kubernetes.io/part-of: ecommerce-bridge
 spec:
   type: NodePort
+  # allInOne mode: one pod carries every port, selected by the release labels.
+  # There is no separate collector Deployment to point at.
   selector:
-    app.kubernetes.io/instance: otel-demo
-    app.kubernetes.io/name: opentelemetry-collector
-    component: agent-collector
+    app.kubernetes.io/instance: jaeger
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: all-in-one
   ports:
     # The ecommerce services export spans over OTLP/gRPC (see each service's
     # main.py — it uses the grpc trace exporter, not http/protobuf).
@@ -58,7 +68,9 @@ spec:
     app.kubernetes.io/instance: loki
     app.kubernetes.io/name: loki
   ports:
-    # Promtail (running in Compose) pushes to /loki/api/v1/push here.
+    # Each service pushes its own log lines to /loki/api/v1/push here (see
+    # src/observability/loki_handler.py in each service). Applications ship logs
+    # directly from inside the process, no sidecar required.
     - name: http
       port: 3100
       targetPort: 3100
