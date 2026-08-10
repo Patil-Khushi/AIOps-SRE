@@ -34,6 +34,7 @@ from aiops.tools.incident_history.providers.backends import (
     PostgresIncidentHistoryProvider,
     VectorIncidentHistoryProvider,
 )
+from aiops.tools.incident_history.providers.embedding import EmbeddingIncidentHistoryProvider
 from aiops.tools.incident_history.providers.mock import MockIncidentHistoryProvider
 from aiops.tools.resilience import ResiliencePolicy, breaker_open, guard
 from aiops.tools.resilience import reset_for_tests as _reset_resilience
@@ -56,6 +57,11 @@ _POLICY = ResiliencePolicy(
 )
 
 _PROVIDERS: dict[str, IncidentHistoryProvider] = {
+    # Semantic tier. In-process, so unlike "vector" it is actually runnable here —
+    # see providers/embedding.py for why 27 incidents do not warrant a vector
+    # server. Ahead of "mock" in a configured chain because it subsumes what set
+    # overlap can find and also matches incidents that share no literal tokens.
+    "embedding": EmbeddingIncidentHistoryProvider(),
     "vector": VectorIncidentHistoryProvider(),
     "elastic": ElasticIncidentHistoryProvider(),
     "postgres": PostgresIncidentHistoryProvider(),
