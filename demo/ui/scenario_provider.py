@@ -51,14 +51,21 @@ ALERTNAMES: dict[str, str] = {
     "order_service_postgres_down": "EcommercePostgresDown",
     "payment_service_redis_down": "EcommerceRedisDown",
     "user_service_crashloop": "EcommerceServiceDown",
-    "order_service_memory_leak": "EcommerceServiceDown",
     "order_service_payment_timeout": "EcommercePaymentTimeouts",
     "payment_service_gateway_timeout": "EcommercePaymentTimeouts",
     "order_service_http_500": "EcommerceOrderErrorRateHigh",
     "payment_service_http_500": "EcommerceOrderErrorRateHigh",
     "user_service_high_latency": "EcommerceOrderLatencyHigh",
-    "user_service_high_cpu": "EcommerceOrderLatencyHigh",
-    "payment_service_high_cpu": "EcommerceOrderLatencyHigh",
+    # These three used to claim an alert their fault does not fire. Both CPU
+    # scenarios pointed at EcommerceOrderLatencyHigh — an *order-service* p95
+    # rule that user-service or payment-service CPU does not move — and the
+    # memory leak pointed at EcommerceServiceDown, which only fires once the
+    # OOMKill has already taken the pod down. Each now names the rule that
+    # actually fires, and the memory one fires during the climb rather than
+    # after the outage.
+    "user_service_high_cpu": "EcommerceUserServiceCPUHigh",
+    "payment_service_high_cpu": "EcommercePaymentServiceCPUHigh",
+    "order_service_memory_leak": "EcommerceOrderServiceMemoryHigh",
 }
 
 # Workloads scaled to zero rather than env-toggled. Mirrors _STATEFULSETS in
@@ -86,6 +93,33 @@ _SCALE_FAULTS: dict[str, str] = {
     "user_service_mysql_down": "mysql",
     "order_service_postgres_down": "postgres",
     "payment_service_redis_down": "redis",
+}
+
+# The in-cluster steady-state load generator (demo/ecommerce/k8s/40-loadgen.yaml).
+_LOADGEN = "loadgen"
+
+# Eight of the twelve scenarios only produce their alert signal UNDER TRAFFIC.
+# Their Prometheus rules are rate()/histogram_quantile over a [2m] window
+# (EcommerceOrderErrorRateHigh, EcommercePaymentTimeouts, EcommerceOrderLatencyHigh),
+# and the CPU/latency/leak faults are applied per-request — maybe_burn_cpu() burns
+# for ~2s inside the route handler, so an idle service never spikes at all. Inject
+# one of those against a paused generator and the fault is genuinely active yet
+# completely invisible: no requests, nothing fails, the counter never moves, no
+# alert. That reads as "the agent missed it" rather than "there was no traffic".
+#
+# So on inject we un-pause the generator for exactly those scenarios. The four
+# datastore/crashloop faults are left alone: their signals are gauges refreshed by
+# Prometheus' own scrape (each service pings its datastore inside /metrics) or
+# up{} == 0, both of which fire on an idle cluster.
+#
+# Set false to keep a DELIBERATELY paused generator paused — `reset.ps1 -Data
+# -KeepPaused` exists to show empty tables, and silently refilling them would
+# defeat it.
+AUTOLOAD = os.environ.get("AIOPS_DEMO_AUTOLOAD", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
 }
 
 
@@ -133,6 +167,12 @@ def load() -> dict[str, dict[str, Any]]:
             "variant_on": "on",
             "expected_rca": data.get("expected_rca") or "",
             "settle_seconds": data.get("settle_seconds") or 20,
+            # Whether this fault needs traffic to be observable. Read straight
+            # off the YAML's `load:` block, which is generated from the
+            # registry's Failure.load LoadHint ("Traffic to drive so a fault
+            # becomes observable") — so it stays the single declaration of this
+            # fact rather than a second hand-maintained list here.
+            "needs_load": bool(data.get("load")),
         }
     return out
 
@@ -215,6 +255,52 @@ def active_state(scenarios: dict[str, dict[str, Any]]) -> dict[str, str]:
                 state[sid] = "on"
 
     return state
+
+
+def ensure_loadgen_running() -> dict[str, Any]:
+    """Scale the load generator up to 1 replica if it is currently paused.
+
+    Called on inject for scenarios whose YAML declares a ``load:`` block — see
+    AUTOLOAD above for why those faults are invisible without traffic.
+
+    Scale UP only, and never back down on recover. The generator running is the
+    normal baseline (start.ps1 assumes it, and every dashboard panel is a rate()
+    over 5m, so a paused generator reads "No data" everywhere). Auto-stopping it
+    would also break the *next* inject. Pausing stays a deliberate act via
+    `reset.ps1 -Data -KeepPaused`.
+
+    Never raises — a failure here must not fail the inject itself, which has
+    already been applied to the cluster by the time this runs. Returns a status
+    dict so the API response can say what actually happened instead of the
+    caller having to guess.
+    """
+    if not AUTOLOAD:
+        return {"action": "disabled", "detail": "AIOPS_DEMO_AUTOLOAD is off"}
+
+    out = _kubectl(
+        ["get", "deploy", _LOADGEN, "--ignore-not-found", "-o", "jsonpath={.spec.replicas}"]
+    )
+    if out is None:
+        return {"action": "unknown", "detail": "could not read loadgen replica count"}
+
+    raw = out.strip()
+    if not raw:
+        return {"action": "absent", "detail": f"no deploy/{_LOADGEN} in namespace {NAMESPACE}"}
+    try:
+        current = int(raw)
+    except ValueError:
+        return {"action": "unknown", "detail": f"unparseable replica count {raw!r}"}
+
+    if current > 0:
+        return {"action": "already_running", "replicas": current}
+
+    if _kubectl(["scale", f"deploy/{_LOADGEN}", "--replicas=1"]) is None:
+        return {"action": "failed", "detail": f"kubectl scale deploy/{_LOADGEN} failed"}
+
+    logger.info(
+        "auto-started %s: injected scenario needs sustained traffic to be observable", _LOADGEN
+    )
+    return {"action": "started", "replicas": 1, "was": 0}
 
 
 def _run_failure(failure_key: str, action: str) -> dict[str, Any]:
