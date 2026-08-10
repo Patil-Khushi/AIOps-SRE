@@ -1,0 +1,327 @@
+{
+  "id": null,
+  "uid": "ecommerce-db-viewer",
+  "title": "Ecommerce DB Viewer",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Users (MySQL)",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "mysql", "uid": "ecommerce-mysql" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "mysql", "uid": "ecommerce-mysql" },
+          "rawSql": "SELECT id, name, email, password_hash FROM users ORDER BY id DESC LIMIT 50",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Orders (Postgres)",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "ecommerce-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "ecommerce-postgres" },
+          "rawSql": "SELECT id, user_id, amount, status, items, created_at FROM orders ORDER BY created_at DESC LIMIT 50",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Orders Time Series (Postgres)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "ecommerce-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "ecommerce-postgres" },
+          "rawSql": "SELECT DATE_TRUNC('minute', created_at) AS time, COUNT(*) AS order_count, SUM(amount) AS total_amount FROM orders WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Prometheus - Request Rate (per service)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "sum by (app) (rate(login_requests_total[5m])) or sum by (app) (rate(orders_created_total[5m])) or sum by (app) (rate(payment_requests_total[5m]))",
+          "legendFormat": "{{app}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Prometheus - Request Latency (p95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "histogram_quantile(0.95, sum by (le, app) (rate(login_latency_seconds_bucket[5m]))) or histogram_quantile(0.95, sum by (le, app) (rate(order_latency_seconds_bucket[5m]))) or histogram_quantile(0.95, sum by (le, app) (rate(payment_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{app}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Prometheus - Error Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "sum by (app, reason) (rate(orders_failed_total[5m])) or sum by (app, reason) (rate(payment_failures_total[5m])) or sum by (app, reason) (rate(login_failure_total[5m]))",
+          "legendFormat": "{{app}} - {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Payments - Attempts vs Failures (Prometheus)",
+      "description": "Payment RECORDS are stored in Redis as JSON under key payment:<id> (payment-service/src/db/redis_client.py) — not in MySQL or Postgres. Redis has no Grafana datasource here, so these payment-service counters are the only payment view on this dashboard. To browse the records themselves, install the redis-datasource plugin.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "sum(rate(payment_requests_total[5m]))",
+          "legendFormat": "attempts/s"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "sum by (reason) (rate(payment_failures_total[5m]))",
+          "legendFormat": "failed - {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Loki - Recent Logs (Ecommerce)",
+      "type": "logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+          "expr": "{namespace=\"ecommerce\"}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Loki - Logs by Service",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+      "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+          "expr": "sum(count_over_time({namespace=\"ecommerce\"}[5m])) by (pod)"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Loki - Error Logs",
+      "type": "logs",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+          "expr": "{namespace=\"ecommerce\"} |~ \"(?i)error|exception|traceback\""
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Jaeger - Trace Search ($trace_service)",
+      "description": "Recent traces for the selected service. Click a traceID to open the waterfall in Explore. order-service is the chain root, so its traces carry the user-service and payment-service spans as children.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 52 },
+      "datasource": { "type": "jaeger", "uid": "webstore-traces" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "jaeger", "uid": "webstore-traces" },
+          "queryType": "search",
+          "service": "$trace_service",
+          "operation": "",
+          "limit": 20
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "duration" },
+            "properties": [{ "id": "unit", "value": "ms" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "startTime" },
+            "properties": [{ "id": "unit", "value": "dateTimeAsIso" }]
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "Prometheus - Active Services",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 62 },
+      "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "count(up{namespace=\"ecommerce\"} == 1) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Prometheus - Total Requests",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 62 },
+      "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "sum(increase(login_requests_total[5m]) or increase(orders_created_total[5m]) or increase(payment_requests_total[5m])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Prometheus - Error Count (5m)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 62 },
+      "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "webstore-metrics" },
+          "expr": "sum(increase(orders_failed_total[5m]) or increase(payment_failures_total[5m]) or increase(login_failure_total[5m])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Payments (Redis)",
+      "description": "Live payment records from Redis. payment-service writes each one as JSON under payment:<id> — there is no payments table in MySQL or Postgres, so this panel is the only place the records themselves are visible.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 66 },
+      "datasource": { "type": "redis-datasource", "uid": "ecommerce-redis" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "redis-datasource", "uid": "ecommerce-redis" },
+          "type": "cli",
+          "query": "EVAL \"local ks=redis.call('KEYS','payment:*') local out={} for i=1,#ks do out[i]=redis.call('GET',ks[i]) end return out\" 0"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": { "source": "Value", "format": "json", "replace": true }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "renameByName": {
+              "id": "payment_id",
+              "order_id": "order_id",
+              "amount": "amount",
+              "status": "status",
+              "txn_id": "txn_id"
+            },
+            "_comment": "indexByName matches the ORIGINAL field names, before renameByName is applied - keying it on 'payment_id' silently does nothing and the column drifts to the end.",
+            "indexByName": {
+              "id": 0,
+              "order_id": 1,
+              "amount": 2,
+              "status": 3,
+              "txn_id": 4
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Loki - Log Volume (5m)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 62 },
+      "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "ecommerce-logs" },
+          "expr": "sum(count_over_time({namespace=\"ecommerce\"}[5m]))"
+        }
+      ]
+    }
+  ],
+  "_payments_panel_note": "Redis stores each payment as a JSON string, and Grafana's redis-datasource has no 'fetch every value matching a pattern' command. The EVAL below does KEYS + GET server-side in one round trip and returns the JSON lines, which the extractFields transformation then splits into columns. KEYS is O(N) and blocks Redis — fine for a demo holding a few hundred payments, wrong for anything real (use SCAN with a cursor, or a secondary index).",
+  "templating": {
+    "list": [
+      {
+        "name": "trace_service",
+        "label": "Trace service",
+        "type": "custom",
+        "query": "ecommerce-order-service,ecommerce-user-service,ecommerce-payment-service",
+        "current": {
+          "text": "ecommerce-order-service",
+          "value": "ecommerce-order-service",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "ecommerce-order-service",
+            "value": "ecommerce-order-service",
+            "selected": true
+          },
+          { "text": "ecommerce-user-service", "value": "ecommerce-user-service", "selected": false },
+          {
+            "text": "ecommerce-payment-service",
+            "value": "ecommerce-payment-service",
+            "selected": false
+          }
+        ],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" }
+}
