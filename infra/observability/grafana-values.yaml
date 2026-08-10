@@ -22,6 +22,13 @@ resources:
 persistence:
   enabled: false            # dashboards come from provisioning, not the DB
 
+# Redis is not a core Grafana datasource, so the plugin is downloaded from
+# grafana.com on pod start. That makes Grafana's startup depend on the network:
+# if this box is offline the pod will not become ready. Drop this list (and the
+# "Redis (payments)" datasource below) to go back to a fully air-gapped install.
+plugins:
+  - redis-datasource
+
 # Served under /grafana so the existing bookmarks and the RA-003 render URLs
 # keep working after frontend-proxy (an OTel Demo component) goes away.
 grafana.ini:
@@ -81,9 +88,33 @@ datasources:
         jsonData:
           maxOpenConns: 5
 
+      # payment-service stores each payment as a JSON string under
+      # `payment:<id>` (payment-service/src/db/redis_client.py) — there is no
+      # payments table in MySQL or Postgres, so without this datasource a
+      # successful payment is invisible everywhere except the Prometheus
+      # counters. No password: the demo Redis runs unauthenticated.
+      - name: Redis (payments)
+        uid: ecommerce-redis
+        type: redis-datasource
+        url: redis://redis.ecommerce.svc.cluster.local:6379
+        jsonData:
+          client: standalone
+          poolSize: 5
+          timeout: 10
+          pingInterval: 0
+          pipelineWindow: 0
+
       - name: PostgreSQL (orders)
         uid: ecommerce-postgres
-        type: postgres
+        # NOT `postgres`. Grafana 11 renamed this plugin's id to
+        # `grafana-postgresql-datasource`, and the legacy name is only half
+        # aliased: the backend still resolves it, so `/api/datasources/.../health`
+        # returns "Database Connection OK" and `/api/ds/query` returns rows —
+        # but the browser cannot resolve the plugin and every panel renders
+        # "No data" with an error badge. Backend-green / frontend-dead is the
+        # signature, and it makes the datasource look healthy while being
+        # unusable. MySQL is unaffected because `mysql` is still its real id.
+        type: grafana-postgresql-datasource
         url: postgres.ecommerce.svc.cluster.local:5432
         database: orders
         user: appuser
@@ -101,6 +132,22 @@ datasources:
 # plugin needs, so the separate renderer pod is the supported route.
 imageRenderer:
   enabled: true
+  # LOAD BEARING, and the failure it prevents is deeply unobvious.
+  #
+  # The chart builds GF_RENDERING_CALLBACK_URL — the address the renderer uses
+  # to call *back* into Grafana — from the service name alone, with no idea that
+  # `serve_from_sub_path` is on above. Left empty it produces
+  # `http://grafana.observability:80/`, so the renderer requests `/d-solo/...`
+  # instead of `/grafana/d-solo/...`. Grafana's subpath middleware then 302s
+  # that to the absolute root_url, and because `domain` is unset the redirect
+  # target is `http://localhost:3000/grafana/d-solo/...` — localhost being the
+  # *renderer's* own pod, where nothing listens. Chromium reports
+  # ERR_CONNECTION_REFUSED and the render 500s.
+  #
+  # Nothing surfaces that: RA-003 treats a failed render as non-fatal and files
+  # the ticket without the screenshot, so the only symptom is incidents quietly
+  # arriving with no evidence attached.
+  grafanaSubPath: grafana
   resources:
     requests: {memory: "128Mi", cpu: "50m"}
     limits: {memory: "384Mi"}
