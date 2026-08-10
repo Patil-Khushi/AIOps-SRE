@@ -37,13 +37,26 @@ def _compose_cmd() -> list[str]:
     return ["docker", "compose"]  # let it error clearly if neither exists
 
 
+class ComposeError(RuntimeError):
+    """A compose command exited non-zero. See ``_k8s.KubectlError`` for why this
+    must not be a ``ChaosUnavailable``."""
+
+
 def run(cmd: list[str]) -> int:
+    """Run a compose command, raising ``ComposeError`` on a non-zero exit.
+
+    Mirrors ``_k8s.run``: the exit code was previously returned and discarded by
+    every caller, so a failed command reported a successful inject/recover.
+    """
     printable = " ".join(cmd)
     if DRY_RUN:
         print(f"[dry-run] {printable}")
         return 0
     print(f"+ {printable}")
-    return subprocess.call(cmd, cwd=str(COMPOSE_DIR))
+    code = subprocess.call(cmd, cwd=str(COMPOSE_DIR))
+    if code != 0:
+        raise ComposeError(f"`{printable}` exited {code}")
+    return code
 
 
 def _faults_path() -> Path:

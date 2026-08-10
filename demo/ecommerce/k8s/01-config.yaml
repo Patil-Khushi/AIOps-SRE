@@ -31,15 +31,30 @@ data:
   JWT_EXPIRY_MINUTES: "60"
 
   # --- Tracing --------------------------------------------------------------
-  # In-cluster DNS to the collector. This replaces the NodePort bridge the
-  # Compose deployment needed (observability/nodeports.yaml) — once the app
-  # runs here, that bridge is only required if you still run Compose too.
+  # OTLP/gRPC straight into Jaeger. The OpenTelemetry Collector used to sit in
+  # this path, but its whole configuration was one otlp receiver forwarding to
+  # this exact address — a hop that transformed nothing. Jaeger's allInOne mode
+  # accepts OTLP natively on 4317, so the app now speaks to it directly.
   #
-  # Points at the STANDALONE collector in the `observability` namespace
-  # (infra/observability/), not the one that used to ship as an
-  # opentelemetry-demo subchart. The service name is the helm release name plus
-  # the chart name, which is why it reads as a stutter.
-  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4317"
+  # allInOne exposes every port on ONE Service named `jaeger`; there is no
+  # `jaeger-collector` in this mode. Re-check after any chart bump:
+  #   kubectl -n observability get svc
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger.observability.svc.cluster.local:4317"
+
+  # --- Logs -----------------------------------------------------------------
+  # In-cluster DNS to Loki. Each service pushes its own JSON log lines to
+  # /loki/api/v1/push from a background thread (see each service's
+  # src/observability/loki_handler.py) — the same direct-to-backend posture as
+  # metrics and traces. This replaced the Promtail DaemonSet that used to tail
+  # /var/log/pods on every node.
+  #
+  # Loki lives in the otel-demo namespace, not observability: it owns a PVC and
+  # reinstalling it elsewhere would drop every log line collected so far. See
+  # infra/observability/README.md.
+  #
+  # Blank disables shipping entirely and the app logs only to stdout.
+  LOKI_URL: "http://loki.otel-demo.svc.cluster.local:3100"
+  LOKI_NAMESPACE: "ecommerce"
 
   # --- Failure injection toggles (all OFF = healthy baseline) ---------------
   # Scenarios flip these with `kubectl set env` or by patching this ConfigMap
