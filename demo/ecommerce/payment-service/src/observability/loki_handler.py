@@ -127,15 +127,34 @@ class LokiHandler(logging.Handler):
                 item = None
 
             if item is _SHUTDOWN:
-                self._push(batch)
+                self._safe_push(batch)
                 return
             if item is not None:
                 batch.append(item)  # type: ignore[arg-type]
 
             if len(batch) >= _BATCH_MAX_RECORDS or time.monotonic() >= deadline:
-                self._push(batch)
+                self._safe_push(batch)
                 batch = []
                 deadline = time.monotonic() + _BATCH_INTERVAL_SECONDS
+
+    def _safe_push(self, batch: list[tuple[int, str, str]]) -> None:
+        """Call ``_push`` such that no exception can ever kill this thread.
+
+        ``_push`` guards its own network call, but an unforeseen failure anywhere
+        else in it (a non-serializable label, a malformed entry) would propagate
+        out of ``_run`` and end the shipper *permanently* — every subsequent line
+        silently discarded for the life of the process, drop counter included.
+        That is the one outcome constraint 2 in the module docstring forbids, so
+        the loop degrades to the same mute-and-carry-on path a network error takes.
+        """
+        try:
+            self._push(batch)
+        except Exception:
+            # Deliberately silent, for the same reason _push is: logging from the
+            # log shipper recurses straight back into this handler.
+            with self._drop_lock:
+                self._dropped += len(batch)
+            self._muted_until = time.monotonic() + _BACKOFF_SECONDS
 
     def _push(self, batch: list[tuple[int, str, str]]) -> None:
         if not batch:
@@ -154,11 +173,17 @@ class LokiHandler(logging.Handler):
         for ts_ns, level, line in batch:
             streams.setdefault(level, []).append([str(ts_ns), line])
 
-        # Declare any lines the queue had to discard. A gap in the log stream
-        # that nothing accounts for is worse than the gap itself: RA-007 counts
+        # Declare any lines that were discarded. A gap in the log stream that
+        # nothing accounts for is worse than the gap itself: RA-007 counts
         # error-severity lines to decide whether there was a spike, and a
         # silently truncated stream would understate an incident at exactly the
         # moment the service was loudest. Reported once, then the counter clears.
+        #
+        # The cause is left open deliberately. Three paths feed this counter —
+        # producer-side queue overflow, a batch discarded during the backoff
+        # window, and a batch whose push failed — and naming only the first would
+        # blame queue pressure for what was actually a Loki outage, sending
+        # whoever reads this line during an incident after the wrong problem.
         with self._drop_lock:
             dropped, self._dropped = self._dropped, 0
         if dropped:
@@ -170,8 +195,10 @@ class LokiHandler(logging.Handler):
                             "level": "WARNING",
                             "service": self._labels.get("service_name", "unknown"),
                             "message": (
-                                f"loki shipper dropped {dropped} log line(s): "
-                                f"queue full at {_QUEUE_MAX_RECORDS} records"
+                                f"loki shipper dropped {dropped} log line(s) since the "
+                                f"last successful push: queue overflow above "
+                                f"{_QUEUE_MAX_RECORDS} records, and/or batches discarded "
+                                f"while Loki was unreachable"
                             ),
                         }
                     ),
