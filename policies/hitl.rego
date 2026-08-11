@@ -19,6 +19,11 @@ default level := "optional"
 level := "none"     if input.action == "observability.metrics.query"
 level := "none"     if input.action == "observability.logs.query"
 level := "none"     if input.action == "observability.traces.query"
+
+# Kubernetes Events + ConfigMap managedFields. Read-only: a list call cannot change
+# the system. A future ConfigMap *write* path must be a separate, "required"
+# capability rather than a relaxation of this one.
+level := "none"     if input.action == "observability.events.query"
 level := "none"     if input.action == "notify.send"
 level := "optional" if input.action == "itsm.incident.create"
 level := "optional" if input.action == "itsm.incident.update"

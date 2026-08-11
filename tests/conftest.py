@@ -255,14 +255,32 @@ def _hermetic_resilience():
     unrelated tests — and a cached result would be served to a test that expected
     a fresh call. Same leak class as the observability breakers above, now
     centralised because all three provider seams share this state.
+
+    ``aiops.context.shadow`` and the collector base's in-flight request map are
+    reset here rather than in fixtures of their own: all three are the same
+    class of process-global state (shadow's counters plus a bounded diff ring;
+    the collector's ``threading.Event`` map for in-flight duplicate requests),
+    and the context layer's section cache lives in ``resilience``'s cache, so
+    they are reset as one unit. Folding them in also keeps the autouse count at
+    ten — each of these is a place a regression can hide, and this file already
+    documents one case (``_opt_in_enrichment_seams_off``) where a fixture masked
+    exactly that. A leaked in-flight entry is a particularly sharp failure mode:
+    every later request for that exact (correlation_id, fingerprint) would wait
+    on an ``Event`` nothing will ever set, until its timeout.
     """
+    from aiops.context import shadow as _context_shadow
+    from aiops.context.collectors import base as _collectors_base
     from aiops.tools import resilience as _resilience
 
     _resilience.reset_for_tests()
+    _context_shadow.reset_for_tests()
+    _collectors_base.reset_for_tests()
     try:
         yield
     finally:
         _resilience.reset_for_tests()
+        _context_shadow.reset_for_tests()
+        _collectors_base.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -307,6 +325,13 @@ def _opt_in_enrichment_seams_off(monkeypatch):
 
     Tests that need a seam on already patch it ``True`` themselves; a test-body
     patch applies after fixture setup, so those are unaffected.
+
+    ``AIOPS_CONTEXT_LAYER`` joins them, but by ``delenv`` rather than ``setattr``:
+    ``aiops.context.config.context_mode()`` reads the environment on every call
+    precisely so it *can* be reached this way (see that module's docstring). Same
+    ``.env``-bleed defence, one line instead of a fourth patched constant — a
+    developer running with the context layer on must not silently exercise a
+    different code path than CI does.
     """
     from agents.log_correlation import agent as _lc_agent
     from agents.log_correlation import history as _lc_history
@@ -315,6 +340,7 @@ def _opt_in_enrichment_seams_off(monkeypatch):
     monkeypatch.setattr(_lc_agent, "_CHANGE_CONTEXT_ENABLED", False, raising=False)
     monkeypatch.setattr(_lc_history, "_ENABLED", False, raising=False)
     monkeypatch.setattr(_lc_timeline_sources, "_K8S_ENABLED", False, raising=False)
+    monkeypatch.delenv("AIOPS_CONTEXT_LAYER", raising=False)
 
 
 @pytest.fixture(autouse=True)

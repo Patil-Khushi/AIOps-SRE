@@ -115,6 +115,11 @@ class RCAInput(BaseModel):
     # reasoning prompt. Optional + additive — RCA's behavior is unchanged when
     # it is omitted, so the contract stays backward-compatible.
     correlation: dict[str, Any] | None = None
+    # Optional shared IncidentContext (dict form) from the Context Engineering
+    # Layer. Same additive contract as `correlation`: omitted, RCA gathers its
+    # own live evidence exactly as before. `run()` never sets this — see its
+    # docstring — so this field is not exercised by the eval harness.
+    context: dict[str, Any] | None = None
 
 
 class RCAVerdict(BaseModel):

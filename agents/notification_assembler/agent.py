@@ -535,9 +535,19 @@ def _context_item(label: str, capability: str, **kwargs) -> ContextPackItem:
     return ContextPackItem(label=label, value=str(result.data), source=capability)
 
 
-def _build_context_pack(verdict: TriageVerdict) -> list[ContextPackItem]:
+def _build_context_pack(
+    verdict: TriageVerdict, context: dict[str, Any] | None = None
+) -> list[ContextPackItem]:
     """Live snapshot for the room. Static facts from the verdict first, then
-    best-effort live telemetry for the affected service."""
+    best-effort live telemetry for the affected service.
+
+    ``context`` is the optional shared ``IncidentContext`` (dict form) from the
+    Context Engineering Layer. When usable, it replaces the two live registry
+    calls below with rows already collected there — see
+    ``agents/notification_assembler/context_adapter.py`` for why byte-identity
+    holds. Omitted or unusable, this falls straight through to the original two
+    ``_context_item`` calls, unchanged.
+    """
     svc = verdict.affected_service
     pack: list[ContextPackItem] = [
         ContextPackItem(label="Affected service", value=svc, source="verdict"),
@@ -547,6 +557,12 @@ def _build_context_pack(verdict: TriageVerdict) -> list[ContextPackItem]:
         pack.append(
             ContextPackItem(label="Runbook", value=verdict.recommended_runbook, source="verdict")
         )
+
+    telemetry = _telemetry_items(svc, context)
+    if telemetry is not None:
+        pack.extend(telemetry)
+        return pack
+
     pack.append(
         _context_item(
             "Request rate (5m)",
@@ -566,6 +582,53 @@ def _build_context_pack(verdict: TriageVerdict) -> list[ContextPackItem]:
     return pack
 
 
+def _telemetry_items(svc: str, context: dict[str, Any] | None) -> list[ContextPackItem] | None:
+    """The two live-telemetry rows, from the shared context when one is usable.
+
+    Returns ``None`` (never an empty list) when there is nothing to offer from a
+    context, so the caller's "did this replace the legacy calls" check cannot be
+    confused with "the context replaced them with zero items". Reads
+    ``AIOPS_CONTEXT_LAYER`` per call — see ``aiops/context/config.py``.
+    """
+    from aiops.context import config as context_config
+
+    if context_config.context_mode() == "off" or context is None:
+        return None
+
+    from agents.notification_assembler.context_adapter import context_pack_items_from_context
+    from aiops.context.pack import IncidentContext
+
+    try:
+        ctx = IncidentContext.model_validate(context)
+        items = context_pack_items_from_context(ctx, svc)
+    except Exception:
+        return None
+
+    if context_config.shadow_enabled():
+        # Shadow mode always returns the legacy answer; the comparison is
+        # diagnostic only and never changes what the caller sees.
+        from aiops.context import shadow as context_shadow
+
+        legacy = [
+            _context_item(
+                "Request rate (5m)",
+                "observability.metrics.query",
+                promql=f'sum(rate(http_server_request_duration_count{{service_name="{svc}"}}[5m]))',
+            ),
+            _context_item(
+                "Recent traces", "observability.traces.search", service=svc, lookback="15m", limit=5
+            ),
+        ]
+        context_shadow.record_diff(
+            "notification_assembler",
+            legacy=[item.model_dump() for item in legacy],
+            from_context=[item.model_dump() for item in (items or [])],
+        )
+        return None
+
+    return items
+
+
 def _seed_timeline(
     verdict: TriageVerdict, now: datetime, invited: list[InvitedSME], channel: str
 ) -> list[TimelineEvent]:
@@ -580,7 +643,12 @@ def _seed_timeline(
     return events
 
 
-def _decide_war_room(verdict: TriageVerdict, now: datetime, oncall: dict | None) -> WarRoomAssembly:
+def _decide_war_room(
+    verdict: TriageVerdict,
+    now: datetime,
+    oncall: dict | None,
+    context: dict[str, Any] | None = None,
+) -> WarRoomAssembly:
     """Pure war-room decision (former RA-006 ``decide``). Returns
     ``assembled=False`` for Sev-3/Sev-4 or Suppressed verdicts."""
     sev = verdict.severity
@@ -625,7 +693,7 @@ def _decide_war_room(verdict: TriageVerdict, now: datetime, oncall: dict | None)
         f"{len(dep_smes)} dependency-owner + {len(past_smes)} past-resolver)"
     )
 
-    context_pack = _build_context_pack(verdict)
+    context_pack = _build_context_pack(verdict, context)
     live = sum(
         1
         for i in context_pack
@@ -792,24 +860,37 @@ def _combined_chat_message(
     )
 
 
-def decide(verdict: TriageVerdict, *, now: datetime | None = None) -> NotificationAssembly:
+def decide(
+    verdict: TriageVerdict,
+    *,
+    now: datetime | None = None,
+    context: dict[str, Any] | None = None,
+) -> NotificationAssembly:
     """Pure decision — no side effects. Safe to call in tests and evals.
 
     Resolves the on-call ONCE, then computes the routing decision and the
     war-room plan from it. The war room is only ``assembled=True`` for
     Sev-1/Sev-2 Active verdicts. ``war_room`` is ``None`` only when the routing
     was Suppressed. Use :func:`notify` to actually create the bridge and emit.
+
+    ``context`` is the optional shared ``IncidentContext`` (dict form). Additive
+    and keyword-only — omitted, behavior is unchanged.
     """
     now = now or datetime.now(UTC)
     oncall = _resolve_oncall(verdict)
     decision = _decide_routing(verdict, now, oncall)
     if verdict.status == "Suppressed":
         return NotificationAssembly(decision=decision, war_room=None)
-    war_room = _decide_war_room(verdict, now, oncall)
+    war_room = _decide_war_room(verdict, now, oncall, context)
     return NotificationAssembly(decision=decision, war_room=war_room)
 
 
-def notify(verdict: TriageVerdict, *, now: datetime | None = None) -> NotificationOutcome:
+def notify(
+    verdict: TriageVerdict,
+    *,
+    now: datetime | None = None,
+    context: dict[str, Any] | None = None,
+) -> NotificationOutcome:
     """Decide, stand up the war room (Sev-1/Sev-2), and emit ONE chatops message.
 
     Side effects: (1) for Sev-1/Sev-2 Active verdicts, creates the Slack
@@ -818,7 +899,7 @@ def notify(verdict: TriageVerdict, *, now: datetime | None = None) -> Notificati
     the chatops seam — the routing notification with the war-room link folded
     in. Suppressed verdicts short-circuit both (empty actions → no emit).
     """
-    plan = decide(verdict, now=now)
+    plan = decide(verdict, now=now, context=context)
     decision = plan.decision
     assembly = plan.war_room
 
@@ -851,11 +932,16 @@ def notify(verdict: TriageVerdict, *, now: datetime | None = None) -> Notificati
     return NotificationOutcome(decision=decision, war_room=assembly, deliveries=deliveries)
 
 
-def decide_war_room(verdict: TriageVerdict, *, now: datetime | None = None) -> WarRoomAssembly:
+def decide_war_room(
+    verdict: TriageVerdict,
+    *,
+    now: datetime | None = None,
+    context: dict[str, Any] | None = None,
+) -> WarRoomAssembly:
     """War-room-only pure decision (no bridge, no emit). Used by the dashboard
     try-it inspector to preview how the agent reacts to any severity/status."""
     now = now or datetime.now(UTC)
-    return _decide_war_room(verdict, now, _resolve_oncall(verdict))
+    return _decide_war_room(verdict, now, _resolve_oncall(verdict), context)
 
 
 def assemble_war_room(verdict: TriageVerdict, *, now: datetime | None = None) -> WarRoomAssembly:

@@ -580,17 +580,68 @@ def _render_user_prompt(
 # ─── entry point ────────────────────────────────────────────────────────────
 
 
+def _observe(
+    service: str,
+    context: dict[str, Any] | None,
+    decision_trace: list[str],
+) -> dict[str, list[str]]:
+    """Live telemetry, from the shared context when one is usable, else gathered
+    directly — exactly as this agent has always done.
+
+    Reading ``AIOPS_CONTEXT_LAYER`` per call, not at import, so a fixture or an
+    operator's environment change is honoured without a module reload (see
+    ``aiops/context/config.py``). ``shadow`` mode compares both paths without ever
+    changing what ``analyze`` returns.
+    """
+    from aiops.context import config as context_config
+    from aiops.context import shadow as context_shadow
+    from aiops.context.pack import IncidentContext
+
+    mode = context_config.context_mode()
+    if mode == "off" or context is None:
+        return _evidence.gather(service)
+
+    try:
+        ctx = IncidentContext.model_validate(context)
+        from agents.rca_agent.context_adapter import evidence_from_context
+
+        from_context = evidence_from_context(ctx, service)
+    except Exception as exc:
+        # A malformed or stale context must cost evidence, not the RCA. Same
+        # posture as every other lookup in this module.
+        decision_trace.append(f"context evidence unusable ({type(exc).__name__}); gathering live")
+        return _evidence.gather(service)
+
+    if mode == "shadow":
+        legacy = _evidence.gather(service)
+        context_shadow.record_diff("rca_agent", legacy=legacy, from_context=from_context)
+        return legacy
+
+    if not from_context:
+        decision_trace.append("shared context had no usable evidence; gathering live")
+        return _evidence.gather(service)
+
+    decision_trace.append("live evidence gathered from the shared context")
+    return from_context
+
+
 def analyze(
     triage_verdict: dict[str, Any],
     *,
     scenario_id: str | None = None,
     correlation: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
 ) -> RCAVerdict:
     """Produce an RCA verdict for one triaged incident.
 
     ``correlation`` is the optional ``CorrelationResult`` (dict form) from the
     Log Correlation agent (RA-007). When supplied, its suspect components, top
     signatures, and evidence summary are folded into the reasoning prompt.
+
+    ``context`` is the optional shared ``IncidentContext`` (dict form) from the
+    Context Engineering Layer. Additive and keyword-only, exactly like
+    ``correlation`` — omitting it reproduces today's behavior exactly, including
+    the zero-I/O path ``run()`` uses for eval goldens, which never passes one.
     """
     decision_trace: list[str] = [
         f"received triage_verdict for service={triage_verdict.get('affected_service')!r} "
@@ -613,7 +664,7 @@ def analyze(
     # only guess a mechanism — which is how the previous prompt produced
     # confident root causes naming feature flags that do not exist.
     # Never raises; an unreachable backend costs one evidence line, not the RCA.
-    observed = _evidence.gather(service)
+    observed = _observe(service, context, decision_trace)
     if observed:
         decision_trace.append(
             "live evidence gathered: " + ", ".join(f"{k}={len(v)}" for k, v in observed.items())
@@ -671,7 +722,14 @@ def analyze(
 
 
 def run(input: dict[str, Any]) -> dict[str, Any]:
-    """Eval-harness contract: dict-in, dict-out shim around ``analyze``."""
+    """Eval-harness contract: dict-in, dict-out shim around ``analyze``.
+
+    Never passes ``context`` — this is the zero-I/O golden path, and it must stay
+    that way regardless of ``AIOPS_CONTEXT_LAYER``: the eval harness compares a run
+    against a fixed golden file, so its evidence has to come from the deterministic
+    fallback path, not from whatever a live or shadow context build happens to
+    return.
+    """
     parsed = RCAInput(**input)
     verdict = analyze(
         parsed.triage_verdict, scenario_id=parsed.scenario_id, correlation=parsed.correlation

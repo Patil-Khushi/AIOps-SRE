@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -281,22 +282,37 @@ def _resolve_topology(payload: CorrelationInput, trace: list[str]) -> list[str]:
 # ─── live fetch (logs / traces / metrics) ───────────────────────────────────
 
 
-def _fetch_logs(payload: CorrelationInput, trace: list[str]) -> tuple[list[CorrelatedSignal], bool]:
+def _live_logs_result(payload: CorrelationInput) -> Any:
+    svc = payload.service.lower().strip()
+    return get_registry().call(
+        "observability.logs.query",
+        service=svc,
+        start=payload.window.start.isoformat(),
+        end=payload.window.end.isoformat(),
+        limit=_MAX_LIVE_LOG_LINES,
+    )
+
+
+def _fetch_logs(
+    payload: CorrelationInput,
+    trace: list[str],
+    fetch: Callable[[CorrelationInput], Any] = _live_logs_result,
+) -> tuple[list[CorrelatedSignal], bool]:
     """Query the logs provider (Loki) for the service's log lines in the
     window. Returns (signals, reachable).
 
     Provider-agnostic: passes ``service`` + window, not a backend-specific
     query string — the provider translates internally. Swapping Loki for
-    Splunk / Elastic is a registry/config change, not an agent change."""
-    svc = payload.service.lower().strip()
+    Splunk / Elastic is a registry/config change, not an agent change.
+
+    ``fetch`` defaults to the live registry call and takes ``payload`` so a
+    caller can source the same result from the Context Engineering Layer
+    instead — see ``agents/log_correlation/context_adapter.py``. Everything
+    below this line (the stream/values walk, the fingerprinting, the
+    timestamp-fallback, the trace strings) is unchanged either way.
+    """
     try:
-        res = get_registry().call(
-            "observability.logs.query",
-            service=svc,
-            start=payload.window.start.isoformat(),
-            end=payload.window.end.isoformat(),
-            limit=_MAX_LIVE_LOG_LINES,
-        )
+        res = fetch(payload)
     except KeyError:
         trace.append("logs: capability observability.logs.query not registered")
         return [], False
@@ -328,19 +344,24 @@ def _fetch_logs(payload: CorrelationInput, trace: list[str]) -> tuple[list[Corre
     return signals, True
 
 
+def _live_traces_result(payload: CorrelationInput) -> Any:
+    return get_registry().call(
+        "observability.traces.search",
+        service=payload.service.lower().strip(),
+        lookback=_lookback_str(payload.window),
+        limit=10,
+    )
+
+
 def _fetch_traces(
-    payload: CorrelationInput, trace: list[str]
+    payload: CorrelationInput,
+    trace: list[str],
+    fetch: Callable[[CorrelationInput], Any] = _live_traces_result,
 ) -> tuple[list[CorrelatedSignal], bool]:
     """Search Jaeger for recent traces of the service. Returns (signals,
     reachable)."""
-    lookback = _lookback_str(payload.window)
     try:
-        res = get_registry().call(
-            "observability.traces.search",
-            service=payload.service.lower().strip(),
-            lookback=lookback,
-            limit=10,
-        )
+        res = fetch(payload)
     except KeyError:
         trace.append("traces: capability observability.traces.search not registered")
         return [], False
@@ -372,18 +393,27 @@ def _fetch_traces(
     return signals, True
 
 
-def _fetch_metrics(
-    payload: CorrelationInput, trace: list[str]
-) -> tuple[list[CorrelatedSignal], bool]:
-    """Query Prometheus for the service's error rate. Returns (signals,
-    reachable)."""
+def _metrics_promql(payload: CorrelationInput) -> str:
     svc = payload.service.lower().strip().replace('"', '\\"')
-    promql = (
+    return (
         f"sum(rate(http_server_duration_milliseconds_count"
         f'{{service_name="{svc}",http_status_code=~"5.."}}[5m]))'
     )
+
+
+def _live_metrics_result(payload: CorrelationInput) -> Any:
+    return get_registry().call("observability.metrics.query", promql=_metrics_promql(payload))
+
+
+def _fetch_metrics(
+    payload: CorrelationInput,
+    trace: list[str],
+    fetch: Callable[[CorrelationInput], Any] = _live_metrics_result,
+) -> tuple[list[CorrelatedSignal], bool]:
+    """Query Prometheus for the service's error rate. Returns (signals,
+    reachable)."""
     try:
-        res = get_registry().call("observability.metrics.query", promql=promql)
+        res = fetch(payload)
     except KeyError:
         trace.append("metrics: capability observability.metrics.query not registered")
         return [], False
@@ -986,7 +1016,114 @@ def _build_incident_timeline(
 # ─── entry point ────────────────────────────────────────────────────────────
 
 
-def correlate(payload: CorrelationInput, *, force_synthetic: bool = False) -> CorrelationResult:
+def _shadow_compare_if_enabled(
+    payload: CorrelationInput,
+    context: dict[str, Any] | None,
+    legacy_signals: list[CorrelatedSignal],
+    legacy_reachable: bool,
+) -> None:
+    """In shadow mode, compute the context-derived fetch results alongside the
+    legacy ones already returned to the caller, and record whether they agree.
+
+    Purely diagnostic — never raises, never touches ``legacy_signals``, and its
+    result is not consulted by anything on the incident path. Structural
+    equality on the signal dicts (not identity) so two runs that agree in
+    content but differ in Python object identity still compare equal.
+    """
+    from aiops.context import config as context_config
+
+    if not context_config.shadow_enabled() or context is None:
+        return
+    try:
+        from agents.log_correlation.context_adapter import (
+            context_logs_fetch,
+            context_metrics_fetch,
+            context_traces_fetch,
+        )
+        from aiops.context import shadow as context_shadow
+        from aiops.context.pack import IncidentContext
+
+        ctx = IncidentContext.model_validate(context)
+        trace: list[str] = []
+        context_signals: list[CorrelatedSignal] = []
+        reachable = False
+        for fetch_factory, fn in (
+            (context_logs_fetch, _fetch_logs),
+            (context_traces_fetch, _fetch_traces),
+            (context_metrics_fetch, _fetch_metrics),
+        ):
+            sigs, ok = fn(payload, trace, fetch=fetch_factory(ctx))
+            context_signals.extend(sigs)
+            reachable = reachable or ok
+
+        context_shadow.record_diff(
+            "log_correlation",
+            legacy={
+                "signals": [s.model_dump(mode="json") for s in legacy_signals],
+                "reachable": legacy_reachable,
+            },
+            from_context={
+                "signals": [s.model_dump(mode="json") for s in context_signals],
+                "reachable": reachable,
+            },
+        )
+    except Exception:  # pragma: no cover - diagnostic path must never affect the caller
+        pass
+
+
+def _fetchers_for(
+    payload: CorrelationInput, context: dict[str, Any] | None, decision_trace: list[str]
+) -> tuple[
+    Callable[[CorrelationInput, list[str]], tuple[list[CorrelatedSignal], bool]],
+    Callable[[CorrelationInput, list[str]], tuple[list[CorrelatedSignal], bool]],
+    Callable[[CorrelationInput, list[str]], tuple[list[CorrelatedSignal], bool]],
+]:
+    """The three fetch functions, bound to the shared context when one is usable.
+
+    Reads ``AIOPS_CONTEXT_LAYER`` per call — see ``aiops/context/config.py`` for
+    why. In ``shadow`` mode the *live* fetchers are returned (so the caller's
+    behavior is unchanged) and the comparison happens separately once both
+    answers exist. A malformed context degrades to the live fetchers, same
+    posture as every other lookup in this module.
+    """
+    import functools
+
+    from aiops.context import config as context_config
+
+    if context_config.context_mode() == "off" or context is None:
+        return _fetch_logs, _fetch_traces, _fetch_metrics
+    if context_config.shadow_enabled():
+        # Legacy fetchers answer the caller; the context-derived comparison for
+        # diagnostics runs separately in `correlate()` once both results exist,
+        # rather than here where only one set of fetchers can be returned.
+        return _fetch_logs, _fetch_traces, _fetch_metrics
+
+    try:
+        from agents.log_correlation.context_adapter import (
+            context_logs_fetch,
+            context_metrics_fetch,
+            context_traces_fetch,
+        )
+        from aiops.context.pack import IncidentContext
+
+        ctx = IncidentContext.model_validate(context)
+    except Exception as exc:
+        decision_trace.append(f"context evidence unusable ({type(exc).__name__}); fetching live")
+        return _fetch_logs, _fetch_traces, _fetch_metrics
+
+    return (
+        functools.partial(_fetch_logs, fetch=context_logs_fetch(ctx)),
+        functools.partial(_fetch_traces, fetch=context_traces_fetch(ctx)),
+        functools.partial(_fetch_metrics, fetch=context_metrics_fetch(ctx)),
+    )
+
+
+def correlate(
+    payload: CorrelationInput,
+    *,
+    force_synthetic: bool = False,
+    context: dict[str, Any] | None = None,
+) -> CorrelationResult:
     """Correlate logs/traces/metrics for one incident into an evidence pack.
 
     Read-only with respect to external systems beyond the observability and
@@ -999,6 +1136,10 @@ def correlate(payload: CorrelationInput, *, force_synthetic: bool = False) -> Co
     *rules* regardless of whether a cluster happens to be reachable — the same
     spirit as the RCA agent's deterministic-fallback eval path. Live fetch is
     exercised by the CLI and production ``correlate()`` (``force_synthetic`` off).
+
+    ``context`` is the optional shared ``IncidentContext`` (dict form) from the
+    Context Engineering Layer. Additive and keyword-only — omitted, or with
+    ``force_synthetic=True``, behavior is unchanged; ``run()`` never sets it.
     """
     decision_trace: list[str] = [
         f"received incident for service={payload.service!r} "
@@ -1012,12 +1153,13 @@ def correlate(payload: CorrelationInput, *, force_synthetic: bool = False) -> Co
     live_signals: list[CorrelatedSignal] = []
     any_reachable = False
     if not force_synthetic:
-        fetchers = (_fetch_logs, _fetch_traces, _fetch_metrics)
+        fetchers = _fetchers_for(payload, context, decision_trace)
         with ThreadPoolExecutor(max_workers=len(fetchers)) as ex:
             outcomes = list(ex.map(lambda fn: fn(payload, decision_trace), fetchers))
         for sig_list, reachable in outcomes:
             any_reachable = any_reachable or reachable
             live_signals.extend(sig_list)
+        _shadow_compare_if_enabled(payload, context, live_signals, any_reachable)
 
     # Stage 3 — synthetic fallback when live evidence is empty (or forced)
     if live_signals:
