@@ -124,6 +124,15 @@ DEFAULT_LEVELS: dict[str, AutonomyLevel] = {
     "observability.traces.query": AutonomyLevel.NONE,
     "observability.traces.search": AutonomyLevel.NONE,
     "observability.traces.services": AutonomyLevel.NONE,
+    # Kubernetes Events + ConfigMap managedFields, read-only. Same reasoning as the
+    # rest of observability.*: a list call cannot change the system, so gating it on
+    # a human would only add latency to every correlation. Listed explicitly rather
+    # than left to the OPTIONAL default, because "a human may approve this read" is
+    # not the intent.
+    #
+    # A future write path (patching a ConfigMap to apply a fix) must register as a
+    # SEPARATE capability at REQUIRED — never by relaxing this one.
+    "observability.events.query": AutonomyLevel.NONE,
     "itsm.cmdb.lookup": AutonomyLevel.NONE,
     "oncall.schedule.lookup": AutonomyLevel.NONE,
     # SCM (aiops/tools/scm/): read-only source, IaC and deployment-config

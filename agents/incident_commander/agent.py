@@ -94,6 +94,65 @@ def _correlation_lookback() -> timedelta:
     return timedelta(minutes=minutes)
 
 
+def _build_shared_evidence_context(
+    *,
+    service: str,
+    severity: str,
+    window_start: datetime,
+    window_end: datetime,
+    alert_id: str,
+    alert_name: str,
+) -> dict[str, Any] | None:
+    """Collect once, for both RA-007 and PRS-008, instead of each agent
+    fetching its own metrics/logs/traces for the same service and window.
+
+    Returns ``None`` when the Context Engineering Layer is off — matches
+    ``aiops.runtime.orchestrator._build_shared_context``'s reasoning exactly:
+    building a context nobody will read is wasted work, and both ``correlate()``
+    and ``rca_analyze()`` already treat ``context=None`` as "fetch your own
+    evidence". Never raises — a build failure costs evidence, not the RCA.
+    """
+    from aiops.context import config as context_config
+
+    if context_config.context_mode() == "off":
+        return None
+
+    try:
+        from agents.log_correlation.context_adapter import (
+            build_context_request_specs as log_correlation_specs,
+        )
+        from agents.log_correlation.models import CorrelationInput
+        from agents.log_correlation.models import TimeWindow as _Window
+        from agents.rca_agent.context_adapter import (
+            build_context_request_specs as rca_specs,
+        )
+        from aiops.context.builder import ContextBuilder, ContextRequest
+
+        correlation_payload = CorrelationInput(
+            service=service, window=_Window(start=window_start, end=window_end)
+        )
+        specs = [
+            *rca_specs(service, window_start=window_start, window_end=window_end),
+            *log_correlation_specs(correlation_payload),
+        ]
+        request = ContextRequest(
+            service=service,
+            window_start=window_start,
+            window_end=window_end,
+            specs=specs,
+            severity=severity,
+            alert_id=alert_id,
+            alert_name=alert_name,
+        )
+        return ContextBuilder().build(request).model_dump(mode="json")
+    except Exception:
+        logger.exception(
+            "RA-008: shared evidence context build failed for %s; RA-007/PRS-008 will fetch live",
+            service,
+        )
+        return None
+
+
 def _entry(stage: str, detail: str, ts: datetime) -> TimelineEntry:
     """One timeline line stamped with the *real* time the stage happened.
 
@@ -312,6 +371,30 @@ def command(
 
     trace.append(f"severity {severity} — IC engaged for Sev-1/2 coordination")
 
+    # Built once, before RA-007, so RA-007 and PRS-008 below both reason from
+    # the SAME collected evidence for this incident instead of each
+    # independently querying Prometheus/Loki/Jaeger. A no-op (returns None)
+    # unless AIOPS_CONTEXT_LAYER is on; both correlate() and rca_analyze()
+    # already treat context=None as "fetch your own evidence, exactly as
+    # before" — engaged path only, since correlation/RCA are Sev-1/2-only here.
+    window_start = alert.timestamp - _correlation_lookback()
+    shared_context = _build_shared_evidence_context(
+        service=verdict.affected_service,
+        severity=severity,
+        window_start=window_start,
+        window_end=alert.timestamp,
+        alert_id=alert.alert_id,
+        alert_name=alert.metric,
+    )
+    # Passed only when there is something to pass — correlate()/rca_analyze()
+    # already default context to None, so omitting the kwarg when
+    # AIOPS_CONTEXT_LAYER is off (the common case) is behaviourally identical
+    # AND keeps both calls compatible with any caller — including test stubs —
+    # written against the pre-migration signature.
+    context_kwargs: dict[str, Any] = (
+        {"context": shared_context} if shared_context is not None else {}
+    )
+
     # Step 3 — correlate (RA-007): pull the evidence pack that feeds RCA. Engaged
     # path only, since RCA is its sole consumer here. Read-only; a failure is
     # non-fatal — RCA's correlation arg is additive, so it simply runs without
@@ -322,13 +405,11 @@ def command(
         correlation = correlate(
             CorrelationInput(
                 service=verdict.affected_service,
-                window=TimeWindow(
-                    start=alert.timestamp - _correlation_lookback(),
-                    end=alert.timestamp,
-                ),
+                window=TimeWindow(start=window_start, end=alert.timestamp),
                 triage_verdict=verdict.model_dump(mode="json"),
                 classification=flow.classification.model_dump(mode="json"),
-            )
+            ),
+            **context_kwargs,
         )
     except Exception:
         logger.exception(
@@ -367,6 +448,7 @@ def command(
         verdict.model_dump(mode="json"),
         scenario_id=scenario_id,
         correlation=correlation_dict,
+        **context_kwargs,
     )
     rca_ts = datetime.now(UTC)
     timeline.append(

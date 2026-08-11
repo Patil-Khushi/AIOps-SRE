@@ -24,7 +24,7 @@ Two of these merges are real code merges, not just catalog relabelling:
 
 The `agentCatalog.ts` `agent()` factory takes an optional `id` override so renamed agents keep stable routes (`alert-triage`, `notification-assembler`, `topology-discovery`) — renaming an agent's display label does not require touching `Sidebar` or `consoleScope`.
 
-Catalog rows and directory names do not match 1:1. **`agents/README.md` is the authoritative shipped inventory.**
+Catalog rows and directory names do not match 1:1. `agents/README.md` documents the merge decisions in prose but has fallen behind disk — it currently omits `log_correlation/`, `rca_agent/`, `remediation_recommender/`, `resolution_verifier/`, `runbook_executor/`, and `auto_healer_lite/`. Treat the **Repository layout** tree below, not `agents/README.md`, as the current shipped inventory; the eleven directories under `agents/` there are all shipped.
 
 Source-of-truth documents (binary Office files):
 
@@ -125,17 +125,24 @@ The onboarding guide specifies five phases. Use this to judge what's in scope at
 ```
 aiops/                     # platform seams — never call vendor SDKs outside this package
 ├── llm/                   # provider-agnostic LLM gateway (anthropic / openai / ollama / stub)
+├── context/               # Context Engineering Layer — shared evidence pipeline (opt-in, see below)
+│   └── collectors/        # thin translators from the tool registry into Observation objects
 ├── tools/                 # tool registry — every external integration registers here
 │   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket + Slack adapters
 │   ├── feature_flags/     # flagd adapter (replaces the kubectl-patch shell-out, ARCH-1)
 │   ├── itsm/              # ServiceNow PDI client (incident.create/update, cmdb.lookup)
-│   ├── observability/     # read-only Prometheus + Jaeger queries (autonomy NONE)
+│   ├── observability/     # read-only Prometheus + Jaeger + K8s events queries (autonomy NONE)
+│   ├── scm/               # GitHub read-only source seam (scm.* capabilities, autonomy NONE)
+│   ├── topology/          # service dependency resolution (CMDB-backed, own provider chain)
+│   ├── incident_history/  # similar-incident retrieval (own provider chain, not a registry capability)
+│   ├── change_context/    # union of recent-change signals: GitHub/GitLab/ArgoCD/Jenkins/flags/K8s
+│   ├── resilience.py      # shared timeout+retry+breaker+cache wrapper (`guard`) for provider seams
 │   └── alerts/            # alert normalization (Prometheus → canonical Alert)
 ├── policy/                # platform-enforced HITL gate (None / Optional / Required)
 ├── state/                 # SQLModel persistence (sqlite default; Postgres via URL swap post-POC)
 ├── runtime/               # orchestrator seam — run_reactive_flow() chains RA-001→003→005+006
 └── runbooks/              # runbook definitions used by auto_healer_lite / runbook_executor
-agents/                    # Shipped agents (agents/README.md is the authoritative inventory)
+agents/                    # Shipped agents (this tree is current; agents/README.md has fallen behind, see above)
 ├── alert_triage/          # RA-001+002 combined: triage + incident classification
 ├── auto_ticketing/        # RA-003: ServiceNow ticketing
 ├── runbook_executor/      # RA-004: runbook execution (REQUIRED HITL)
@@ -170,6 +177,16 @@ start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-fo
 
 > **Why `aiops/` and not `platform/`:** Python's stdlib has a module called `platform`. Using that name as a top-level package shadows it and breaks pytest, uv, and most libraries that introspect the runtime. Don't change it back.
 
+## Context Engineering Layer (in progress, opt-in)
+
+`aiops/context/` fixes a real bug: four agents each independently queried Prometheus/Loki/Jaeger/CMDB/on-call/Git for the same incident, so `oncall.schedule.lookup` fired 4x, `itsm.cmdb.lookup` 3x, and RCA reasoned from a different evidence set than Log Correlation looking at the same failure — no shared ranking, redaction, or token budgeting anywhere. `ContextBuilder.build(request)` runs eight stages — Collect (the only impure one, fanning out over `aiops/context/collectors/`) → Normalize → Correlate → Rank → Enrich → Redact → Budget → Assemble — into a frozen `IncidentContext`. It never raises on the incident path; a failed source degrades to an `UNAVAILABLE` section rather than costing a verdict.
+
+- **Rollout gate:** `AIOPS_CONTEXT_LAYER` (`off` / `shadow` / `on`, default `off`), read **per call**, not at import — this is a deliberate fix for an earlier RA-007 bug where an import-time env read broke `monkeypatch` in tests. While `off`, every agent keeps its existing retrieval untouched.
+- **Adapter pattern:** agent-specific projection lives in `agents/<name>/context_adapter.py` (e.g. `rca_agent/context_adapter.py`, `notification_assembler/context_adapter.py`), never in `aiops/context/` itself — reproducing one agent's exact prompt shape is that agent's concern, not the platform's. `tests/test_layering.py` statically (AST-based) enforces that `aiops/context/` never imports `agents/`.
+- **Don't bypass it once a capability is behind it.** `aiops/tools/topology/`, `incident_history/`, and `change_context/` are provider-chain seams (their own `register_provider`, not registry capabilities) that the context layer's collectors wrap — call through the collector/context layer for new agent code rather than hitting these providers directly, so evidence stays deduplicated and consistently ranked across agents.
+
+**`aiops/tools/resilience.py`** is the shared `guard()` wrapper (timeout, retry, circuit breaker, cache) that `topology`, `incident_history`, and `change_context` are all built on, because before it existed each provider seam reimplemented its own subset of these four and silently dropped others. Retries happen *before* the breaker trips (a breaker with no retry over-reacts to one dropped packet). Wrap any new remote provider in `guard` rather than hand-rolling timeout/retry/breaker logic — env vars `AIOPS_RESILIENCE_TIMEOUT` / `_RETRIES` / `_BACKOFF` / `_BREAKER` / `_CACHE_TTL` control it.
+
 ## When you write code
 
 ### Local environment constraints
@@ -187,6 +204,8 @@ start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-fo
 uv sync --extra dev
 uv sync --extra ui          # FastAPI demo server (demo/ui/) — required by start.ps1
 uv sync --extra embeddings  # sentence-transformers for Alert Triage dedup (optional)
+# Other extras: llm-anthropic / llm-openai / llm-ollama / all-llm (pull in that provider's
+# SDK — only imported inside aiops/llm/), itsm (ServiceNow client libs)
 
 # Bring up the OTel demo into Rancher Desktop k3s (one-time, ~10 min)
 .\infra\bootstrap.ps1                              # bash equivalent: ./infra/bootstrap.sh
@@ -255,6 +274,9 @@ Everything is env-var driven and read at the seam, never in agent code. Read fro
 | Observability | `AIOPS_PROMETHEUS_URL`, `AIOPS_LOKI_URL`, `AIOPS_JAEGER_URL`, `AIOPS_GRAFANA_URL` / `_API_KEY` | provider registered but calls fail soft |
 | ChatOps | `AIOPS_SLACK_WEBHOOK_URL`, `AIOPS_SLACK_BOT_TOKEN`, `AIOPS_SLACK_USER_MAP_JSON`, `AIOPS_PAGERDUTY_INTEGRATION_KEY`, `AIOPS_JITSI_BASE` | JSON-file + WebSocket sinks only |
 | HITL | `AIOPS_HITL_DEFAULT`, `AIOPS_HITL_APPROVAL_TIMEOUT` | Required-level actions deny without an approver |
+| Context layer | `AIOPS_CONTEXT_LAYER` (`off`/`shadow`/`on`), `AIOPS_CONTEXT_WORKERS` | `off` — agents keep their pre-existing per-agent retrieval |
+| Resilience (`aiops/tools/resilience.py`) | `AIOPS_RESILIENCE_TIMEOUT`, `_RETRIES`, `_BACKOFF`, `_BREAKER`, `_CACHE_TTL` | 3s timeout / 2 retries / 0.2s backoff / 30s breaker / 60s cache |
+| Incident history | `AIOPS_INCIDENT_HISTORY_PROVIDERS` | `mock` provider only |
 
 The remote seams (Loki, Jaeger) have **circuit breakers** — `AIOPS_*_CIRCUIT_OPEN_SECONDS` — so a down backend degrades the agent rather than hanging the request. Preserve that when adding a new remote provider.
 
@@ -269,6 +291,8 @@ Each of these has a test that fails CI, so they are worth knowing before you wri
 - **Every RCA fix step must set `requires_hitl=True`** → `test_rca_fix_step_rejects_requires_hitl_false`.
 - **Every new failure scenario ships with a truth file** → `test_every_scenario_has_a_truth_file`. Scenario YAMLs are also schema-validated and must have unique ids, and their UI descriptors must match the server's (`tests/test_scenarios_yaml.py`).
 - **Every new agent ships with `agents/<dir>/evals/golden.json`.** The eval harness discovers it automatically.
+- **`aiops/` never imports `agents/` (or `demo/`).** The dependency arrow is `demo/ → agents/ → aiops/`, checked by AST (not substring matching) → `tests/test_layering.py`. The one sanctioned exception is `aiops/runtime/orchestrator.py`, which by design sits above the agents it chains.
+- **Context-layer parity while it migrates.** `tests/test_context_shadow.py` requires zero mismatches between shadow-mode context output and legacy retrieval; `test_rca_context_adapter.py` / `test_notification_assembler_context_adapter.py` gate on byte-identical output between the adapter and the pre-migration prompt strings; `test_retrieval_call_sites.py` is a ratchet that fails if the count of duplicated per-agent retrieval call sites grows instead of shrinks.
 
 ### The seams to use, not bypass
 
@@ -279,6 +303,8 @@ Each of these has a test that fails CI, so they are worth knowing before you wri
 | Gate a destructive action | `aiops.policy.get_gate().enforce(action, ctx)` | `if user_confirmed:` inside the agent |
 | Persist verdicts / classifications / state | `aiops.state.repository.save_*` / `load_*` | raw SQLAlchemy / SQL |
 | Chain the Reactive-Active flow | `aiops.runtime.orchestrator.run_reactive_flow(alert)` | re-wiring the agent calls inline |
+| Gather incident evidence for an agent | `aiops.context.build(request)` behind `AIOPS_CONTEXT_LAYER`, projected via an `agents/<name>/context_adapter.py` | each agent independently re-querying Prometheus/Loki/CMDB/on-call/Git |
+| Add timeout/retry/breaker/cache to a new provider | wrap the call in `aiops.tools.resilience.guard(...)` | hand-rolling a subset of the four and forgetting one |
 
 #### The orchestrator seam
 
@@ -290,6 +316,6 @@ Four callers share it: the `/api/triage` route, the live-alert sweep, the auto-t
 
 Tools register under a dotted `capability` name and are dispatched by `get_registry().call(capability, ...)`; multiple providers can serve one capability (e.g. `mock.*` vs `snow.*`, selected by whether real credentials are present). Namespaces currently in use:
 
-`itsm.incident.*` · `itsm.cmdb.*` · `itsm.ticket.close` · `observability.metrics.*` · `observability.logs.query` · `observability.traces.*` · `feature_flags.*` · `oncall.schedule.lookup` · `incident.resolvers.lookup` · `notify.send` · `chatops.war_room.create` · `knowledge.publish` · `rca.fix_step.execute` · `automation.runbook.{execute,simulate,apply}`
+`itsm.incident.*` · `itsm.cmdb.*` · `itsm.ticket.close` · `observability.metrics.*` · `observability.logs.query` · `observability.traces.*` · `observability.events.query` · `feature_flags.*` · `oncall.schedule.lookup` · `incident.resolvers.lookup` · `notify.send` · `chatops.war_room.create` · `knowledge.publish` · `rca.fix_step.execute` · `automation.runbook.{execute,simulate,apply}` · `scm.file.read` · `scm.repo.tree` · `scm.commit.history` · `scm.diff` · `scm.pr.list`
 
-Register a new one with the `@tool(name=, capability=, provider=)` decorator in `aiops/tools/`. Two subpackages are deliberately *not* registries: `aiops/tools/alerts/` holds pure webhook-payload → canonical `Alert` adapters (Alertmanager, CloudWatch, Datadog, Prometheus), and most of `aiops/tools/chatops/` is the client/adapter seam rather than a registered capability.
+Register a new one with the `@tool(name=, capability=, provider=)` decorator in `aiops/tools/`. Several subpackages are deliberately *not* registries: `aiops/tools/alerts/` holds pure webhook-payload → canonical `Alert` adapters (Alertmanager, CloudWatch, Datadog, Prometheus), most of `aiops/tools/chatops/` is the client/adapter seam rather than a registered capability, and `topology/` / `incident_history/` / `change_context/` are provider-chain seams (own `register_provider`, consumed by `aiops/context/collectors/`) rather than dispatch-by-capability.

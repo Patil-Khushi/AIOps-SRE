@@ -93,6 +93,10 @@ class CorrelationInput(BaseModel):
     triage_verdict: dict[str, Any] | None = None
     classification: dict[str, Any] | None = None
     topology: dict[str, list[str]] | None = None
+    # Optional shared IncidentContext (dict form) from the Context Engineering
+    # Layer. Additive, same contract as `triage_verdict`/`classification` above:
+    # omitted, `correlate` fetches its own live evidence exactly as before.
+    context: dict[str, Any] | None = None
 
     @field_validator("service", mode="before")
     @classmethod

@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -634,7 +635,24 @@ def _extract_first_value(rows: list[dict[str, Any]]) -> Any | None:
     return None
 
 
-def _fetch_metric_context(alert: Alert, trace: list[str]) -> dict[str, Any] | None:
+def _live_metrics_capability_available() -> bool:
+    try:
+        get_registry().by_capability("observability.metrics.query")
+        return True
+    except KeyError:
+        return False
+
+
+def _live_metric_query(promql: str) -> Any:
+    return get_registry().call("observability.metrics.query", promql=promql)
+
+
+def _fetch_metric_context(
+    alert: Alert,
+    trace: list[str],
+    query_fn: Callable[[str], Any] = _live_metric_query,
+    capability_available: Callable[[], bool] = _live_metrics_capability_available,
+) -> dict[str, Any] | None:
     """Stage-5 metric correlation. Runs the PromQL bundle in parallel against
     the OTel demo's span-metrics; returns a bundle of named result-sets so
     the summary stage has actual numbers to reason over.
@@ -643,16 +661,20 @@ def _fetch_metric_context(alert: Alert, trace: list[str]) -> dict[str, Any] | No
     so a thread pool collapses the total latency from ``sum(queries)`` to
     roughly ``max(queries)``. Trace lines are buffered per-query and emitted
     in input order so the audit log stays reproducible.
+
+    ``query_fn`` and ``capability_available`` default to the live registry and
+    take no state from this function, so a caller can source both from the
+    Context Engineering Layer instead — see
+    ``agents/alert_triage/context_adapter.py``. Everything below this line
+    (the thread pool, the per-query error text, the results dict) is
+    unchanged either way.
     """
-    registry = get_registry()
     queries = _build_promql_queries(alert)
 
     # Pre-flight capability check. If observability.metrics.query isn't
     # registered, every parallel submission would KeyError identically.
     # Fail fast with a single trace line instead of N noisy ones.
-    try:
-        registry.by_capability("observability.metrics.query")
-    except KeyError:
+    if not capability_available():
         trace.append("metrics_ctx: capability observability.metrics.query not registered")
         return None
 
@@ -660,7 +682,7 @@ def _fetch_metric_context(alert: Alert, trace: list[str]) -> dict[str, Any] | No
         """Returns (name, value_or_None, error_text_or_None)."""
         name, promql = item
         try:
-            res = registry.call("observability.metrics.query", promql=promql)
+            res = query_fn(promql)
         except Exception as exc:
             return name, None, f"error ({type(exc).__name__})"
         if not res.ok:
@@ -685,17 +707,37 @@ def _fetch_metric_context(alert: Alert, trace: list[str]) -> dict[str, Any] | No
     return {"queries": queries, "results": results}
 
 
-def _fetch_trace_context(alert: Alert, trace: list[str]) -> dict[str, Any] | None:
-    candidates = [
+def trace_context_candidates(alert: Alert) -> list[str]:
+    """The service-name variants ``_fetch_trace_context`` tries, in order.
+
+    Exposed so ``agents/alert_triage/context_adapter.py`` can request the same
+    three candidates from the Context Engineering Layer ahead of time — the
+    context layer collects eagerly, unlike this function's short-circuiting
+    loop, so it has to ask for all three regardless of which one would have
+    won.
+    """
+    return [
         alert.service.lower(),
         alert.service.lower().replace(" ", "-"),
         alert.service.lower().replace(" api", "").replace("-api", ""),
     ]
+
+
+def _live_trace_search(candidate: str) -> Any:
+    return get_registry().call(
+        "observability.traces.search", service=candidate, lookback="15m", limit=5
+    )
+
+
+def _fetch_trace_context(
+    alert: Alert,
+    trace: list[str],
+    search_fn: Callable[[str], Any] = _live_trace_search,
+) -> dict[str, Any] | None:
+    candidates = trace_context_candidates(alert)
     for cand in candidates:
         try:
-            res = get_registry().call(
-                "observability.traces.search", service=cand, lookback="15m", limit=5
-            )
+            res = search_fn(cand)
         except KeyError:
             trace.append("trace_ctx: capability observability.traces.search not registered")
             return None
@@ -892,7 +934,97 @@ def _verdict_from_row(row: dict[str, Any]) -> TriageVerdict:
     )
 
 
-def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
+def _metric_and_trace_fetchers(
+    alert: Alert, context: dict[str, Any] | None, decision_trace: list[str]
+) -> tuple[
+    Callable[[Alert, list[str]], dict[str, Any] | None],
+    Callable[[Alert, list[str]], dict[str, Any] | None],
+]:
+    """The two live-telemetry fetch functions, bound to the shared context when
+    one is usable. Reads ``AIOPS_CONTEXT_LAYER`` per call — see
+    ``aiops/context/config.py``. In ``shadow`` mode the live functions are
+    returned unchanged; the comparison happens separately once both answers
+    exist. A malformed context degrades to the live functions, matching every
+    other lookup in this module.
+    """
+    import functools
+
+    from aiops.context import config as context_config
+
+    if context_config.context_mode() == "off" or context is None:
+        return _fetch_metric_context, _fetch_trace_context
+    if context_config.shadow_enabled():
+        return _fetch_metric_context, _fetch_trace_context
+
+    try:
+        from agents.alert_triage.context_adapter import (
+            context_metric_query,
+            context_metrics_capability_available,
+            context_trace_search,
+        )
+        from aiops.context.pack import IncidentContext
+
+        ctx = IncidentContext.model_validate(context)
+    except Exception as exc:
+        decision_trace.append(f"context evidence unusable ({type(exc).__name__}); fetching live")
+        return _fetch_metric_context, _fetch_trace_context
+
+    return (
+        functools.partial(
+            _fetch_metric_context,
+            query_fn=context_metric_query(ctx),
+            capability_available=context_metrics_capability_available(ctx),
+        ),
+        functools.partial(_fetch_trace_context, search_fn=context_trace_search(ctx)),
+    )
+
+
+def _shadow_compare_metric_trace_context_if_enabled(
+    alert: Alert,
+    context: dict[str, Any] | None,
+    legacy_metrics_ctx: dict[str, Any] | None,
+    legacy_traces_ctx: dict[str, Any] | None,
+) -> None:
+    """In shadow mode, compute the context-derived metric/trace context and
+    compare it against the legacy answer ``triage()`` already fetched — never
+    re-fetched here, so shadow mode costs one extra (context-sourced, I/O-free)
+    computation rather than a second live round-trip. Purely diagnostic: never
+    raises, never consulted by anything on the incident path.
+    """
+    from aiops.context import config as context_config
+
+    if not context_config.shadow_enabled() or context is None:
+        return
+    try:
+        from agents.alert_triage.context_adapter import (
+            context_metric_query,
+            context_metrics_capability_available,
+            context_trace_search,
+        )
+        from aiops.context import shadow as context_shadow
+        from aiops.context.pack import IncidentContext
+
+        ctx = IncidentContext.model_validate(context)
+        trace: list[str] = []
+        metrics_ctx = _fetch_metric_context(
+            alert,
+            trace,
+            query_fn=context_metric_query(ctx),
+            capability_available=context_metrics_capability_available(ctx),
+        )
+        traces_ctx = _fetch_trace_context(alert, trace, search_fn=context_trace_search(ctx))
+        context_shadow.record_diff(
+            "alert_triage",
+            legacy={"metrics_ctx": legacy_metrics_ctx, "traces_ctx": legacy_traces_ctx},
+            from_context={"metrics_ctx": metrics_ctx, "traces_ctx": traces_ctx},
+        )
+    except Exception:  # pragma: no cover - diagnostic path must never affect the caller
+        pass
+
+
+def triage(
+    alert: Alert, *, context: dict[str, Any] | None = None
+) -> tuple[TriageVerdict, int | None]:
     """Triage a single alert. Returns the verdict plus the persisted row id.
 
     The second element is the ``verdicts.id`` of the saved row, or ``None``
@@ -903,6 +1035,11 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
 
     Read-only with respect to external systems — does not open tickets, page
     anyone, or run remediation (those are downstream agents).
+
+    ``context`` is the optional shared ``IncidentContext`` (dict form) from the
+    Context Engineering Layer. Additive and keyword-only — omitted, behavior is
+    unchanged, including the zero-I/O path ``run()`` uses for eval goldens and
+    truth-file scenarios, which never sets it.
     """
     # Transport-layer idempotency (Fragile #6 fix): if the same alert_id was
     # processed within the idempotency window, return the prior verdict
@@ -950,7 +1087,10 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
         status = "Suppressed"
 
     # Stage 4: correlate
-    metrics_ctx = _fetch_metric_context(alert, decision_trace)
+    fetch_metric_context, fetch_trace_context = _metric_and_trace_fetchers(
+        alert, context, decision_trace
+    )
+    metrics_ctx = fetch_metric_context(alert, decision_trace)
     if metrics_ctx is not None:
         results = metrics_ctx.get("results", {})
         non_null = {k: v for k, v in results.items() if v is not None}
@@ -960,7 +1100,8 @@ def triage(alert: Alert) -> tuple[TriageVerdict, int | None]:
             )
         else:
             decision_trace.append(f"queried {len(results)} metric series but all returned empty")
-    traces_ctx = _fetch_trace_context(alert, decision_trace)
+    traces_ctx = fetch_trace_context(alert, decision_trace)
+    _shadow_compare_metric_trace_context_if_enabled(alert, context, metrics_ctx, traces_ctx)
     if traces_ctx is not None:
         tcount = traces_ctx.get("trace_count", 0)
         sample = (traces_ctx.get("traces") or [{}])[0]

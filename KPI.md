@@ -1,6 +1,6 @@
 # KPI — Success Metrics Definition
 
-**Owner:** Sharvari Kulkarni (Dev B, RA-003) · **Status:** Draft v1 · **Last updated:** 2026-05-26
+**Owner:** Sharvari Kulkarni (Dev B, RA-003) · **Status:** Draft v1 · **Last updated:** 2026-08-11
 
 [PRD.md §3](PRD.md) cross-references this document for the full KPI specification. The PRD names the load-bearing targets; this document defines each metric precisely (Definition / Baseline / Target / How measured) so a reviewer can ask *"is the demo actually moving this number?"* and get a defensible answer.
 
@@ -87,7 +87,25 @@ All targets are sourced from [Adaptive_AIOps_Solution_Design.pptx slide 12](docs
 
 ---
 
-## 8. Per-agent KPIs (the catalog mapping)
+## 8. Context Engineering Layer (in progress)
+
+`aiops/context/` collapses retrieval that RCA, Notification Assembler, and (partially) Alert Triage / Log Correlation currently do independently — see [CLAUDE.md "Context Engineering Layer"](CLAUDE.md) for the architecture. It is gated by `AIOPS_CONTEXT_LAYER` (`off` / `shadow` / `on`, default `off`) and **is not yet influencing any of the seven metrics above** — every agent still runs its pre-existing retrieval path until its own shadow comparison proves parity. The rows below are engineering leading-indicators for the migration itself, not customer-facing value metrics — they do not belong on a business-facing KPI slide until the shadow-parity gate is satisfied.
+
+| Metric | Definition | Baseline (2026-08-11) | Target | How measured |
+|---|---|---|---|---|
+| Retrieval de-duplication | Count of direct capability call sites per incident for a fact that shouldn't be fetched twice per incident (e.g. `oncall.schedule.lookup`) | 3–4 call sites still tracked in the migration ledger (`agents/alert_triage/agent.py`, `alert_triage/classifier.py` ×1 deliberate, `notification_assembler/agent.py` ×2) | 1 shared fetch per incident per capability, once an agent fully migrates | `tests/test_retrieval_call_sites.py` — a ratchet: `RETRIEVAL_LEDGER` counts must go *down*, never up, as each agent migrates |
+| Shadow-mode parity | Mismatches between shadow-mode context output and the legacy retrieval path it will replace | Not yet measured over a continuous rehearsal window | 0 mismatches sustained over a full rehearsal window — the literal go/no-go gate for flipping `AIOPS_CONTEXT_LAYER` to `on` | `aiops.context.shadow.stats()`, exercised by `tests/test_context_shadow.py` |
+| Token-budget adherence | % of assembled `IncidentContext`s that fit the requesting consumer's token profile without silently dropping a required section | Not yet load-bearing — budgeting is opt-in per request today | 100% — an over-budget context should visibly rank down or truncate, never silently drop a required section | `TokenBudget` / `estimate_context_tokens` in `aiops/context/pack.py` |
+| Redaction completeness | Secrets / PII observed in any assembled context section | Not yet measured — **no dedicated audit test exists today** | 0 leaked secrets/PII, always | Gap, not yet closed. Flagged here rather than in §10 because it is a rollout blocker for `on`, not a scope decision |
+
+**Before `AIOPS_CONTEXT_LAYER=on` ships, re-run these existing metrics rather than assuming they still hold:**
+
+- **§4 RCA pass rate** — the context layer changes what evidence reaches the RCA agent. This document's own rule ("a prompt change is a model change — re-run evals") applies equally to an evidence-source change. Re-run `agents/rca_agent/evals/golden.json` with the context layer on before trusting the pass-rate number against the new path.
+- **§2 MTTR** — indirectly, if RCA quality shifts once its evidence source changes.
+
+---
+
+## 9. Per-agent KPIs (the catalog mapping)
 
 This table mirrors the KPI column of the [Agent Catalog xlsx](docs/Adaptive_AIOps_Agent_Catalog.xlsx) Master sheet. The metrics above are the **platform-level** KPIs that aggregate across agents and the integration layer; the per-agent KPIs are what each agent's eval set + dashboard panel must surface individually.
 
@@ -127,7 +145,7 @@ This table mirrors the KPI column of the [Agent Catalog xlsx](docs/Adaptive_AIOp
 
 ---
 
-## 9. What this document does not cover
+## 10. What this document does not cover
 
 - **Per-metric dashboards.** The "How measured" column names the data source and the code that emits it. Building the Grafana panels (or the equivalent dashboard cards) is operational follow-up, not part of this doc.
 - **Alerting on the metrics themselves.** When MTTR regresses by 50% week-over-week, *who gets paged?* Belongs in a runbook + the [DOC-9 POST_POC_ROADMAP.md](https://github.com/UbiquotousPanda/AIops/issues/122).
@@ -146,5 +164,8 @@ This table mirrors the KPI column of the [Agent Catalog xlsx](docs/Adaptive_AIOp
 - [aiops/tools/chatops/models.py:77-81](aiops/tools/chatops/models.py#L77-L81) — `DeliveryResult` model.
 - [agents/notification_assembler/models.py](agents/notification_assembler/models.py) — `NotificationOutcome.deliveries`.
 - [CLAUDE.md "Concept cheat sheet"](CLAUDE.md) — SLI/SLO/SLA/MTTA/MTTR/MTTD/MTBF/toil/blast-radius vocabulary.
+- [CLAUDE.md "Context Engineering Layer"](CLAUDE.md) — `aiops/context/` architecture, rollout gate, and adapter pattern behind §8.
+- [tests/test_retrieval_call_sites.py](tests/test_retrieval_call_sites.py) — the retrieval-deduplication ratchet.
+- [tests/test_context_shadow.py](tests/test_context_shadow.py) — the shadow-parity gate for `AIOPS_CONTEXT_LAYER=on`.
 
 Cross-references to sibling DOC-* tickets: [DOC-1 PRD.md (#114)](https://github.com/UbiquotousPanda/AIops/issues/114) · [DOC-4 RISK_REGISTER.md (#117)](https://github.com/UbiquotousPanda/AIops/issues/117) · [DOC-8 EVAL_METHODOLOGY.md (#121)](https://github.com/UbiquotousPanda/AIops/issues/121) · [DOC-9 POST_POC_ROADMAP.md (#122)](https://github.com/UbiquotousPanda/AIops/issues/122).

@@ -24,6 +24,7 @@ tool calls through the registry; this module only sequences them.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -44,6 +45,60 @@ from aiops.state import repository as state_repo
 from aiops.tools.chatops import DeliveryResult
 
 logger = logging.getLogger(__name__)
+
+# How far back the shared context's window reaches. Matches the lookback every
+# consumer already used independently — RCA's log window, notification's trace
+# lookback, alert_triage's trace candidates all default to "the last 15
+# minutes" — so building one shared window does not change what any of them
+# would have asked for on their own.
+_CONTEXT_WINDOW = timedelta(minutes=15)
+
+
+def _build_shared_context(alert: Alert) -> dict[str, Any] | None:
+    """Collect once, for every consumer of this incident, instead of each agent
+    fetching its own evidence.
+
+    Returns ``None`` when the Context Engineering Layer is off — building a
+    context nobody will read is wasted work, and every downstream ``triage()``/
+    ``notify()`` call already tolerates ``context=None`` as "fetch live" (see
+    ``aiops/context/config.py`` for why the mode is read per call rather than
+    cached). A build failure degrades the same way: this function never raises,
+    because a missing context must cost evidence, not the reactive flow.
+    """
+    from aiops.context import config as context_config
+
+    if context_config.context_mode() == "off":
+        return None
+
+    try:
+        from agents.alert_triage.context_adapter import (
+            build_context_request_specs as triage_specs,
+        )
+        from agents.notification_assembler.context_adapter import (
+            build_context_request_specs as notification_specs,
+        )
+        from aiops.context.builder import ContextBuilder, ContextRequest
+
+        window_end = alert.timestamp
+        window_start = window_end - _CONTEXT_WINDOW
+        specs = [*triage_specs(alert), *notification_specs(alert.service)]
+        request = ContextRequest(
+            service=alert.service,
+            window_start=window_start,
+            window_end=window_end,
+            specs=specs,
+            severity=alert.severity_hint or "unknown",
+            alert_id=alert.alert_id,
+            alert_name=alert.metric,
+        )
+        return ContextBuilder().build(request).model_dump(mode="json")
+    except Exception:
+        logger.exception(
+            "shared context build failed for alert %s on %s; agents will fetch live",
+            alert.alert_id,
+            alert.service,
+        )
+        return None
 
 
 class ReactiveFlowResult(BaseModel):
@@ -121,9 +176,23 @@ def run_reactive_flow(alert: Alert) -> ReactiveFlowResult:
     OPTIONAL-HITL and gated inside the registry; nothing here pages, executes a
     runbook, or runs remediation.
     """
+    # Built once, before RA-001, so both triage() and notify_incident() below
+    # draw from the SAME collected evidence instead of each independently
+    # querying Prometheus/Jaeger for the same service. A no-op (returns None)
+    # unless AIOPS_CONTEXT_LAYER is on.
+    shared_context = _build_shared_context(alert)
+    # The kwarg is passed only when there is something to pass. triage()/
+    # notify_incident() already default context to None, so omitting it when
+    # AIOPS_CONTEXT_LAYER is off (the common case) is behaviourally identical
+    # AND keeps this call compatible with any caller — including test stubs —
+    # written against the pre-migration one-argument signature.
+    context_kwargs: dict[str, Any] = (
+        {"context": shared_context} if shared_context is not None else {}
+    )
+
     # RA-001: triage persists its own verdict row and hands back the id so the
     # downstream classification / notification writes can foreign-key it (#61).
-    verdict, verdict_id = triage(alert)
+    verdict, verdict_id = triage(alert, **context_kwargs)
 
     # RA-002: classify BEFORE ticketing (DEMO-3 / #55) so the ServiceNow
     # incident's category + description classification block are populated at
@@ -152,7 +221,7 @@ def run_reactive_flow(alert: Alert) -> ReactiveFlowResult:
     notification_id: int | None = None
     war_room: WarRoomAssembly | None = None
     try:
-        outcome = notify_incident(verdict)
+        outcome = notify_incident(verdict, **context_kwargs)
         routing = outcome.decision
         deliveries = outcome.deliveries
         war_room = outcome.war_room
