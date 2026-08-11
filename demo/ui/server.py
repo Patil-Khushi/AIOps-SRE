@@ -230,15 +230,15 @@ def _activate_db_oncall_provider() -> None:
 
 
 def _register_chatops_adapters() -> None:
-    """Register the chatops sinks (JSONL audit log + Slack + PagerDuty).
+    """Register the chatops sinks (JSONL audit log + Slack + Teams + PagerDuty).
 
     Idempotent by adapter class so re-running startup (tests, hot-reload)
     does not register duplicate sinks of the same kind. Without this guard
     the same audit JSON line lands twice per send().
 
-    Slack/PagerDuty keys are read from the env inside register_env_adapters,
-    which logs each adapter as it is registered and warns (without raising)
-    on an invalid key."""
+    Slack/Teams/PagerDuty keys are read from the env inside
+    register_env_adapters, which logs each adapter as it is registered and
+    warns (without raising) on an invalid key."""
     audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
     register_env_adapters(audit_path=audit_path)
 
@@ -300,7 +300,7 @@ async def lifespan(app: FastAPI):
        before any approval is created so the "created" event reaches the
        sinks registered in step 4.
     4. ``_register_chatops_adapters()`` — JSONL audit log (always) + Slack
-       webhook + PagerDuty (both opt-in via env). Idempotent.
+       webhook + Teams webhook + PagerDuty (each opt-in via env). Idempotent.
     5. ``bootstrap_websocket_adapter()`` — must run inside the asyncio loop
        so ``asyncio.get_running_loop()`` resolves to the server's loop.
        This is why the lifespan is ``async``.

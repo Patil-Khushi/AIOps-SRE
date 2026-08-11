@@ -8,8 +8,9 @@ Public API:
 - ``get_client()`` — process-wide singleton accessor
 
 D2 (WebSocket → React panel) and D3 (JSON audit log) plug their adapters
-into ``get_client().register(...)`` at startup. Slack / Teams / PagerDuty
-adapters land later without touching agent code.
+into ``get_client().register(...)`` at startup. Slack, Teams, and
+PagerDuty adapters register from the env (``register_env_adapters``) —
+none of them ever touched agent code, which is the point of the seam.
 """
 
 from __future__ import annotations
@@ -18,14 +19,20 @@ import logging
 import os
 from pathlib import Path
 
-# Registers the ``chatops.war_room.create`` capability (RA-006) via @tool on
-# import, so it's available in every context the chatops seam is (server, CLI,
-# evals) without each host wiring it explicitly.
-from . import war_room_bridge  # noqa: F401
+# Registers the ``chatops.war_room.create`` and
+# ``chatops.war_room.meeting.create`` capabilities (RA-006) via @tool on
+# import, so they're available in every context the chatops seam is (server,
+# CLI, evals) without each host wiring them explicitly.
+from . import (
+    teams_meeting,  # noqa: F401
+    war_room_bridge,  # noqa: F401
+)
 from .adapters.jsonfile import JsonFileChatOpsAdapter
 from .adapters.pagerduty import PagerDutyAdapter
 from .adapters.slack import SlackWebhookAdapter
 from .adapters.slack_bot import SlackBotAdapter
+from .adapters.teams import TeamsWebhookAdapter
+from .adapters.teams_dm import TeamsDmAdapter
 from .client import ChatOpsAdapter, ChatOpsClient, DeliveryResult, get_client
 from .models import ChatMessage, InteractivePrompt, Severity, to_record
 
@@ -42,6 +49,8 @@ __all__ = [
     "Severity",
     "SlackBotAdapter",
     "SlackWebhookAdapter",
+    "TeamsDmAdapter",
+    "TeamsWebhookAdapter",
     "get_client",
     "register_env_adapters",
     "to_record",
@@ -54,12 +63,14 @@ def register_env_adapters(
     slack_webhook_url: str | None = None,
     pagerduty_integration_key: str | None = None,
     slack_bot_token: str | None = None,
+    teams_webhook_url: str | None = None,
+    teams_dm_webhook_url: str | None = None,
 ) -> None:
     """Register the process-wide chatops sinks configured from the env.
 
     The demo server and other hosts can call this once at startup to wire
-    the JSON audit log, Slack webhook, and PagerDuty adapter without
-    duplicating the env-read logic.
+    the JSON audit log, Slack webhook/bot, Teams webhook/DM, and PagerDuty
+    adapter without duplicating the env-read logic.
     """
 
     client = get_client()
@@ -111,5 +122,37 @@ def register_env_adapters(
         except ValueError as exc:
             logger.warning(
                 "chatops: AIOPS_SLACK_BOT_TOKEN set but invalid (%s); skipping",
+                exc,
+            )
+
+    teams_webhook_url = (
+        teams_webhook_url
+        if teams_webhook_url is not None
+        else os.environ.get("AIOPS_TEAMS_WEBHOOK_URL", "").strip()
+    )
+    if teams_webhook_url and TeamsWebhookAdapter not in registered_kinds:
+        try:
+            client.register(TeamsWebhookAdapter(teams_webhook_url))
+            logger.info("chatops: registered teams webhook adapter")
+        except ValueError as exc:
+            logger.warning(
+                "chatops: AIOPS_TEAMS_WEBHOOK_URL set but invalid (%s); skipping",
+                exc,
+            )
+
+    teams_dm_webhook_url = (
+        teams_dm_webhook_url
+        if teams_dm_webhook_url is not None
+        else os.environ.get("AIOPS_TEAMS_DM_WEBHOOK_URL", "").strip()
+    )
+    if teams_dm_webhook_url and TeamsDmAdapter not in registered_kinds:
+        try:
+            client.register(TeamsDmAdapter(teams_dm_webhook_url))
+            logger.info(
+                "chatops: registered teams dm adapter (page/notify with assignee email only)"
+            )
+        except ValueError as exc:
+            logger.warning(
+                "chatops: AIOPS_TEAMS_DM_WEBHOOK_URL set but invalid (%s); skipping",
                 exc,
             )

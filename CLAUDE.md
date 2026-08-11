@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack + Teams adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
 
 ### Agent mergers: the catalog says 30, the product ships 19
 
@@ -35,6 +35,26 @@ Source-of-truth documents (binary Office files):
 - `docs/poc_aiops_onboarding_guide.docx` — POC playbook: data problem, what to use instead, reference stack, 12-week roadmap, pitfalls.
 
 When the design intent is unclear, extract text from the docx/pptx/xlsx (they are zip archives of XML — `xl/sharedStrings.xml` for Excel strings, `ppt/slides/slideN.xml` for slides, `word/document.xml` for Word) and consult the catalog before guessing. Do not invent agent behavior or integrations the catalog does not specify.
+
+### `docs/adr/` overrides this file's stack table
+
+Architectural decisions are recorded as ADRs (`docs/adr/NNNN-*.md`, Nygard format, immutable once Accepted). They back-fill decisions that previously lived only in this file, and where an Accepted ADR is narrower than the stack table below, **the ADR wins**:
+
+| ADR | Decision | Status |
+|---|---|---|
+| 001 | flagd mutation goes through the `feature_flags.*` seam, never `kubectl patch` | Accepted |
+| 002 | **No agent framework for the POC.** Agents are plain functions; `aiops/runtime/orchestrator.py` is the "framework". Do not add LangGraph/AutoGen/CrewAI. | Accepted |
+| 003 | Anthropic (Azure AI Foundry Claude) is the default; OpenAI the swap-in; Ollama the offline fallback; `stub` for tests/CI | Accepted |
+| 004 | One `ApprovalRequest` in `aiops/policy/approvals.py` fans out to chat + web surfaces; either can resolve it | Accepted |
+| 005 | OPA is the chosen engine but **reference-only today** — see the note under "The seams to use, not bypass" | Accepted (direction) |
+| 006 | No vector store until an agent needs persistent semantic retrieval; then pgvector | Proposed |
+| 007 | Truth files are YAML in the repo, not DB rows | Accepted |
+
+Changing an Accepted decision means writing a *new* ADR that supersedes the old one — not editing the old file.
+
+### Which root document answers what
+
+The repo root carries a lot of markdown. Rather than reading all of it: `README.md` (quick start; its status table is stale — trust this file's roadmap instead) · `ONBOARDING.md` (laptop setup, gotchas, tailing the audit log) · `RUNNING.md` (day-to-day run loop) · `CONTRIBUTING.md` (branching, PR gates) · `PRD.md` / `KPI.md` / `EVAL_METHODOLOGY.md` (product scope, metrics, how agents are scored) · `DEMO_PLAN.md` / `DEMO_SCRIPT.md` / `DEMO_SHOWCASE.md` (rehearsed demo narrative) · `PROJECT_STATE.md` / `SESSION_NOTES.md` (point-in-time status — may be stale, verify before relying on it) · `SECRETS.md` (git-crypt workflow) · `THREAT_MODEL.md` / `RISK_REGISTER.md` · `SOLUTION_BRIEF.md` (the long-form external-facing writeup).
 
 ## What is being built
 
@@ -88,9 +108,9 @@ When picking a tool for a new component, default to the choice in this table unl
 | Chat ops | Slack or Microsoft Teams | Match what the org uses. |
 | Failure injection | OTel demo flags + Chaos Mesh | Flags for easy, Chaos Mesh for advanced. |
 | Load | k6 | Modern, scriptable. |
-| Agent framework | LangGraph (or AutoGen / in-house) | Pick one and stick to it. |
-| LLM | Anthropic Claude or OpenAI hosted; Ollama for local fallback | Decide per agent based on data sensitivity. Pin model versions; never use "latest". |
-| Vector store | pgvector or Qdrant | Both free and well-documented. |
+| Agent framework | **None** — plain functions + `aiops/runtime/orchestrator.py` | Superseded by ADR-002. Do not add LangGraph/AutoGen/CrewAI to `pyproject.toml`. |
+| LLM | Anthropic (Azure Foundry Claude) default; OpenAI swap-in; Ollama offline; `stub` in CI | ADR-003. Pin model versions; never use "latest". RCA Agent is pinned to Anthropic regardless of `AIOPS_LLM_PROVIDER`. |
+| Vector store | Deferred; **pgvector** when first needed | ADR-006. Alert Triage dedup embeds in memory today — no store is deployed. |
 | Topology graph | Neo4j Community or in-process JSON | Start simple. |
 | Policy / governance | Open Policy Agent (OPA) | Industry-standard policy-as-code. |
 | Evals | Hand-rolled JSON test cases first | Add Ragas/DeepEval/LangSmith only when count gets unwieldy. |
@@ -128,7 +148,7 @@ aiops/                     # platform seams — never call vendor SDKs outside t
 ├── context/               # Context Engineering Layer — shared evidence pipeline (opt-in, see below)
 │   └── collectors/        # thin translators from the tool registry into Observation objects
 ├── tools/                 # tool registry — every external integration registers here
-│   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket + Slack adapters
+│   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket + Slack + Teams adapters
 │   ├── feature_flags/     # flagd adapter (replaces the kubectl-patch shell-out, ARCH-1)
 │   ├── itsm/              # ServiceNow PDI client (incident.create/update, cmdb.lookup)
 │   ├── observability/     # read-only Prometheus + Jaeger + K8s events queries (autonomy NONE)
@@ -196,6 +216,9 @@ start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-fo
 - **Two PowerShell windows.** `start.ps1` runs port-forwards as background jobs in the *current* session; closing that shell kills them. Use `stop.ps1` to tear them down cleanly.
 - **flagd flag mutation goes through the seam.** Use `aiops.tools.get_registry().call("feature_flags.set_variant", flag=..., variant=...)` (or `feature_flags.get_variant` / `list_variants` / `reset_all`). Direct `kubectl patch flagd-config` is forbidden — `tests/test_no_kubectl_for_flagd.py` will fail CI for any new caller. Background: ARCH-1 (issue #70, `docs/arch_1_feature_flags_seam_design.md`).
 - **PowerShell 5.1's `Get-Content` default encoding is CP1252, not UTF-8.** Tailing `demo/audit/chatops.jsonl` without `-Encoding UTF8` turns em-dashes into `â€"` mojibake. See ONBOARDING.md §11 "Tailing the chatops audit log".
+- **`.env.shared` is git-crypt-encrypted** (`.gitattributes`). On a locked clone it reads as binary — that's expected, not corruption. Unlock with `scripts/secrets/unlock.ps1`, then copy it to `.env` for local overrides (`.env` is gitignored). `scripts/secrets/add-teammate.ps1` adds a GPG key. Full workflow in SECRETS.md.
+- **`.env` is not auto-loaded.** `uv run` doesn't read it, and neither does `import aiops`. Only entry points that call `aiops._dotenv.load_dotenv()` explicitly get it: `demo/ui/server.py`, `evals/harness.py`, and a couple of `scripts/`. Real env vars win — the file fills in defaults, it never overrides. A new entry point that needs config must call it itself.
+- **Importing `demo.ui.server` in a test pollutes `os.environ` for the whole session** (it calls `load_dotenv()` at import). Tests that assert on unset vars must pin them — `tests/conftest.py` has fixtures for this, and `test_slack_user_map_isolation.py` / `test_pagerduty_adapter.py` document the failure mode. Don't add a bare `monkeypatch.delenv` and assume it holds.
 
 ### Common commands
 
@@ -218,10 +241,28 @@ kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
 # React dashboard if needed, starts the FastAPI UI on :8765, opens the browser.
 .\start.ps1                                        # tear down with: .\stop.ps1
 
+# Run the FastAPI demo server on its own (start.ps1 does this plus port-forwards)
+uv run uvicorn demo.ui.server:app --port 8765
+
 # Trigger a failure scenario
 uv run python -m demo.failure_injection.inject --list
 uv run python -m demo.failure_injection.inject slow-product-catalog
 uv run python -m demo.failure_injection.inject --clear
+
+# Back to a clean baseline before a rehearsal / demo (flags off, audit log
+# truncated). -Hard also wipes verdicts/classifications/tickets from state.db.
+# Touches neither the cluster nor start.ps1's port-forwards.
+.\reset.ps1
+.\reset.ps1 -Hard
+
+# Fire one fixture through the running server and print the routing decision
+.\scripts\demo\fire.ps1 -List
+.\scripts\demo\fire.ps1 payment_cpu_spike
+.\scripts\demo\fire-all.ps1
+
+# Run one agent standalone (alert_triage, auto_healer_lite, knowledge_synthesizer,
+# log_correlation, notification_assembler, runbook_executor have __main__.py)
+uv run python -m agents.alert_triage
 
 # Run the tests (no cluster needed). testpaths = tests/ aiops/ evals/ — note that
 # aiops/ and evals/ carry their own tests; `uv run pytest tests/` is NOT the full suite.
@@ -242,10 +283,18 @@ uv run python -m evals.harness --agent alert_triage
 # CI gate — fails if pass rate drops below threshold
 uv run python -m evals.harness --ci --min-pass-rate 0.85
 
-# Lint / format / typecheck
+# Lint / format / typecheck. CI runs `ruff format --check`, so a formatted-but-
+# uncommitted file reddens the build — run `ruff format .` before pushing.
 uv run ruff check .
 uv run ruff format .
 uv run mypy aiops agents
+
+# Rego gate (its own CI job — an unformatted .rego fails the build)
+opa fmt --diff policies/
+opa check policies/
+
+# Optional local commit guard mirroring the CI lint gate (once per clone)
+uv run pre-commit install
 
 # Rebuild a frontend SPA after editing it (start.ps1 builds demo/dashboard only).
 # Each of dashboard / combined-ui / classifier-ui / hitl-ui is its own Vite app;
@@ -261,6 +310,22 @@ cd demo\dashboard; npm run dev                   # or hot-reload on Vite's own p
 .\scripts\github_bulk\run.ps1
 ```
 
+### What CI actually runs
+
+`.github/workflows/ci.yml`, two jobs, on every PR:
+
+1. `uv sync --locked --extra dev --extra ui` → `ruff check .` → `ruff format --check .` → `pytest` → `evals.harness --ci --min-pass-rate 0.85`, all with `AIOPS_LLM_PROVIDER=stub`.
+2. `opa fmt --diff policies/` → `opa check policies/`.
+
+Consequences worth knowing before you push:
+
+- **`--locked` means a `pyproject.toml` dependency change without a committed `uv lock` fails CI.** Run `uv lock` and commit `uv.lock` in the same change (#155).
+- **CI installs only `dev` + `ui`** — not `embeddings`, not `all-llm`. Anything importing `sentence_transformers` at module scope breaks CI; keep those imports lazy and rule-based fallbacks working.
+- **No test may hit a real LLM or a cluster.** `stub` is the CI provider; mark anything else `@pytest.mark.integration` or `@pytest.mark.llm`. Markers are `--strict-markers`, so a typo is an error, not a skip.
+- **Every test has a 60 s wall-clock cap** (`timeout_method="thread"`, for Windows). A test that waits on HITL approval or an asyncio event must set its own `@pytest.mark.timeout(N)` rather than blocking the suite (#113).
+- `asyncio_mode = "auto"` — async tests need no `@pytest.mark.asyncio`.
+- CONTRIBUTING.md adds a human gate CI can't check: eval pass rate may not drop more than 2% vs `main`.
+
 ### Configuration surface
 
 Everything is env-var driven and read at the seam, never in agent code. Read from `.env` (loaded explicitly — `uv run` does *not* auto-load it). Every seam degrades to a mock/stub when its vars are absent, so the whole demo runs unconfigured.
@@ -272,7 +337,9 @@ Everything is env-var driven and read at the seam, never in agent code. Read fro
 | Runbooks | `AIOPS_RUNBOOKS_DIR` | `data/runbooks` |
 | ITSM | `AIOPS_SERVICENOW_INSTANCE_URL` / `_USER` / `_PASSWORD`, `AIOPS_USE_MOCK_ITSM` | mock ITSM provider |
 | Observability | `AIOPS_PROMETHEUS_URL`, `AIOPS_LOKI_URL`, `AIOPS_JAEGER_URL`, `AIOPS_GRAFANA_URL` / `_API_KEY` | provider registered but calls fail soft |
-| ChatOps | `AIOPS_SLACK_WEBHOOK_URL`, `AIOPS_SLACK_BOT_TOKEN`, `AIOPS_SLACK_USER_MAP_JSON`, `AIOPS_PAGERDUTY_INTEGRATION_KEY`, `AIOPS_JITSI_BASE` | JSON-file + WebSocket sinks only |
+| ChatOps | `AIOPS_SLACK_WEBHOOK_URL`, `AIOPS_SLACK_BOT_TOKEN`, `AIOPS_SLACK_USER_MAP_JSON`, `AIOPS_TEAMS_WEBHOOK_URL`, `AIOPS_TEAMS_DM_WEBHOOK_URL`, `AIOPS_PAGERDUTY_INTEGRATION_KEY`, `AIOPS_JITSI_BASE` | JSON-file + WebSocket sinks only |
+| War-room meeting | `AIOPS_TEAMS_MEETING_WEBHOOK_URL`, `AIOPS_TEAMS_MEETING_FLOW_ID`, `AIOPS_WAR_ROOM_MAX_ATTENDEES`, `AIOPS_TEAMS_MEETING_MINUTES` | Jitsi room (no calendar invite) |
+| Runbook links | `AIOPS_RUNBOOK_PUBLISHER_URL`, `AIOPS_RUNBOOK_PUBLISHER_FLOW_ID`, `AIOPS_RUNBOOK_LINKS_PATH` | Runbook name as plain text, no link |
 | HITL | `AIOPS_HITL_DEFAULT`, `AIOPS_HITL_APPROVAL_TIMEOUT` | Required-level actions deny without an approver |
 | Context layer | `AIOPS_CONTEXT_LAYER` (`off`/`shadow`/`on`), `AIOPS_CONTEXT_WORKERS` | `off` — agents keep their pre-existing per-agent retrieval |
 | Resilience (`aiops/tools/resilience.py`) | `AIOPS_RESILIENCE_TIMEOUT`, `_RETRIES`, `_BACKOFF`, `_BREAKER`, `_CACHE_TTL` | 3s timeout / 2 retries / 0.2s backoff / 30s breaker / 60s cache |
@@ -305,6 +372,10 @@ Each of these has a test that fails CI, so they are worth knowing before you wri
 | Chain the Reactive-Active flow | `aiops.runtime.orchestrator.run_reactive_flow(alert)` | re-wiring the agent calls inline |
 | Gather incident evidence for an agent | `aiops.context.build(request)` behind `AIOPS_CONTEXT_LAYER`, projected via an `agents/<name>/context_adapter.py` | each agent independently re-querying Prometheus/Loki/CMDB/on-call/Git |
 | Add timeout/retry/breaker/cache to a new provider | wrap the call in `aiops.tools.resilience.guard(...)` | hand-rolling a subset of the four and forgetting one |
+
+#### HITL levels live in two files that nothing forces to agree
+
+`policies/hitl.rego` is **reference-only today**; the runtime authority is `DEFAULT_LEVELS` in `aiops/policy/gate.py` (ADR-005 — wiring OPA in as the runtime check is a Phase 2 step). No test compares them, so they silently drift. **When you change an action's autonomy level, edit both**, and match the catalog row.
 
 #### The orchestrator seam
 
