@@ -377,6 +377,10 @@ Each of these has a test that fails CI, so they are worth knowing before you wri
 
 `policies/hitl.rego` is **reference-only today**; the runtime authority is `DEFAULT_LEVELS` in `aiops/policy/gate.py` (ADR-005 — wiring OPA in as the runtime check is a Phase 2 step). No test compares them, so they silently drift. **When you change an action's autonomy level, edit both**, and match the catalog row.
 
+#### HITL levels live in two files that nothing forces to agree
+
+`policies/hitl.rego` is **reference-only today**; the runtime authority is `DEFAULT_LEVELS` in `aiops/policy/gate.py` (ADR-005 — wiring OPA in as the runtime check is a Phase 2 step). No test compares them, so they silently drift. **When you change an action's autonomy level, edit both**, and match the catalog row.
+
 #### The orchestrator seam
 
 `run_reactive_flow(alert)` is the **single** entry point for the RA-001 → RA-002 → RA-003 → RA-005+006 chain. It triages, classifies, tickets, notifies, and persists each step with FK guards; notification failure is caught and non-fatal (`routing=None`). It returns a `ReactiveFlowResult`, and `.to_api_dict()` reproduces the legacy `POST /api/triage` response body verbatim — that shape is a public contract for the dashboard, the SPAs, and the tests, so don't change it casually.
