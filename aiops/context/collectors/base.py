@@ -117,6 +117,24 @@ def _policy() -> ResiliencePolicy:
     )
 
 
+def _leader_worst_case_seconds(policy: ResiliencePolicy) -> float:
+    """Upper bound on how long the leader's own ``guard()`` call can run.
+
+    Mirrors ``resilience.guard``'s retry loop exactly, because a bound that does not
+    is worse than none — it looks like safety margin while a waiter can still time
+    out before the leader finishes. The loop runs ``policy.retries + 1`` attempts,
+    each allowed the full ``policy.timeout``; every attempt after the first is
+    preceded by a jittered sleep of up to ``policy.backoff * 2 ** (attempt - 1)``
+    (full jitter — see ``resilience.guard``'s own comment — so this ceiling, not the
+    average, is what a bound must use). At the context layer's own defaults
+    (timeout=3, retries=1, backoff=0.2) that is ``2*3 + 0.2 = 6.2s``, not the ``2*3
+    = 6.0s`` a bound keyed on ``timeout`` alone would assume.
+    """
+    attempts = policy.retries + 1
+    backoff_ceiling = sum(policy.backoff * (2 ** (attempt - 1)) for attempt in range(1, attempts))
+    return attempts * policy.timeout + backoff_ceiling
+
+
 @runtime_checkable
 class Collector(Protocol):
     """What the builder requires of a collector."""
@@ -231,13 +249,18 @@ class CapabilityCollector:
 
         if leader_event is None:
             # Someone else is already fetching this exact key — wait for them
-            # rather than racing a duplicate live call. Bounded by the same
-            # timeout the leader's own fetch is bounded by, doubled for
-            # scheduling slack: a waiter must never block longer than it would
-            # have taken to just fetch the answer itself. ``existing_event`` is
-            # never ``None`` here — see ``_claim_or_join``.
+            # rather than racing a duplicate live call. Bounded by the leader's
+            # own worst-case ``guard()`` duration — retries and backoff included,
+            # not just one ``timeout`` — doubled for scheduling slack on top of
+            # that. A bound keyed on ``timeout`` alone undercounts the leader by
+            # a full retry: at this layer's own defaults the leader's worst case
+            # is 6.2s (two 3s attempts plus backoff) while ``timeout * 2`` gives
+            # only 6.0s, so a waiter could time out first on every single retry
+            # — not a scheduling accident, the ordinary path ``guard``'s retry
+            # exists to cover. ``existing_event`` is never ``None`` here — see
+            # ``_claim_or_join``.
             assert existing_event is not None
-            existing_event.wait(timeout=_policy().timeout * 2)
+            existing_event.wait(timeout=_leader_worst_case_seconds(_policy()) * 2)
             hit, cached_section = self._cached(correlation_id, spec)
             if hit and cached_section is not None:
                 return cached_section
@@ -247,10 +270,14 @@ class CapabilityCollector:
             # nothing.
             leader_event, _ = self._claim_or_join(key)
             if leader_event is None:
-                # Vanishingly rare double-race: someone else claimed leadership
-                # in the gap above. Fetch directly rather than looping — a
-                # second live call here is a correctness fallback, not the
-                # common path.
+                # Someone else claimed leadership in the gap above — with three
+                # or more genuinely concurrent waiters this is not rare, since
+                # every waiter past the first can land here. Still correct as a
+                # fallback (a second live call beats serving nothing), just not
+                # a coalescing failure: the wait bound above is now sized to the
+                # leader's real worst case, so reaching this line means the
+                # leader actually finished (or gave up) in that window, not that
+                # the bound was too tight.
                 return self._fetch_and_cache(spec, correlation_id)
 
         try:
@@ -282,9 +309,7 @@ class CapabilityCollector:
         cache.put(correlation_id, spec, section, section.status)
         return section
 
-    def _cached(
-        self, correlation_id: str, spec: SectionSpec
-    ) -> tuple[bool, ContextSection | None]:
+    def _cached(self, correlation_id: str, spec: SectionSpec) -> tuple[bool, ContextSection | None]:
         hit, cached_section = cache.get(correlation_id, spec)
         if not hit or not isinstance(cached_section, ContextSection):
             return False, None

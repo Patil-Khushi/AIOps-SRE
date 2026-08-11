@@ -3,11 +3,17 @@
     1. Collect     (impure — the only stage that touches a backend)
     2. Normalize   -> Observation objects, one vocabulary from eleven schemas
     3. Correlate   -> cross-source agreement + topology relation
-    4. Rank        -> deterministic, explainable relevance ordering
-    5. Enrich      -> ownership and recent-change metadata
-    6. Redact      -> secrets and PII scrubbed before anything reaches a prompt
+    4. Enrich      -> ownership and recent-change metadata
+    5. Redact      -> secrets and PII scrubbed before anything reaches a prompt
+    6. Rank        -> deterministic, explainable relevance ordering, over redacted text
     7. Budget      -> projected to a consumer's token allowance (opt-in)
     8. Assemble    -> frozen into an IncidentContext
+
+Redact (5) runs before Rank (6), matching ``build()``'s actual call order and its
+own inline comment ("redaction runs LAST" — last among the pure stages, ahead of
+ranking) — not the reverse implied by an earlier version of this list. Ranking
+reads the observations redaction already scrubbed, so it never scores raw text a
+consumer will never see.
 
 Stages 2-8 are pure functions over data structures. That is the design's main
 payoff: everything except stage 1 is testable with no mocks, no network, and no

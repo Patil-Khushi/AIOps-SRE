@@ -679,3 +679,136 @@ def test_reset_for_tests_clears_leaked_inflight_entries():
     collectors_base._inflight[key] = threading.Event()
     collectors_base.reset_for_tests()
     assert key not in collectors_base._inflight
+
+
+# --- waiter timeout bound --------------------------------------------------
+#
+# A waiter joining an in-flight fetch waits on the leader's Event with a timeout
+# meant to always exceed how long the leader can possibly take, so that a waiter
+# never gives up and falls into an uncoalesced direct fetch while the leader is
+# still legitimately running. The bound has to be derived from resilience.guard's
+# actual retry loop (attempts * timeout + backoff), not from `timeout` alone —
+# `timeout * 2` looked like a 2x safety margin but was, at this layer's own
+# defaults, tighter than the leader's unmultiplied worst case.
+
+
+def test_leader_worst_case_accounts_for_every_retry_attempt_and_its_backoff():
+    """Regression pin for the exact numbers in the PR review: retries=1,
+    timeout=3, backoff=0.2 must bound to 6.2s (two full-timeout attempts plus
+    one backoff sleep), not 6.0s (`timeout * 2`, which ignores the backoff sleep
+    guard() takes between attempts)."""
+    from aiops.context.collectors.base import _leader_worst_case_seconds
+    from aiops.tools.resilience import ResiliencePolicy
+
+    policy = ResiliencePolicy(timeout=3.0, retries=1, backoff=0.2)
+
+    assert _leader_worst_case_seconds(policy) == pytest.approx(6.2)
+
+
+def test_leader_worst_case_scales_with_more_retries():
+    """Each additional retry adds another full timeout attempt plus a backoff
+    sleep that doubles per attempt (exponential backoff) — this must track
+    resilience.guard's loop for any retry count the layer might be configured
+    with, not just the current default of one."""
+    from aiops.context.collectors.base import _leader_worst_case_seconds
+    from aiops.tools.resilience import ResiliencePolicy
+
+    policy = ResiliencePolicy(timeout=3.0, retries=2, backoff=0.2)
+
+    # 3 attempts * 3s + backoff sleeps of 0.2*2^0 and 0.2*2^1 between them.
+    assert _leader_worst_case_seconds(policy) == pytest.approx(3 * 3.0 + 0.2 + 0.4)
+
+
+def test_leader_worst_case_with_zero_retries_is_exactly_one_timeout():
+    """The degenerate case: no retries configured means no backoff sleep can
+    ever occur, so the bound collapses to exactly one attempt."""
+    from aiops.context.collectors.base import _leader_worst_case_seconds
+    from aiops.tools.resilience import ResiliencePolicy
+
+    policy = ResiliencePolicy(timeout=3.0, retries=0, backoff=0.2)
+
+    assert _leader_worst_case_seconds(policy) == pytest.approx(3.0)
+
+
+def test_waiter_outlasts_a_leader_that_uses_its_full_retry_budget(monkeypatch):
+    """End-to-end proof, not just the formula in isolation: a leader that
+    legitimately takes its full worst-case duration (one attempt that times
+    out, one retry that succeeds) must not cause a concurrent waiter to give
+    up and perform a second, uncoalesced live call. That second call is
+    exactly the "retry under load multiplies into several duplicate live
+    calls" failure the PR review flagged — and it is reachable via the
+    *ordinary* retry path, not a rare double-race.
+
+    The parameters below are chosen, and independently verified against a
+    reproduction of the pre-fix formula, to actually separate the two: at
+    timeout=0.3/retries=1/backoff=0.35, the leader's real duration (~0.7s)
+    exceeds the old ``timeout * 2`` bound (0.6s) but sits well inside the
+    fixed ``_leader_worst_case_seconds() * 2`` bound (1.9s). Reverting to the
+    old formula reproducibly turns the single expected round-trip into six.
+    Backoff jitter is pinned to its ceiling so the timing is deterministic
+    rather than occasionally passing by luck.
+    """
+    import random
+    import threading
+    import time
+
+    monkeypatch.setattr(random, "uniform", lambda _low, high: high)
+
+    call_count = 0
+    call_lock = threading.Lock()
+
+    class _TimesOutThenSucceedsRegistry:
+        def call(self, capability: str, **kwargs: Any) -> ToolResult:
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+                this_call = call_count
+            if this_call == 1:
+                # Exceeds the 0.3s timeout below, forcing a genuine
+                # FuturesTimeout rather than a fast failure — this is what
+                # makes the leader's attempt actually cost the full timeout,
+                # matching resilience.guard's real worst case rather than a
+                # best case that happens to return quickly.
+                time.sleep(0.5)
+                return ToolResult(ok=False, error="never read", metadata={})
+            time.sleep(0.05)
+            return ToolResult(ok=True, data={"results": [{"value": [1, "1"]}]}, metadata={})
+
+    monkeypatch.setattr(
+        "aiops.context.collectors.base.get_registry",
+        lambda: _TimesOutThenSucceedsRegistry(),
+        raising=True,
+    )
+    from aiops.tools.resilience import ResiliencePolicy
+
+    monkeypatch.setattr(
+        "aiops.context.collectors.base._policy",
+        lambda: ResiliencePolicy(timeout=0.3, retries=1, backoff=0.35),
+    )
+    collector = collector_for("metrics")
+    spec = _spec("metrics", promql="up")
+
+    results: list[ContextSection] = []
+    results_lock = threading.Lock()
+
+    def _worker() -> None:
+        section = collector.collect(spec, CORR)
+        with results_lock:
+            results.append(section)
+
+    threads = [threading.Thread(target=_worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    # The first call's registry thread sleeps 0.5s total; let it finish before
+    # the next test reuses the shared resilience executor.
+    time.sleep(0.5)
+
+    assert len(results) == 5
+    assert call_count == 2, (
+        f"expected exactly one leader attempt-pair (2 calls: timeout then "
+        f"succeed), saw {call_count} — a waiter gave up before the leader "
+        f"finished and made its own uncoalesced call"
+    )
+    assert all(r.status is SectionStatus.COLLECTED for r in results)

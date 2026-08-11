@@ -603,6 +603,104 @@ def test_record_diff_never_mutates_either_answer():
     assert legacy["logs.recent"]["streams"][0]["values"] is inner
 
 
+# --- redaction --------------------------------------------------------------
+#
+# The legacy side is live telemetry that has never been through the redactor; the
+# context side has. Comparing them unscrubbed would route raw evidence into
+# logger.warning and the diffs() buffer on every mismatch — during shadow mode,
+# whose entire point is to run against a real cluster. These tests pin that
+# record_diff redacts both sides, and the description, before either reaches a log
+# or the buffer.
+
+
+def test_a_mismatched_email_never_reaches_the_diff_buffer():
+    """A real disagreement whose text happens to carry a secret must not surface that
+    secret raw. The two lines differ in more than the email — "the outage" vs "a
+    different outage" — so this stays a genuine mismatch after both sides redact the
+    address to the same placeholder."""
+    legacy = _logs_payload("paged oncall@example.com about the outage")
+    context = _logs_payload("paged oncall@example.com about a different outage")
+
+    assert record_diff("rca", legacy=legacy, from_context=context) is False
+    assert _counters("rca").get("mismatches") == 1
+
+    (description,) = diffs("rca")
+    assert "oncall@example.com" not in description
+    assert "[REDACTED_EMAIL]" in description
+
+
+def test_a_matching_secret_on_both_sides_still_reports_no_mismatch():
+    """The same secret in the same position redacts to the same placeholder on both
+    sides, so the comparison must still see agreement — redacting is not the same as
+    corrupting."""
+    legacy = _logs_payload("charged card 4111111111111111 for order 9")
+    context = _logs_payload("charged card 4111111111111111 for order 9")
+
+    assert record_diff("rca", legacy=legacy, from_context=context) is True
+    assert _counters("rca").get("matches") == 1
+    assert diffs("rca") == ()
+
+
+def test_a_card_number_that_only_the_legacy_path_saw_is_not_logged(caplog):
+    """The asymmetric case the bug report was about: legacy carries a secret the
+    context side never had reason to. record_diff must still not let it through,
+    on the object handed to diffs() or on the log line."""
+    legacy = _logs_payload("refund failed for card 4111111111111111")
+    context = _logs_payload("refund failed for card [absent from context]")
+
+    with caplog.at_level("WARNING"):
+        assert record_diff("rca", legacy=legacy, from_context=context) is False
+
+    (description,) = diffs("rca")
+    assert "4111111111111111" not in description
+    assert "4111111111111111" not in caplog.text
+
+
+def test_redaction_does_not_change_which_side_is_reported_missing():
+    """Scrubbing operates on string leaves only, so it must not disturb the
+    key-set comparison a missing evidence category depends on."""
+    legacy = _answer({"logs.recent": _logs_payload("paged oncall@example.com")})
+    context = {k: v for k, v in legacy.items() if k != "logs.recent"}
+
+    assert record_diff("rca", legacy=legacy, from_context=context) is False
+    (description,) = diffs("rca")
+    assert "missing from context: ['logs.recent']" in description
+    assert "oncall@example.com" not in description
+
+
+def test_a_non_string_secret_bearing_leaf_is_still_withheld_from_the_description():
+    """The leaf-level walk only scrubs ``str`` values, so a secret arriving as
+    ``repr()`` text of some other object — a model, a custom type — is not caught by
+    that walk. The final ``redact_text`` pass over the assembled description is what
+    catches it; this pins that the second pass is load-bearing, not redundant."""
+
+    class _CardLike:
+        def __eq__(self, other: object) -> bool:
+            return False
+
+        def __repr__(self) -> str:
+            return "Token(card=4111111111111111)"
+
+    assert record_diff("rca", legacy=_CardLike(), from_context=_CardLike()) is False
+    (description,) = diffs("rca")
+    assert "4111111111111111" not in description
+    assert "[REDACTED_CARD]" in description
+
+
+def test_record_diff_still_does_not_mutate_the_caller_answers_when_redacting():
+    """Redaction builds new containers; it must not, in the process, reintroduce the
+    in-place mutation record_diff otherwise guarantees against."""
+    legacy = _answer({"logs.recent": _logs_payload("paged oncall@example.com")})
+    context = _answer({"logs.recent": _logs_payload("paged oncall@example.com, retrying")})
+    legacy_before = copy.deepcopy(legacy)
+    context_before = copy.deepcopy(context)
+
+    assert record_diff("rca", legacy=legacy, from_context=context) is False
+
+    assert legacy == legacy_before
+    assert context == context_before
+
+
 # --- determinism ---------------------------------------------------------
 
 

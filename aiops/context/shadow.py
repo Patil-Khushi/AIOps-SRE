@@ -30,6 +30,38 @@ instrumentation on the incident path: a bug in a comparison must not change an
 agent's verdict, its decision trace, or anything it persists. This is the one module
 in the package that is allowed process-global state, and consequently the one that
 must expose ``reset_for_tests``.
+
+Both answers are redacted before they are compared
+--------------------------------------------------
+The ``from_context`` side has already been through stage 5 of the pipeline; the
+``legacy`` side is whatever the agent's own live retrieval returned, unscrubbed. That
+asymmetry breaks this module twice over, so ``record_diff`` scrubs both sides with the
+same ``redactor.redact_text`` before diffing, and scrubs the resulting description
+again before it is logged or buffered.
+
+*Security.* A mismatch description embeds the differing values verbatim, and
+``record_diff`` writes it to ``logger.warning`` and keeps it in a process buffer that
+``diffs()`` hands back. Comparing a raw payload against a scrubbed one therefore routed
+unredacted evidence into a log stream on every disagreement — during the one mode whose
+whole purpose is to run against a real cluster. Stage 5 exists so that never happens;
+skipping it here was a hole in the same control.
+
+*Correctness.* Raw-versus-scrubbed also makes redaction itself look like a divergence:
+an incident containing one email would report ``user@x.com != [REDACTED_EMAIL]`` as a
+mismatch, and the rollout gate is ``mismatches == 0``. Left alone it would block the
+flip on the layer working exactly as designed.
+
+Scrubbing both sides is the right comparison, not a compromise: in ``on`` mode the
+agent consumes the *redacted* context, so "would this agent have behaved the same" is
+a question about post-redaction evidence. Two distinct secrets in the same position do
+collapse to one placeholder and read as agreement — that is a real if narrow loss, and
+it is the correct trade, because the alternative is a gate that can never go green.
+
+The description is scrubbed as well as the payloads because it is the only text that
+escapes this module, and it is built with ``!r`` over arbitrary objects: a payload the
+structural walk below cannot see into (a custom ``__repr__``, a non-``str`` leaf
+carrying a token) would otherwise reach the log unscrubbed. Redaction is idempotent, so
+the second pass costs nothing on already-clean text.
 """
 
 from __future__ import annotations
@@ -38,6 +70,8 @@ import logging
 import threading
 from collections import deque
 from typing import Any
+
+from aiops.context.redactor import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +213,32 @@ def describe_difference(legacy: Any, from_context: Any, *, path: str = "") -> st
     return None
 
 
+def _redact_deep(value: Any) -> Any:
+    """Scrub every string leaf in an arbitrary structure.
+
+    Mirrors ``describe_difference``'s own descent (dict / list-or-tuple / leaf), so
+    anything the diff can see into, this can redact into. A non-string leaf — a
+    number, a bool, an enum, an ``_Uncomparable``-style object — passes through
+    unchanged: ``redact_text`` only knows how to scan text, and nothing else was ever
+    going to carry a secret. Always builds new containers, never mutates the input,
+    matching this module's "never touches the caller's data" contract.
+
+    No depth guard, deliberately matching ``describe_difference``: a self-referential
+    payload recurses here exactly as it does there, and ``RecursionError`` is caught
+    by ``record_diff``'s outer ``except`` the same way a raising comparison is.
+    """
+    if isinstance(value, dict):
+        return {key: _redact_deep(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_deep(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_deep(item) for item in value)
+    if isinstance(value, str):
+        scrubbed, _counts = redact_text(value)
+        return scrubbed
+    return value
+
+
 def record_diff(consumer: str, *, legacy: Any, from_context: Any) -> bool:
     """Compare the two answers and record the outcome. Returns ``True`` when equal.
 
@@ -187,14 +247,27 @@ def record_diff(consumer: str, *, legacy: Any, from_context: Any) -> bool:
     because "we could not tell whether these agree" must not be recorded as "they
     agree": that would let the rollout gate pass on the strength of a broken
     comparison.
+
+    Both answers are redacted before they are diffed or described — see "Both answers
+    are redacted before they are compared" above. A redaction failure is one more way
+    the comparison can blow up, so it is folded into the same outer ``except`` rather
+    than given its own path: either way, nothing unscrubbed was compared and nothing
+    unscrubbed reaches the log.
     """
     try:
         _record(consumer, "comparisons")
-        description = describe_difference(legacy, from_context)
+        safe_legacy = _redact_deep(legacy)
+        safe_from_context = _redact_deep(from_context)
+        description = describe_difference(safe_legacy, safe_from_context)
         if description is None:
             _record(consumer, "matches")
             return True
         _record(consumer, "mismatches")
+        # Scrubbed again, not just inherited from the already-redacted payloads above:
+        # this is built with `!r` over arbitrary objects (a custom `__repr__`, a
+        # non-str leaf holding a token) that the leaf-level walk above could not see
+        # into. Redaction is idempotent, so re-scrubbing already-clean text is free.
+        description, _counts = redact_text(description)
         with _lock:
             _diffs.setdefault(consumer, deque(maxlen=MAX_DIFFS_PER_CONSUMER)).append(description)
         logger.warning("context shadow mismatch [%s] %s", consumer, description)
