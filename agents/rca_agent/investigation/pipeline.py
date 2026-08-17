@@ -177,7 +177,7 @@ def _initial_blast_radius(context: dict[str, Any] | None, service: str) -> tuple
             if resolution.resolved:
                 return tuple(resolution.dependencies)
         except Exception:
-            pass
+            logger.debug("topology resolver raised for service=%r", service, exc_info=True)
     return ()
 
 

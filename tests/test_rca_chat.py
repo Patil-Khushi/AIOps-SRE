@@ -101,7 +101,13 @@ def _investigation(**overrides) -> Investigation:
             ),
         ),
         blast_radius=BlastRadiusReport(
-            impacts=(ServiceImpact(service="checkout-service", state="indirectly_affected", rationale="calls payment"),),
+            impacts=(
+                ServiceImpact(
+                    service="checkout-service",
+                    state="indirectly_affected",
+                    rationale="calls payment",
+                ),
+            ),
             topology_available=True,
         ),
         verification=VerificationPlan(
@@ -153,7 +159,9 @@ class TestGroundingPack:
 
     def test_a_broken_section_degrades_rather_than_raises(self, monkeypatch):
         monkeypatch.setattr(
-            rca_chat, "_render_blast_radius_section", lambda inv: (_ for _ in ()).throw(RuntimeError())
+            rca_chat,
+            "_render_blast_radius_section",
+            lambda inv: (_ for _ in ()).throw(RuntimeError()),
         )
         pack = rca_chat.build_grounding_pack(_verdict(), _investigation(), "payment-service")
         assert "(section unavailable)" in pack.text
@@ -174,7 +182,9 @@ class TestDeterministicAnswerer:
     def test_cause_question_cites_the_selected_hypothesis(self):
         inv = _investigation()
         pack = self._pack(inv)
-        result = rca_chat._deterministic_answer(pack, _verdict(inv), "why this cause?", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(inv), "why this cause?", history_truncated=False
+        )
         assert result.source == "deterministic"
         assert "dependency_unavailable mechanism" in result.answer
         assert "EV-1" in result.citations
@@ -184,7 +194,10 @@ class TestDeterministicAnswerer:
         inv = _investigation()
         pack = self._pack(inv)
         result = rca_chat._deterministic_answer(
-            pack, _verdict(inv), "why was resource_saturation_cpu ruled out?", history_truncated=False
+            pack,
+            _verdict(inv),
+            "why was resource_saturation_cpu ruled out?",
+            history_truncated=False,
         )
         assert "resource_saturation_cpu" in result.answer
         assert "hid-2" in result.referenced_hypotheses
@@ -192,19 +205,25 @@ class TestDeterministicAnswerer:
     def test_gaps_question_lists_what_could_not_be_checked(self):
         inv = _investigation()
         pack = self._pack(inv)
-        result = rca_chat._deterministic_answer(pack, _verdict(inv), "what couldn't you check?", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(inv), "what couldn't you check?", history_truncated=False
+        )
         assert "EV-1-g" in result.citations
 
     def test_blast_radius_question_lists_impacts(self):
         inv = _investigation()
         pack = self._pack(inv)
-        result = rca_chat._deterministic_answer(pack, _verdict(inv), "what's the blast radius?", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(inv), "what's the blast radius?", history_truncated=False
+        )
         assert "checkout-service" in result.answer
 
     def test_blast_radius_not_examined_abstains_rather_than_says_healthy(self):
         inv = _investigation(blast_radius=None)
         pack = self._pack(inv)
-        result = rca_chat._deterministic_answer(pack, _verdict(inv), "who else is affected?", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(inv), "who else is affected?", history_truncated=False
+        )
         assert result.answerable is False
         assert "not examined" in result.missing[0]
 
@@ -214,21 +233,27 @@ class TestDeterministicAnswerer:
         from scope, not report the fact as unanswerable/needing reanalysis."""
         inv = _investigation()
         pack = self._pack(inv)
-        result = rca_chat._deterministic_answer(pack, _verdict(inv), "what severity is this incident?", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(inv), "what severity is this incident?", history_truncated=False
+        )
         assert result.answerable is True
         assert "sev2" in result.answer
 
     def test_confidence_question_states_the_platform_number_verbatim(self):
         inv = _investigation()
         pack = self._pack(inv)
-        result = rca_chat._deterministic_answer(pack, _verdict(inv, confidence=0.82), "how confident are you?", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(inv, confidence=0.82), "how confident are you?", history_truncated=False
+        )
         assert "0.82" in result.answer
         assert "confirmed" in result.answer
 
     def test_unmatched_question_abstains_honestly(self):
         inv = _investigation()
         pack = self._pack(inv)
-        result = rca_chat._deterministic_answer(pack, _verdict(inv), "what's the weather like", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(inv), "what's the weather like", history_truncated=False
+        )
         assert result.answerable is False
         assert result.source == "deterministic"
         # A real sentence, not an empty string the UI has to paper over — the
@@ -238,7 +263,9 @@ class TestDeterministicAnswerer:
 
     def test_no_investigation_abstains(self):
         pack = rca_chat.build_grounding_pack(_verdict(investigation=None), None, "payment-service")
-        result = rca_chat._deterministic_answer(pack, _verdict(investigation=None), "why this cause?", history_truncated=False)
+        result = rca_chat._deterministic_answer(
+            pack, _verdict(investigation=None), "why this cause?", history_truncated=False
+        )
         assert result.answerable is False
 
 
@@ -257,7 +284,9 @@ class TestValidate:
     def test_unknown_hypotheses_are_dropped(self):
         inv = _investigation()
         pack = rca_chat.build_grounding_pack(_verdict(inv), inv, "payment-service")
-        parsed = rca_chat.ChatAnswer(answer="x", referenced_hypotheses=("hid-1", "hid-does-not-exist"))
+        parsed = rca_chat.ChatAnswer(
+            answer="x", referenced_hypotheses=("hid-1", "hid-does-not-exist")
+        )
         result = rca_chat._validate(parsed, pack, _verdict(inv), history_truncated=False)
         assert result.referenced_hypotheses == ("hid-1",)
 
@@ -265,7 +294,9 @@ class TestValidate:
         inv = _investigation()
         pack = rca_chat.build_grounding_pack(_verdict(inv, confidence=0.82), inv, "payment-service")
         parsed = rca_chat.ChatAnswer(answer="I'd put this at 0.99 confidence.")
-        result = rca_chat._validate(parsed, pack, _verdict(inv, confidence=0.82), history_truncated=False)
+        result = rca_chat._validate(
+            parsed, pack, _verdict(inv, confidence=0.82), history_truncated=False
+        )
         assert "0.99" in result.answer  # untouched
         assert any("0.82" in w for w in result.warnings)
 
@@ -273,7 +304,9 @@ class TestValidate:
         inv = _investigation()
         pack = rca_chat.build_grounding_pack(_verdict(inv, confidence=0.82), inv, "payment-service")
         parsed = rca_chat.ChatAnswer(answer="Roughly 0.82 confidence, matching the platform.")
-        result = rca_chat._validate(parsed, pack, _verdict(inv, confidence=0.82), history_truncated=False)
+        result = rca_chat._validate(
+            parsed, pack, _verdict(inv, confidence=0.82), history_truncated=False
+        )
         assert result.warnings == ()
 
 
@@ -313,7 +346,11 @@ class TestChatRoute:
 
     def test_a_second_call_with_the_same_run_id_does_not_recreate_the_session(self, client):
         verdict = _verdict()
-        body = {"run_id": "run-2", "rca_verdict": verdict.model_dump(mode="json"), "incident_id": "INC-2"}
+        body = {
+            "run_id": "run-2",
+            "rca_verdict": verdict.model_dump(mode="json"),
+            "incident_id": "INC-2",
+        }
         client.post("/api/rca/chat", json={**body, "message": "first question"})
         client.post("/api/rca/chat", json={**body, "message": "second question"})
 
@@ -402,7 +439,11 @@ class TestChatRoute:
         verdict = _verdict()
         client.post(
             "/api/rca/chat",
-            json={"run_id": "run-5", "message": "hi", "rca_verdict": verdict.model_dump(mode="json")},
+            json={
+                "run_id": "run-5",
+                "message": "hi",
+                "rca_verdict": verdict.model_dump(mode="json"),
+            },
         )
         assert client.delete("/api/rca/chat/run-5").status_code == 200
         assert client.get("/api/rca/chat/run-5").status_code == 404

@@ -38,6 +38,7 @@ from typing import Any
 import httpx
 
 from aiops.runbooks import list_runbooks
+from aiops.tools.chatops.adapters._teams_common import is_teams_webhook_url
 
 _AZ = os.environ.get("AIOPS_AZ_PATH", r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd")
 _FLOW_API = "https://api.flow.microsoft.com"
@@ -116,6 +117,16 @@ def main() -> int:
     ]
     if missing:
         print(f"publish_runbooks: set {', '.join(missing)} first", file=sys.stderr)
+        return 2
+    if not is_teams_webhook_url(_PUBLISHER_URL):
+        # Same allowlist the chat/DM/meeting adapters enforce — this script
+        # posts every runbook's raw markdown to this URL, so a misconfigured
+        # or copy-pasted value should fail loudly here rather than silently
+        # exfiltrating the runbook library to an arbitrary host.
+        print(
+            "publish_runbooks: AIOPS_RUNBOOK_PUBLISHER_URL is not a recognised Teams webhook host",
+            file=sys.stderr,
+        )
         return 2
 
     runbooks = list_runbooks()

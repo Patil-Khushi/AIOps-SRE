@@ -47,6 +47,7 @@ from typing import Any
 import httpx
 
 from aiops.tools import ToolResult, tool
+from aiops.tools.chatops.adapters._teams_common import is_teams_webhook_url
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,19 @@ def create_meeting(
         return ToolResult(
             ok=False,
             error="AIOPS_TEAMS_MEETING_WEBHOOK_URL not set",
+            metadata={"provider": "teams"},
+        )
+    if not is_teams_webhook_url(url):
+        # Same allowlist the channel/DM adapters enforce (_teams_common.py) —
+        # this URL only ever comes from an env var today, but a misconfigured
+        # or copy-pasted value should fail loudly here rather than silently
+        # POST an incident + attendee emails to an arbitrary host.
+        logger.error(
+            "teams_meeting: AIOPS_TEAMS_MEETING_WEBHOOK_URL is not a recognised Teams host"
+        )
+        return ToolResult(
+            ok=False,
+            error="AIOPS_TEAMS_MEETING_WEBHOOK_URL is not a recognised Teams webhook host",
             metadata={"provider": "teams"},
         )
 

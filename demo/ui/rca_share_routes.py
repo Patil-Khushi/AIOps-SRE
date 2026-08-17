@@ -8,6 +8,19 @@ incapable of executing anything or bypassing HITL. Sharing a message to Teams
 is a plain, one-way notification (not remediation, not a tool the model can
 invoke), but it still needs the chatops seam, so it lives here instead of
 inside that restricted boundary.
+
+Access control (explicitly, not implicitly)
+--------------------------------------------
+This endpoint has no auth check of its own — same POC posture as every other
+``demo/ui/`` route (see ``server.py::_warn_if_approval_token_unset``, HITL-2
+/ #102: "HITL web endpoints are unauthenticated" when no approval token is
+configured). Concretely, anyone who can reach this FastAPI process can
+post arbitrary ``title``/``body`` text into whatever channel
+``AIOPS_TEAMS_WEBHOOK_URL`` targets. That is an acceptable blast radius for a
+same-origin demo console — it can only ever post a message, never execute a
+fix or touch HITL — but a hardened deployment must put real auth in front of
+this route (or the whole ``demo/ui/`` app) before exposing it beyond
+localhost/same-origin, exactly as the HITL approve/deny routes already note.
 """
 
 from __future__ import annotations

@@ -317,7 +317,9 @@ def collect_facts(
             traces = (trace_res.data or {}).get("traces") or []
             if traces:
                 durations = [
-                    t["duration_us"] for t in traces if isinstance(t.get("duration_us"), (int, float))
+                    t["duration_us"]
+                    for t in traces
+                    if isinstance(t.get("duration_us"), (int, float))
                 ]
                 facts.trace_summary = TraceSummary(
                     total=len(traces),
