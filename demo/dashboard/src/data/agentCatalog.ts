@@ -344,7 +344,7 @@ export const AGENTS: AgentCatalogItem[] = [
   // ── Prescriptive-Adaptive (5) ──────────────────────────────────────────────
   agent('RCA Agent', 'Prescriptive-Adaptive', 15, 'Diagnose, recommend, and apply the fix — end to end.', 'Finds the root cause, ranks remediation options, and applies the approved fix with rollback.', {
     hitl: 'Required',
-    liveSurface: '/console/rca', liveSurfaceLabel: 'Open RCA console',
+    liveSurface: '/console/incidents', liveSurfaceLabel: 'Open Incident Command Center',
     inputs: ['incident verdict', 'metrics & traces', 'recent changes', 'runbooks'],
     outputs: ['root cause', 'ranked remediation options', 'rollback plan', 'execution result', 'confidence'],
     plainSummary:

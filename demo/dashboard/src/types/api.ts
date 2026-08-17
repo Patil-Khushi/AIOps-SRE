@@ -2,6 +2,8 @@
 // Keep these in sync with `agents/alert_triage/models.py` and
 // `demo/ui/server.py` route shapes.
 
+import type { Investigation, RootCauseStatus } from './rca';
+
 export type Severity = 'Sev-1' | 'Sev-2' | 'Sev-3' | 'Sev-4';
 export type Status = 'Active' | 'Suppressed';
 
@@ -120,6 +122,15 @@ export interface RCAVerdict {
   // falls back to rendering ranked_fix_steps.
   remediation_options?: RemediationOption[];
   recommended_option_id?: string | null;
+  // Additive fields the backend has always sent (agents/rca_agent/models.py)
+  // but this type previously omitted — silently dropping the entire
+  // Investigation payload. root_cause_status is the platform-computed status
+  // (never llm_stated_confidence as the headline number); investigation is
+  // null on the offline/eval path or whenever the deterministic stages could
+  // not run.
+  root_cause_status: RootCauseStatus;
+  investigation?: Investigation | null;
+  llm_stated_confidence?: number | null;
 }
 
 // Log Correlation (RA-007) — mirrors agents/log_correlation/models.py.

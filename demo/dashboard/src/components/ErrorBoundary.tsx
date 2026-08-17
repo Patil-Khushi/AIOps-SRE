@@ -1,7 +1,13 @@
 import { Component, ReactNode } from 'react';
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 
-interface Props { children: ReactNode }
+interface Props {
+  children: ReactNode;
+  // Optional — defaults preserve the exact prior behavior (App.tsx's
+  // RunbookExecutor usage passes neither, and gets today's message).
+  label?: string;
+  fallback?: (error: Error, retry: () => void) => ReactNode;
+}
 interface State { error: Error | null }
 
 // Catches render-time exceptions in the subtree and shows a styled fallback
@@ -17,11 +23,14 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error) {
     // Surfaced for anyone with the console open; the fallback UI carries the gist.
-    console.error('RunbookExecutor render error:', error);
+    console.error(`${this.props.label ?? 'RunbookExecutor'} render error:`, error);
   }
+
+  retry = () => this.setState({ error: null });
 
   render() {
     if (!this.state.error) return this.props.children;
+    if (this.props.fallback) return this.props.fallback(this.state.error, this.retry);
     return (
       <div className="card animate-fade-in border-bad/40">
         <div className="card-body flex items-start gap-3">
@@ -36,7 +45,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             <p className="mt-1 break-words font-mono text-[11px] text-ink-500 dark:text-ink-500">
               {this.state.error.message}
             </p>
-            <button onClick={() => this.setState({ error: null })} className="btn mt-3 !py-1 !text-xs">
+            <button onClick={this.retry} className="btn mt-3 !py-1 !text-xs">
               <RotateCcw className="h-3.5 w-3.5" /> Retry
             </button>
           </div>
