@@ -58,6 +58,21 @@ export default function IncidentCommandCenter() {
   const [query, setQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<Set<Severity>>(new Set());
 
+  // Surface the RCA agent launcher as soon as the list has something to talk
+  // about, instead of only after a "Debug" click sets dock.row — the bubble
+  // should be visible the moment this page has an incident, not require an
+  // action first. Only auto-scopes when nothing is scoped yet (or the
+  // previously scoped incident has dropped off the list), so it never
+  // overrides a row the user explicitly picked via "Debug".
+  useEffect(() => {
+    if (incidentId || rows.length === 0) return;
+    if (dock.row && rows.some((r) => r.id === dock.row!.id)) return;
+    const topId = order.find((id) => rows.some((r) => r.id === id)) ?? rows[0].id;
+    const top = rows.find((r) => r.id === topId);
+    if (top) dock.focus(top);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentId, rows, order]);
+
   // Reconcile persisted order with the current row set: keep known ids in
   // their saved position, append new ones, drop ids that no longer exist.
   useEffect(() => {
@@ -136,7 +151,7 @@ export default function IncidentCommandCenter() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight text-[var(--icc-fg)]">
-            <Siren className="h-6 w-6 text-[var(--icc-accent)]" /> Incident Command Center
+            <Siren className="h-6 w-6 text-[var(--icc-accent)]" /> Root Cause Analysis
           </h1>
           <p className="mt-1 text-sm text-[var(--icc-fg-muted)]">
             Every triaged incident, live status, and one click into the RCA Agent.

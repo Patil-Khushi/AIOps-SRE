@@ -35,7 +35,7 @@ export function ChatMessageList({
         const el = e.currentTarget;
         pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
       }}
-      className="flex-1 space-y-3 overflow-y-auto p-3"
+      className="h-full min-h-0 space-y-3 overflow-y-auto p-3"
     >
       {messages.length === 0 && !streaming && (
         <EmptyState label="Ask the RCA Agent" hint="Type a question, or press Enter to send the auto-typed investigation prompt." />

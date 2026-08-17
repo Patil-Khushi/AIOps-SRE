@@ -13,6 +13,7 @@ import { RemediationPanel } from './RemediationPanel';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
+import { useChatDock } from '@/components/chat/ChatDockProvider';
 
 const VERIFY_POLL_MS = 5000;
 
@@ -45,6 +46,20 @@ export function IncidentWorkspace({
   const [verifying, setVerifying] = useState(false);
   const toast = useToast();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dock = useChatDock();
+
+  // Scope the floating RCA agent launcher to this incident so it's available
+  // from the workspace itself, not only after clicking "Debug" from the list.
+  // Keyed on dock.row's id too (not just row.id) so this self-corrects on the
+  // very first mount: if dock.row was still null the instant this effect
+  // first ran, the mismatch re-fires the effect and applies focus() again,
+  // instead of the launcher staying hidden until some later, unrelated
+  // dock-state change happens to trigger a re-render. focus() itself is a
+  // no-op once the ids already match, so this can't loop.
+  useEffect(() => {
+    if (dock.row?.id !== row.id) dock.focus(row);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row.id, dock.row?.id]);
 
   const stopPolling = () => {
     if (pollRef.current) {

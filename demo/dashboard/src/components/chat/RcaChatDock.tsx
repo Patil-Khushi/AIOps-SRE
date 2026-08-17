@@ -51,37 +51,64 @@ export function RcaChatDock() {
   const handleSubmit = () => sendText(chat.draft);
 
   return (
-    <IccRoot
-      className={
-        'fixed bottom-24 right-6 top-6 z-40 flex w-[380px] flex-col ' +
-        'overflow-hidden rounded-2xl border border-[var(--icc-border)] shadow-2xl ' +
-        'origin-bottom-right transition-all duration-300 ease-out ' +
-        (dock.open ? 'scale-100 opacity-100' : 'pointer-events-none scale-0 opacity-0')
-      }
-      aria-hidden={!dock.open}
-    >
-      <ChatHeader row={dock.row} onClose={dock.close} />
-      <ChatMessageList
-        messages={chat.messages}
-        streaming={chat.status === 'sending' && !analyzing}
-        onRetry={chat.retry}
-        incidentPath={dock.row ? `/console/incidents/${dock.row.id}` : undefined}
-        incidentId={dock.row?.incidentId}
-        service={dock.row?.service}
+    <>
+      {/* Backdrop: dims + blurs the page behind the dock and swallows clicks/
+          hover so the dashboard underneath is inert while the chat is open.
+          Kept mounted (like the panel) and cross-faded via opacity/pointer-events
+          rather than unmounted, so it can transition in step with the panel. */}
+      <div
+        className={
+          'fixed inset-0 z-30 bg-black/45 backdrop-blur-sm transition-opacity duration-300 ease-out ' +
+          (dock.open ? 'opacity-100' : 'pointer-events-none opacity-0')
+        }
+        onClick={dock.close}
+        aria-hidden="true"
       />
-      {analyzing && (
-        <div className="border-t border-[var(--icc-border)] px-3 py-2">
-          <ProgressStageList stages={progress.stages} />
+      <IccRoot
+        className={
+          'fixed bottom-24 right-6 top-6 z-40 flex w-[380px] flex-col ' +
+          'overflow-hidden rounded-2xl border border-[var(--icc-border)] shadow-2xl ' +
+          'origin-bottom-right transition-all duration-300 ease-out ' +
+          (dock.open ? 'scale-100 opacity-100' : 'pointer-events-none scale-0 opacity-0')
+        }
+        aria-hidden={!dock.open}
+      >
+        {/* Fixed header row — flex-none so it never shrinks or scrolls */}
+        <div className="flex-none">
+          <ChatHeader row={dock.row} onClose={dock.close} />
         </div>
-      )}
-      {chat.analyzed && chat.status !== 'sending' && <SlashCommandChips onPick={sendText} />}
-      <ChatComposer
-        value={chat.draft}
-        onChange={handleChange}
-        onSubmit={handleSubmit}
-        disabled={chat.status === 'sending'}
-        placeholder="Ask, or type / for commands…"
-      />
-    </IccRoot>
+        {/* Message thread — the only scrollable region. min-h-0 is required
+            here: without it a flex child defaults to min-height:auto and
+            refuses to shrink below its content size, which is what let the
+            thread grow underneath the composer instead of scrolling. */}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <ChatMessageList
+            messages={chat.messages}
+            streaming={chat.status === 'sending' && !analyzing}
+            onRetry={chat.retry}
+            incidentPath={dock.row ? `/console/incidents/${dock.row.id}` : undefined}
+            incidentId={dock.row?.incidentId}
+            service={dock.row?.service}
+          />
+        </div>
+        {/* Fixed footer stack — progress / slash-chips / composer, flex-none
+            so it stays pinned below the thread and never overlaps it */}
+        <div className="flex-none">
+          {analyzing && (
+            <div className="border-t border-[var(--icc-border)] px-3 py-2">
+              <ProgressStageList stages={progress.stages} />
+            </div>
+          )}
+          {chat.analyzed && chat.status !== 'sending' && <SlashCommandChips onPick={sendText} />}
+          <ChatComposer
+            value={chat.draft}
+            onChange={handleChange}
+            onSubmit={handleSubmit}
+            disabled={chat.status === 'sending'}
+            placeholder="Ask, or type / for commands…"
+          />
+        </div>
+      </IccRoot>
+    </>
   );
 }

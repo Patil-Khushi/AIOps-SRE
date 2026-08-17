@@ -23,8 +23,8 @@ export function ChatMessageBubble({
         <div
           className={
             message.failed
-              ? 'max-w-[85%] rounded-lg border border-[var(--icc-bad)]/50 bg-[var(--icc-bad)]/10 px-3 py-2 text-sm text-[var(--icc-bad)]'
-              : 'max-w-[85%] rounded-lg bg-[var(--icc-accent)] px-3 py-2 text-sm text-white'
+              ? 'max-w-[85%] rounded-2xl border border-[var(--icc-bad)]/50 bg-[var(--icc-bad)]/10 px-3.5 py-2 text-sm text-[var(--icc-bad)]'
+              : 'max-w-[85%] rounded-2xl bg-[var(--icc-accent)] px-3.5 py-2 text-sm text-white'
           }
         >
           <p>{message.text}</p>
@@ -60,7 +60,9 @@ export function ChatMessageBubble({
         ) : message.answer ? (
           <AnswerCard card={toAnswerCard(message.answer)} incidentId={incidentId} service={service} />
         ) : (
-          <p className="text-sm text-[var(--icc-fg)]">{message.text}</p>
+          <p className="rounded-2xl bg-[var(--icc-surface-2)] px-3.5 py-2 text-sm text-[var(--icc-fg)]">
+            {message.text}
+          </p>
         )}
       </div>
     </div>
