@@ -1080,17 +1080,79 @@ def tag_kb_article_source(article_id: int, source: str) -> dict[str, Any] | None
 
 # ─── RCA results (keyed by incident id for the watcher / verifier) ──────────
 
+CLUSTER_INCIDENT_PREFIX = "CLUSTER-"
+"""Prefix for the synthetic identity ``save_rca_result_for_cluster`` uses in
+place of a real ServiceNow incident id. Exported so every reader/writer
+builds and recognises the same format — a bare, unprefixed hash could later
+collide with (or be mistaken for) a real ticket number; this shape never can.
+Never pass a value with this prefix to ``itsm.incident.*`` — it names an
+Alert Triage dedup cluster, not a ServiceNow incident."""
+
 
 def save_rca_result(
     *, incident_id: str, verdict: dict[str, Any], affected_service: str = ""
 ) -> int:
-    """Persist an RCA verdict keyed by incident id. Returns the row id."""
+    """Persist an RCA verdict keyed by incident id. Returns the row id.
+
+    One row per call by design (unlike ``save_rca_result_for_cluster``
+    below): a real ServiceNow incident id names one specific ticket, so
+    repeated persistence for the same id (e.g. a re-run RCA before the
+    ticket closes) is legitimately a new observation, not a duplicate to
+    collapse. ``get_rca_result``/``list_rca_results`` already read "most
+    recent wins" for this corpus.
+    """
     row = RCAResultRow(
         incident_id=incident_id,
         affected_service=affected_service or str(verdict.get("affected_service", "")),
         verdict=dict(verdict or {}),
     )
     with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return int(row.id)  # type: ignore[arg-type]
+
+
+def save_rca_result_for_cluster(
+    *, cluster_key: str, verdict: dict[str, Any], affected_service: str = ""
+) -> int:
+    """Persist an RCA verdict for a Suppressed alert that never received a
+    real ServiceNow incident id, keyed by its Alert Triage dedup cluster
+    identity instead (``Alert.cluster_key()``).
+
+    Upserts by cluster identity — unlike ``save_rca_result``, which always
+    inserts a new row (correct for real, distinct tickets). A dedup cluster
+    can legitimately re-fire the same Suppressed alert many times; without
+    collapsing to one row per cluster, that would grow ``rca_results``
+    unboundedly for a condition that, by definition, keeps recurring as the
+    same thing. Callers needing to see "we've seen this N times" already
+    have that count on the triage verdict (``duplicate_alert_count``) — this
+    corpus is for Historical Incident RAG's "have we seen this before"
+    recall, which only needs the freshest verdict per cluster.
+
+    The returned ``incident_id`` (``CLUSTER_INCIDENT_PREFIX + cluster_key``)
+    must never be sent to ServiceNow or treated as a real incident id by any
+    caller — see ``CLUSTER_INCIDENT_PREFIX``'s docstring.
+    """
+    synthetic_id = f"{CLUSTER_INCIDENT_PREFIX}{cluster_key}"
+    service = affected_service or str(verdict.get("affected_service", ""))
+    with _session() as s:
+        existing = s.exec(
+            select(RCAResultRow).where(RCAResultRow.incident_id == synthetic_id)
+        ).first()
+        if existing is not None:
+            existing.verdict = dict(verdict or {})
+            existing.affected_service = service
+            existing.created_at = datetime.now(UTC)
+            s.add(existing)
+            s.commit()
+            s.refresh(existing)
+            return int(existing.id)  # type: ignore[arg-type]
+        row = RCAResultRow(
+            incident_id=synthetic_id,
+            affected_service=service,
+            verdict=dict(verdict or {}),
+        )
         s.add(row)
         s.commit()
         s.refresh(row)
@@ -1346,6 +1408,7 @@ def _kb_row_to_dict(row: KBArticleRow) -> dict[str, Any]:
 
 
 __all__ = [
+    "CLUSTER_INCIDENT_PREFIX",
     "average_classification_confidence",
     "count_classifications",
     "count_historical_incidents",
@@ -1376,6 +1439,7 @@ __all__ = [
     "save_kb_article",
     "save_notification",
     "save_rca_result",
+    "save_rca_result_for_cluster",
     "save_ticket",
     "save_verdict",
     "tag_kb_article_source",

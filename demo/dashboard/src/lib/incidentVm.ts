@@ -80,6 +80,10 @@ export function toIncidentRows(verdicts: VerdictRecord[], firingAlerts: Promethe
         duplicate_alert_count: v.duplicate_alert_count,
         status: v.status,
         audit_metadata: v.audit_metadata,
+        // Re-sent to POST /api/rca so a Suppressed verdict (no real
+        // ServiceNow incident_id) still has a stable identity for RCA
+        // persistence — see TriageVerdict.cluster_key's docstring.
+        cluster_key: v.cluster_key,
       },
     };
   });

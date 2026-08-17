@@ -931,6 +931,7 @@ def _verdict_from_row(row: dict[str, Any]) -> TriageVerdict:
         duplicate_alert_count=row.get("duplicate_alert_count", 1),
         status=row.get("status", "Active"),
         audit_metadata=audit,
+        cluster_key=row.get("cluster_key"),
     )
 
 
@@ -1204,6 +1205,7 @@ def triage(
         duplicate_alert_count=duplicate_count,
         status=status,
         audit_metadata=audit,
+        cluster_key=hit.cluster_key,
     )
     verdict_id: int | None = None
     try:

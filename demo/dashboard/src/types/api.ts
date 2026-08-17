@@ -40,6 +40,13 @@ export interface TriageVerdict {
   duplicate_alert_count: number;
   status: Status;
   audit_metadata: AuditMetadata;
+  // The Alert Triage dedup cluster identity, populated for EVERY verdict
+  // (Active or Suppressed) — see agents/alert_triage/models.py's field
+  // docstring. Re-sent to POST /api/rca so a Suppressed verdict (which never
+  // gets a real ServiceNow incident_id) still has a stable identity to
+  // persist RCA results against for Historical Incident RAG. Never a
+  // ServiceNow ticket id — never send this to an ITSM capability.
+  cluster_key?: string | null;
 }
 
 // RA-003 Auto-Ticketing output (mirrors agents/auto_ticketing/models.py:TicketRecord).

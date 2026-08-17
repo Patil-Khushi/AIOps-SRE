@@ -859,7 +859,11 @@ class RcaRequest(BaseModel):
         None,
         description=(
             "When present, the verdict is best-effort persisted (repository.save_rca_result) "
-            "so a page reload — or a chat session seeded from this run — can rehydrate it."
+            "so a page reload — or a chat session seeded from this run — can rehydrate it. "
+            "When absent (the common case for a Suppressed triage verdict, which never "
+            "receives a real ServiceNow ticket), falls back to persisting by "
+            "triage_verdict['cluster_key'] instead (repository.save_rca_result_for_cluster) "
+            "so Historical Incident RAG can still recall it — never a ServiceNow incident id."
         ),
     )
 
@@ -937,6 +941,30 @@ async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
             )
         except Exception:
             logger.exception("save_rca_result failed for incident_id=%s", req.incident_id)
+    else:
+        # No real ServiceNow incident id — the common case for a Suppressed
+        # triage verdict, since Auto-Ticketing deliberately skips ticket
+        # creation for those (agents/auto_ticketing/agent.py). Without a
+        # fallback here, every Suppressed incident's RCA verdict would be
+        # silently unavailable to Historical Incident RAG forever, even
+        # though the same failure cluster recurring is exactly the kind of
+        # thing "have we seen this before?" should be able to answer.
+        #
+        # Falls back to the Alert Triage dedup cluster identity instead —
+        # never a ServiceNow ticket, never sent to ITSM, never touching
+        # ticketing/HITL/scoring. See CLUSTER_INCIDENT_PREFIX's docstring.
+        cluster_key = req.triage_verdict.get("cluster_key")
+        if cluster_key:
+            try:
+                state_repo.save_rca_result_for_cluster(
+                    cluster_key=str(cluster_key),
+                    verdict=payload,
+                    affected_service=str(payload.get("affected_service") or ""),
+                )
+            except Exception:
+                logger.exception(
+                    "save_rca_result_for_cluster failed for cluster_key=%s", cluster_key
+                )
 
     if req.run_id:
         # Seeds the chat session here — after remediation composition — so
