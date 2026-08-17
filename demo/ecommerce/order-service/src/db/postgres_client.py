@@ -70,8 +70,7 @@ def ping() -> bool:
         return False
 
 
-# def create_order(user_id: int, amount: float, items: list) -> int:
-def _create_order_impl(user_id: int, amount: float, items: list) -> int:
+def create_order(user_id: int, amount: float, items: list) -> int:
     with engine.begin() as conn:
         result = conn.execute(
             insert(orders).values(
