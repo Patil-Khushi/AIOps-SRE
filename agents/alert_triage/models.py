@@ -152,3 +152,11 @@ class TriageVerdict(BaseModel):
     duplicate_alert_count: int = Field(default=1, ge=1)
     status: Status = "Active"
     audit_metadata: AuditMetadata
+    cluster_key: str | None = None
+    """The dedup identity (``Alert.cluster_key()``) computed for this alert,
+    regardless of whether it was ``Active`` or ``Suppressed`` — populated for
+    every verdict. Exists so a downstream RCA run has a stable identity to
+    persist against when this verdict is ``Suppressed`` and therefore never
+    receives a real ServiceNow ``incident_id`` (Auto-Ticketing skips ticket
+    creation for Suppressed verdicts). Never a substitute for ``incident_id``:
+    nothing may treat this as, or send this to, ServiceNow."""
