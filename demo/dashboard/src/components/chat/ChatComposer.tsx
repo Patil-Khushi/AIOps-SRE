@@ -48,13 +48,13 @@ export function ChatComposer({
           rows={2}
           disabled={disabled}
           style={{ maxHeight: MAX_HEIGHT_PX }}
-          className="input flex-1 resize-none overflow-y-auto !bg-[var(--icc-surface-2)]"
+          className="input flex-1 resize-none overflow-y-auto rounded-2xl !bg-[var(--icc-surface-2)] !py-2.5"
         />
         <button
           type="button"
           onClick={onSubmit}
           disabled={disabled || !value.trim()}
-          className="btn btn-primary !py-2"
+          className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-[var(--icc-accent)] text-white transition-opacity disabled:opacity-40"
           aria-label="Send"
         >
           <Send className="h-4 w-4" />
