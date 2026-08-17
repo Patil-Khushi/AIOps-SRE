@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from '@/components/Layout';
 import BrowseLayout from '@/components/BrowseLayout';
@@ -19,6 +20,12 @@ import SystemHealth from '@/pages/SystemHealth';
 import Knowledge from '@/pages/Knowledge';
 import RunbookExecutor from '@/pages/RunbookExecutor';
 import ErrorBoundary from '@/components/ErrorBoundary';
+import { LoadingState } from '@/components/states';
+
+// Lazy: the largest page in the app (incident list + KPI strip + — once the
+// workspace slice lands — a 7-tab detail view), and the other console pages
+// shouldn't pay for it.
+const IncidentCommandCenter = lazy(() => import('@/pages/IncidentCommandCenter'));
 
 export default function App() {
   return (
@@ -41,6 +48,22 @@ export default function App() {
         <Route index element={<Overview />} />
         <Route path="alerts" element={<AlertStream />} />
         <Route path="rca" element={<RcaConsole />} />
+        <Route
+          path="incidents"
+          element={
+            <Suspense fallback={<LoadingState label="Loading Incident Command Center…" />}>
+              <IncidentCommandCenter />
+            </Suspense>
+          }
+        />
+        <Route
+          path="incidents/:incidentId"
+          element={
+            <Suspense fallback={<LoadingState label="Loading Incident Command Center…" />}>
+              <IncidentCommandCenter />
+            </Suspense>
+          }
+        />
         <Route path="log-correlation" element={<LogCorrelation />} />
         <Route path="incident-commander" element={<IncidentCommander />} />
         <Route path="approvals" element={<Approvals />} />

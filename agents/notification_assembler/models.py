@@ -80,6 +80,10 @@ class InvitedSME(BaseModel):
 
     handle: str
     name: str | None = None
+    email: str | None = None
+    """Org email, when the source resolved one. Handles are Slack-shaped and
+    mean nothing to a calendar, so the Teams war-room meeting invites on
+    this field — an SME without one simply isn't invited to the call."""
     team: str | None = None
     reason: str
     source: str
@@ -136,7 +140,10 @@ class WarRoomAssembly(BaseModel):
     bridge_url: str | None = None
     """Deep link that opens the war-room channel — the "bridge link" SMEs click."""
     meeting_url: str | None = None
-    """Click-to-join video-call link (Jitsi room) for the live bridge."""
+    """Click-to-join link for the live bridge. A real Teams meeting when the
+    ``chatops.war_room.meeting.create`` provider is configured — the SMEs
+    also receive calendar invites for it — otherwise the bridge's own room
+    (Jitsi), which needs no account but sends no invite."""
 
 
 # ─── Combined output ───────────────────────────────────────────────────────

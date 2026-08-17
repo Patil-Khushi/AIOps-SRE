@@ -25,6 +25,11 @@ import type {
   TriageResult,
   TriageVerdict,
 } from '@/types/api';
+import type {
+  RcaChatByIncidentResponse,
+  RcaChatHistoryResponse,
+  RcaChatResponse,
+} from '@/types/rca';
 
 // Axios instance — uses Vite proxy in dev, same-origin in prod (served from /dashboard).
 // Default timeout is generous (600 s / 10 min) because /api/triage/live runs the agent's
@@ -163,9 +168,54 @@ export const api = {
     unwrap<TriageResult>(http.post('/api/triage', { alert })),
   triageLive: () =>
     unwrap<{ count: number; results: TriageResult[] }>(http.post('/api/triage/live')),
-  rca: (triageVerdict: TriageVerdict, scenarioId?: string) =>
+  rca: (
+    triageVerdict: TriageVerdict,
+    scenarioId?: string,
+    opts?: { runId?: string; incidentId?: string | null },
+  ) =>
     unwrap<RCAVerdict>(
-      http.post('/api/rca', { triage_verdict: triageVerdict, scenario_id: scenarioId ?? null }),
+      http.post('/api/rca', {
+        triage_verdict: triageVerdict,
+        scenario_id: scenarioId ?? null,
+        run_id: opts?.runId ?? null,
+        incident_id: opts?.incidentId ?? null,
+      }),
+    ),
+  // RCA chat — read-only Q&A over the frozen Investigation a run_id already
+  // produced. rcaVerdict/triageVerdict rehydrate a session that doesn't exist
+  // yet (server restart); harmless to include on every call, ignored once a
+  // session for run_id already exists.
+  rcaChatSend: (
+    runId: string,
+    message: string,
+    opts?: { rcaVerdict?: RCAVerdict | null; triageVerdict?: TriageVerdict | null; incidentId?: string | null },
+  ) =>
+    unwrap<RcaChatResponse>(
+      http.post('/api/rca/chat', {
+        run_id: runId,
+        message,
+        rca_verdict: opts?.rcaVerdict ?? null,
+        triage_verdict: opts?.triageVerdict ?? null,
+        incident_id: opts?.incidentId ?? null,
+      }),
+    ),
+  rcaChatHistory: (runId: string) =>
+    unwrap<RcaChatHistoryResponse>(http.get(`/api/rca/chat/${runId}`)),
+  rcaChatByIncident: (incidentId: string) =>
+    unwrap<RcaChatByIncidentResponse>(http.get(`/api/rca/chat/by-incident/${incidentId}`)),
+  rcaChatDelete: (runId: string) => unwrap<{ ok: boolean }>(http.delete(`/api/rca/chat/${runId}`)),
+  // Poll target for the Incident Workspace's "Verifying" lifecycle stage.
+  // status: 'not_triggered' | 'in_progress' | 'pass' | 'fail' | ...
+  rcaVerifyStatus: (incidentId: string) =>
+    unwrap<{ status: string }>(http.get(`/api/rca/verify-status/${incidentId}`)),
+  rcaChatShareTeams: (payload: { title: string; body: string; incidentId?: string | null; service?: string | null }) =>
+    unwrap<{ sent: boolean; reason?: string }>(
+      http.post('/api/rca/chat/share-teams', {
+        title: payload.title,
+        body: payload.body,
+        incident_id: payload.incidentId ?? null,
+        service: payload.service ?? null,
+      }),
     ),
   // RA-007 Log Correlation — pulls logs (Loki) + traces (Jaeger) + metrics
   // (Prometheus) for a service/window and returns a correlated evidence pack.

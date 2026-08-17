@@ -82,6 +82,23 @@ class ResolutionMetadata(BaseModel):
     ticket_ref: str | None = None
     runbook_ref: str | None = None
 
+    recorded_hypothesis_class: str | None = None
+    """Which failure *class* was concluded for that incident, when the backend records
+    structured RCA outcomes rather than only prose.
+
+    Additive and optional: a corpus of hand-written truth files has no such value and
+    leaves it ``None``. It exists because matching a remembered sentence against a
+    candidate cause by keyword is guesswork, while two records naming the same failure
+    class agree structurally. Still a historical fact about the past incident — it says
+    which class was concluded *then*, not which applies now.
+
+    Named ``…_class`` rather than ``…_id`` after a bug worth remembering: RCA's
+    ``Hypothesis.hypothesis_id`` is ``digest(incident_id, rule_id)``, so it is unique
+    *per incident*. Keying recall on it silently matched nothing at all — every prior
+    attached to no hypothesis, and memory measurably did nothing while appearing to work.
+    The class (``Hypothesis.category``, equal to the catalog rule id) is the value that is
+    stable across incidents."""
+
 
 class IncidentMatch(BaseModel):
     """One past incident judged similar to the query, with why."""

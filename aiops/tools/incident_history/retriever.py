@@ -36,6 +36,7 @@ from aiops.tools.incident_history.providers.backends import (
 )
 from aiops.tools.incident_history.providers.embedding import EmbeddingIncidentHistoryProvider
 from aiops.tools.incident_history.providers.mock import MockIncidentHistoryProvider
+from aiops.tools.incident_history.providers.outcomes import RcaOutcomeHistoryProvider
 from aiops.tools.resilience import ResiliencePolicy, breaker_open, guard
 from aiops.tools.resilience import reset_for_tests as _reset_resilience
 
@@ -62,16 +63,32 @@ _PROVIDERS: dict[str, IncidentHistoryProvider] = {
     # server. Ahead of "mock" in a configured chain because it subsumes what set
     # overlap can find and also matches incidents that share no literal tokens.
     "embedding": EmbeddingIncidentHistoryProvider(),
+    # Verified-outcome tier: past *predictions whose recovery was confirmed*, not
+    # truth-file documents. Not in the default chain — an empty store on a fresh
+    # deployment would add a query to every correlation to learn nothing — and
+    # deliberately the only provider the RCA agent's memory allowlist accepts, because
+    # the corpus-backed tiers would hand RCA the graded answer (see providers/outcomes.py).
+    "rca_outcomes": RcaOutcomeHistoryProvider(),
     "vector": VectorIncidentHistoryProvider(),
     "elastic": ElasticIncidentHistoryProvider(),
     "postgres": PostgresIncidentHistoryProvider(),
     "mock": MockIncidentHistoryProvider(),
 }
 
+BUILTIN_PROVIDERS: frozenset[str] = frozenset(_PROVIDERS)
+"""The providers this module ships, snapshotted before any runtime registration.
+
+``_PROVIDERS`` is module-global and mutable — ``register_provider`` is the documented
+way to add a backend, and tests use it freely — so reading the live dict to ask "what
+does this repo ship?" gets whatever the last test happened to leave behind. Callers
+that want the shipped set (a governance check, a config validator) must read this
+instead, or they inherit a test's fixtures as production facts.
+"""
+
 # In-process tiers that cannot block on the network stay eligible even after the
 # budget is spent — the same lesson the topology chain learned when a slow tier
 # starved the static fallback and left the caller with nothing.
-_FREE_PROVIDERS = frozenset({"mock"})
+_FREE_PROVIDERS = frozenset({"mock", "rca_outcomes"})
 
 _circuit_open_until: dict[str, float] = {}
 

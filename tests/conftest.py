@@ -227,6 +227,39 @@ def _hermetic_slack_user_map_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_chatops_sink_env(monkeypatch):
+    """Clear the real-sink chatops env vars around every test.
+
+    Same ``.env``-injection class as ``_hermetic_slack_user_map_env`` above,
+    but with a worse blast radius: every test that boots the demo server via
+    ``TestClient(srv.app)`` runs the lifespan, whose
+    ``_register_chatops_adapters()`` reads these vars and registers REAL
+    Slack/Teams/PagerDuty adapters on the process-wide ``get_client()``
+    singleton — which no fixture resets. Once a developer's ``.env`` webhook
+    URL leaks in (via the server's import-time ``load_dotenv``), every
+    subsequent ``get_client().send()`` in the session performs an unmocked
+    network POST to the developer's live channel: fixture incidents, approval
+    prompts, war-room notices. ``ChatOpsClient.send`` swallows adapter
+    errors, so nothing fails loudly — the suite just leaks test data to a
+    real workspace and silently gains per-send network latency.
+
+    Tests that exercise env-driven registration set these explicitly
+    (``monkeypatch.setenv`` runs after this autouse fixture) or pass the
+    values as arguments to ``register_env_adapters``.
+    """
+    monkeypatch.delenv("AIOPS_SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("AIOPS_SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("AIOPS_PAGERDUTY_INTEGRATION_KEY", raising=False)
+    monkeypatch.delenv("AIOPS_TEAMS_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("AIOPS_TEAMS_DM_WEBHOOK_URL", raising=False)
+    # Not a chat sink, but the same class of bug with worse blast radius: a
+    # developer's real URL here would make the suite create actual Teams
+    # meetings and mail calendar invites to real colleagues on every
+    # Sev-1/Sev-2 fixture.
+    monkeypatch.delenv("AIOPS_TEAMS_MEETING_WEBHOOK_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_observability_circuits():
     """Reset the Jaeger + Loki circuit breakers around every test (#113).
 
@@ -365,3 +398,41 @@ def _hermetic_chatops_hub():
         yield
     finally:
         get_hub()._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_rca_progress_hub():
+    """Reset the RCA progress hub (demo/ui/rca_progress.py) around every test.
+
+    Same discipline as ``_hermetic_chatops_hub`` immediately above, for the
+    same reason: the hub is a process-global singleton keyed by run_id, and a
+    run pushed by one test would otherwise linger and be replayable by a
+    later test that happens to reuse (or, worse, never reuses, silently
+    inflating the LRU) the same run_id.
+    """
+    from demo.ui.rca_progress import get_hub as get_rca_progress_hub
+
+    get_rca_progress_hub()._reset_for_tests()
+    try:
+        yield
+    finally:
+        get_rca_progress_hub()._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_rca_chat_sessions():
+    """Reset the in-memory RCA chat session store around every test.
+
+    Same discipline as ``_hermetic_rca_progress_hub`` immediately above: the
+    store (``demo/ui/rca_sessions.py``) is a process-global singleton, so a
+    session seeded by one test would otherwise be resolvable by
+    ``GET /api/rca/chat/by-incident/{id}`` in a later test that reuses the
+    same incident id.
+    """
+    from demo.ui.rca_sessions import get_session_store
+
+    get_session_store()._reset_for_tests()
+    try:
+        yield
+    finally:
+        get_session_store()._reset_for_tests()

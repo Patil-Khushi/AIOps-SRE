@@ -200,9 +200,19 @@ def test_context_backend_never_touches_the_denylist():
 
 
 def test_no_context_and_flag_off_reproduces_gather_exactly(fake_registry):
-    """The default path today: no context is ever built, nothing changes."""
+    """The default path today: no context is ever built, nothing changes.
+
+    ``_observe`` now returns an ``_Observation`` — the evidence plus the backend the
+    investigation stages should read their facts from, so the prompt and the evidence
+    matrix describe the same readings. The evidence itself is still byte-identical to a
+    plain ``gather``, which is what this test exists to pin.
+    """
     from agents.rca_agent.agent import _observe
 
     trace: list[str] = []
-    observed = _observe(SERVICE, None, trace)
-    assert observed == _evidence.gather(SERVICE)
+    observation = _observe(SERVICE, None, trace)
+    assert observation.observed == _evidence.gather(SERVICE)
+    # No Context Pack, so availability is unknown and must be inferred rather than
+    # asserted — see ``investigation/facts.py``.
+    assert observation.metrics_available is None
+    assert observation.logs_available is None

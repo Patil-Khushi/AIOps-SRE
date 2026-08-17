@@ -102,6 +102,9 @@ def _migrate_add_columns_if_missing() -> None:
         ("notifications", "actions", "JSON"),
         ("notifications", "reason", "VARCHAR"),
         ("notifications", "audit_trace", "JSON"),
+        # Phase 3 historical memory: the join key. Added after rca_outcomes shipped with
+        # only the incident-scoped selected_hypothesis_id.
+        ("rca_outcomes", "selected_hypothesis_class", "VARCHAR"),
     ]
 
     engine = get_engine()

@@ -1,0 +1,139 @@
+/* ─── Incident Command Center theme ──────────────────────────────────────
+ *
+ * A CSS-variable + data-theme theming system, scoped to the `.icc-root`
+ * subtree (the new Incident Command Center pages + the RCA chat dock) rather
+ * than replacing the app-wide Tailwind `dark:`-class system 15+ existing
+ * pages depend on. `data-theme` is set on both <html> and `.icc-root` by the
+ * single store in src/hooks/useTheme.ts, so this can never desync from the
+ * existing Header toggle.
+ *
+ * Import order matters: this file must load AFTER index.css (see
+ * src/main.tsx) so `.icc-root .card` etc. win their specificity ties against
+ * the dark-mode variant. Tailwind 3.4 compiles `dark:bg-ink-900` inside
+ * `@apply` as `.card:is(.dark *){...}`, which is still specificity 0,2,0 (one
+ * class + one `:is()` whose argument's specificity is one class) — same as
+ * `.icc-root .card`. Verified in the built bundle: `.icc-root .card` occurs
+ * after `.card:is(.dark *)`, so it wins the tie in both themes. Tailwind's
+ * `@layer components` compiles to plain concatenated CSS, not a native
+ * cascade layer, so ties break purely on source order. If a future Tailwind
+ * upgrade changes emission order, the escape hatch is bumping the selectors
+ * here to `.icc-root.icc-root ...` rather than reaching for `!important`.
+ */
+
+:root,
+:root:not([data-theme]) {
+  /* Dark is the default before the store has run (matches the app's own
+     default — see readStored()/prefersDark() in useTheme.ts). */
+  --icc-bg: #0a0b0f;
+  --icc-surface: #101218;
+  --icc-surface-2: #15181f;
+  --icc-border: #1e222c;
+  --icc-border-strong: #2a2f3b;
+  --icc-fg: #e8eaef;
+  --icc-fg-muted: #9aa1ad;
+  --icc-fg-faint: #666d7a;
+  --icc-accent: #4d7cff;
+  --icc-accent-soft: rgb(77 124 255 / 0.14);
+  --icc-ok: #22c55e;
+  --icc-warn: #f59e0b;
+  --icc-bad: #ef4444;
+  --icc-sev1: #ef4444;
+  --icc-sev2: #f59e0b;
+  --icc-sev3: #eab308;
+  --icc-sev4: #3b82f6;
+
+  /* Product-rule-enforcing tokens — deliberately neither ok nor bad, so
+     "not examined" / "could not check" can never read as healthy, and
+     "recalled from a past incident" can never read as current evidence. */
+  --icc-unknown: #7c7f95;
+  --icc-gap: #b98b3e;
+  --icc-historical: #8b7bd8;
+}
+
+:root[data-theme='light'] {
+  --icc-bg: #faf9f7;
+  --icc-surface: #ffffff;
+  --icc-surface-2: #f4f2ee;
+  --icc-border: #e6e2db;
+  --icc-border-strong: #d5cfc5;
+  --icc-fg: #1b1a17;
+  --icc-fg-muted: #6b6760;
+  --icc-fg-faint: #96918a;
+  --icc-accent: #2f5fe6;
+  --icc-accent-soft: rgb(47 95 230 / 0.1);
+  --icc-ok: #16a34a;
+  --icc-warn: #d97706;
+  --icc-bad: #dc2626;
+  --icc-sev1: #dc2626;
+  --icc-sev2: #d97706;
+  --icc-sev3: #ca8a04;
+  --icc-sev4: #2563eb;
+
+  --icc-unknown: #8a8494;
+  --icc-gap: #9a6f22;
+  --icc-historical: #6d5cc4;
+}
+
+.icc-root {
+  background: var(--icc-bg);
+  color: var(--icc-fg);
+  min-height: 100%;
+  color-scheme: light dark;
+}
+
+/* Re-skin the existing component classes (src/index.css) for anything
+   rendered inside the ICC subtree — StatCard, SeverityBadge, RcaView, etc.
+   pick this up with ZERO prop changes just by being mounted here. */
+.icc-root .card {
+  background: var(--icc-surface);
+  border-color: var(--icc-border);
+  box-shadow: none;
+}
+.icc-root .card-header,
+.icc-root details > summary {
+  border-color: var(--icc-border);
+}
+.icc-root .card-title {
+  color: var(--icc-fg-muted);
+}
+.icc-root .input {
+  background: var(--icc-surface-2);
+  border-color: var(--icc-border);
+  color: var(--icc-fg);
+}
+.icc-root .btn-ghost {
+  background: var(--icc-surface-2);
+  border-color: var(--icc-border);
+  color: var(--icc-fg);
+}
+.icc-root .btn-primary {
+  background: var(--icc-accent);
+}
+.icc-root .chip {
+  background: var(--icc-surface-2);
+  color: var(--icc-fg-muted);
+}
+
+/* Dashed-border treatment for the two evidence buckets that must never read
+   as a normal (solid-border) finding: a gap (never checked) and a
+   historical prior (not current data). Applied by class, not inline style,
+   so the rule stays in one place. */
+.icc-dashed {
+  border-style: dashed !important;
+}
+
+/* The "Firing" ring — an expanding pulse, not Tailwind's opacity-only
+   animate-pulse. */
+@keyframes iccFiring {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+.icc-firing-ping {
+  animation: iccFiring 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

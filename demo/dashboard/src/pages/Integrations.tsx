@@ -97,7 +97,10 @@ const CATEGORIES: Category[] = [
       // user map, and the war-room bridge that RA-005+006 posts through.
       { name: 'Slack', mono: 'Sl', color: '#a259c6', top: true },
       { name: 'PagerDuty', mono: 'PD', color: '#06ac38', top: true },
-      { name: 'Microsoft Teams', mono: 'Tm', color: '#6264a7', soon: true },
+      // Teams ships as a real adapter (aiops/tools/chatops/adapters/teams.py,
+      // Adaptive Cards via a Workflows webhook), env-opt-in like PagerDuty —
+      // shipped and usable, but the notification path doesn't depend on it.
+      { name: 'Microsoft Teams', mono: 'Tm', color: '#6264a7' },
     ],
   },
   {

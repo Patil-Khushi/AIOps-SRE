@@ -168,4 +168,36 @@ def test_to_record_full_key_contract():
         "assignee_name",
         "assignee_email",
         "interactive",
+        "runbook",
     }
+
+
+def test_to_record_runbook_carries_identity_not_body():
+    """The runbook rides as identity only. Its markdown can be kilobytes and
+    already lives in the library, so every audit record carrying a copy would
+    bloat the log for no gain — consumers resolve the content by id."""
+    from aiops.tools.chatops.runbook_attachment import RunbookAttachment
+
+    msg = ChatMessage(
+        channel="ops",
+        severity=Severity.P1,
+        title="ad down",
+        runbook=RunbookAttachment(
+            runbook_id="rb-ad-failure",
+            title="Ad service — 5xx errors",
+            filename="rb-ad-failure.md",
+            markdown="## Resolution steps\n1. Flip the flag.",
+        ),
+    )
+    record = to_record(msg)
+    assert record["runbook"] == {
+        "runbook_id": "rb-ad-failure",
+        "title": "Ad service — 5xx errors",
+        "filename": "rb-ad-failure.md",
+    }
+    assert "markdown" not in record["runbook"]
+
+
+def test_to_record_runbook_is_none_without_one():
+    msg = ChatMessage(channel="ops", severity=Severity.INFO, title="x")
+    assert to_record(msg)["runbook"] is None

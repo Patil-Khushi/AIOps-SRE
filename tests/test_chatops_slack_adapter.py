@@ -13,6 +13,7 @@ Mocks ``httpx.post`` so tests never hit the network. Asserts:
 from __future__ import annotations
 
 import json
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -203,6 +204,33 @@ def test_send_raises_on_http_failure() -> None:
     with patch("aiops.tools.chatops.adapters.slack.httpx.post", return_value=failing):
         with pytest.raises(httpx.HTTPError):
             adapter.send(_msg())
+
+
+def test_http_4xx_raises_sanitized_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A Slack webhook URL's *path* is the secret, and str() of a real
+    HTTPStatusError embeds the full request URL — so a 4xx must re-raise
+    sanitized, or the secret lands in ChatOpsClient's log and in the
+    DeliveryResult.error field /api/triage returns to the dashboard."""
+    adapter = SlackWebhookAdapter(WEBHOOK)
+    req = httpx.Request("POST", WEBHOOK)
+    with patch(
+        "aiops.tools.chatops.adapters.slack.httpx.post",
+        return_value=httpx.Response(404, request=req),
+    ):
+        with caplog.at_level("ERROR"):
+            with pytest.raises(httpx.HTTPError) as ei:
+                adapter.send(_msg())
+
+    assert "404" in str(ei.value)
+    # `from None` can't clear __context__, but it must suppress it so the
+    # traceback ChatOpsClient's logger.exception renders omits the
+    # URL-bearing original. Assert on the rendered form — the leak channel.
+    rendered = "".join(traceback.format_exception(ei.value))
+    for secret_part in ("T0000FAKE", "B0000FAKE", "abcdef"):
+        assert secret_part not in str(ei.value)
+        assert secret_part not in rendered
+        for record in caplog.records:
+            assert secret_part not in record.getMessage()
 
 
 # ─── mention rewriting (CHAT-6, issue #86) ─────────────────────────────

@@ -135,6 +135,9 @@ from demo.ui import scenario_provider  # noqa: E402
 from demo.ui._alert_hub import register_routes as _register_alert_hub_routes  # noqa: E402
 from demo.ui.chatops_ws import bootstrap_websocket_adapter  # noqa: E402
 from demo.ui.chatops_ws import register_routes as _register_chatops_ws_routes  # noqa: E402
+from demo.ui.rca_progress import bootstrap_rca_progress, make_sink  # noqa: E402
+from demo.ui.rca_progress import get_hub as _rca_progress_hub  # noqa: E402
+from demo.ui.rca_progress import register_routes as _register_rca_progress_routes  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -230,15 +233,15 @@ def _activate_db_oncall_provider() -> None:
 
 
 def _register_chatops_adapters() -> None:
-    """Register the chatops sinks (JSONL audit log + Slack + PagerDuty).
+    """Register the chatops sinks (JSONL audit log + Slack + Teams + PagerDuty).
 
     Idempotent by adapter class so re-running startup (tests, hot-reload)
     does not register duplicate sinks of the same kind. Without this guard
     the same audit JSON line lands twice per send().
 
-    Slack/PagerDuty keys are read from the env inside register_env_adapters,
-    which logs each adapter as it is registered and warns (without raising)
-    on an invalid key."""
+    Slack/Teams/PagerDuty keys are read from the env inside
+    register_env_adapters, which logs each adapter as it is registered and
+    warns (without raising) on an invalid key."""
     audit_path = Path(__file__).resolve().parents[2] / "demo" / "audit" / "chatops.jsonl"
     register_env_adapters(audit_path=audit_path)
 
@@ -300,10 +303,10 @@ async def lifespan(app: FastAPI):
        before any approval is created so the "created" event reaches the
        sinks registered in step 4.
     4. ``_register_chatops_adapters()`` — JSONL audit log (always) + Slack
-       webhook + PagerDuty (both opt-in via env). Idempotent.
-    5. ``bootstrap_websocket_adapter()`` — must run inside the asyncio loop
-       so ``asyncio.get_running_loop()`` resolves to the server's loop.
-       This is why the lifespan is ``async``.
+       webhook + Teams webhook + PagerDuty (each opt-in via env). Idempotent.
+    5. ``bootstrap_websocket_adapter()`` / ``bootstrap_rca_progress()`` — both
+       must run inside the asyncio loop so ``asyncio.get_running_loop()``
+       resolves to the server's loop. This is why the lifespan is ``async``.
     6. ``_ensure_hitl_agent_pool()`` — HITL-3 (#103).
     7. ``_start_auto_triage()`` — auto-triage loop (#130). Runs last so it
        polls a fully wired stack (DB, chatops sinks, websocket bootstrap).
@@ -320,6 +323,7 @@ async def lifespan(app: FastAPI):
     install_default_approver()
     _register_chatops_adapters()
     bootstrap_websocket_adapter()
+    bootstrap_rca_progress()
     _ensure_hitl_agent_pool()
     await _start_auto_triage()
     # PRS-007 SNOW watcher: poll ServiceNow for resolved tickets → synthesize.
@@ -345,6 +349,7 @@ app = FastAPI(
 )
 
 _register_chatops_ws_routes(app)
+_register_rca_progress_routes(app)
 
 # PRS-007 Knowledge Synthesizer HTTP surface. Lives in its own module that
 # imports only agents/aiops (never this server), so the synthesizer stays fully
@@ -352,6 +357,17 @@ _register_chatops_ws_routes(app)
 from demo.ui.knowledge_routes import router as knowledge_router  # noqa: E402
 
 app.include_router(knowledge_router)
+
+# RCA chat HTTP surface — same decoupling rule as the knowledge router above.
+from demo.ui.rca_chat_routes import router as rca_chat_router  # noqa: E402
+
+app.include_router(rca_chat_router)
+
+# Teams-share endpoint — deliberately its own module, outside the chat
+# boundary's restricted aiops.tools.* import surface. See rca_share_routes.py.
+from demo.ui.rca_share_routes import router as rca_share_router  # noqa: E402
+
+app.include_router(rca_share_router)
 
 
 # ─── routes ─────────────────────────────────────────────────────────────────
@@ -830,30 +846,57 @@ class RcaRequest(BaseModel):
             "affected_service to pick the deterministic fallback verdict. Safe to omit."
         ),
     )
+    run_id: str | None = Field(
+        None,
+        description=(
+            "Client-generated UUIDv4 scoping this run's real-time progress stream "
+            "(GET /api/rca/stream/{run_id}) and, once seeded, its RCA chat session. "
+            "Omitting it reproduces today's behavior byte-for-byte — no stream, no "
+            "session, no persisted verdict."
+        ),
+    )
+    incident_id: str | None = Field(
+        None,
+        description=(
+            "When present, the verdict is best-effort persisted (repository.save_rca_result) "
+            "so a page reload — or a chat session seeded from this run — can rehydrate it."
+        ),
+    )
 
 
 @app.post("/api/rca", response_model=None)
 async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
     """Run the RCA Agent (PRS-008) against a prior triage verdict.
 
-    Body: ``{"triage_verdict": {<TriageVerdict dict>}, "scenario_id"?: str}``.
-    Returns an ``RCAVerdict`` with ``root_cause``, ``ranked_fix_steps`` (each
-    with ``blast_radius`` + ``rollback``), and ``confidence_score``. Every
-    fix step is tagged ``requires_hitl=true``; the platform HITL gate enforces
-    approval at the action boundary — this endpoint does NOT execute the fix.
+    Body: ``{"triage_verdict": {<TriageVerdict dict>}, "scenario_id"?: str,
+    "run_id"?: str, "incident_id"?: str}``. Returns an ``RCAVerdict`` with
+    ``root_cause``, ``ranked_fix_steps`` (each with ``blast_radius`` +
+    ``rollback``), and ``confidence_score``. Every fix step is tagged
+    ``requires_hitl=true``; the platform HITL gate enforces approval at the
+    action boundary — this endpoint does NOT execute the fix.
 
     The agent's LLM call can take 5–15 s (Claude via Foundry); ``rca_analyze``
     is sync + blocking, so we wrap it in ``asyncio.to_thread`` to keep the
-    event loop free.
+    event loop free. When ``run_id`` is supplied, the SAME call also streams
+    real stage-progress events to ``GET /api/rca/stream/{run_id}`` — a
+    ``HubSink`` bound to that run_id, not a global broadcast, so two
+    concurrent RCA runs for different incidents never cross-talk.
     """
+    sink = make_sink(req.run_id)
     try:
         verdict = await asyncio.to_thread(
-            rca_analyze, req.triage_verdict, scenario_id=req.scenario_id
+            rca_analyze,
+            req.triage_verdict,
+            scenario_id=req.scenario_id,
+            progress=sink,
+            run_id=req.run_id or "",
         )
     except Exception as exc:
         logger.exception(
             "RCA agent raised on payload for %s", req.triage_verdict.get("affected_service")
         )
+        if req.run_id:
+            _push_terminal_progress(req.run_id, ok=False, detail=str(exc))
         raise HTTPException(status_code=500, detail=f"RCA failed: {exc}") from exc
 
     payload = verdict.model_dump(mode="json")
@@ -882,7 +925,82 @@ async def rca_endpoint(req: RcaRequest) -> dict[str, Any]:
         payload["remediation_options"] = []
         payload["recommended_option_id"] = None
 
+    if req.incident_id:
+        # Best-effort: a persistence hiccup must cost a rehydration option on
+        # a later reload, never this response. Same posture as the
+        # remediation-composition try/except immediately above.
+        try:
+            state_repo.save_rca_result(
+                incident_id=req.incident_id,
+                verdict=payload,
+                affected_service=str(payload.get("affected_service") or ""),
+            )
+        except Exception:
+            logger.exception("save_rca_result failed for incident_id=%s", req.incident_id)
+
+    if req.run_id:
+        # Seeds the chat session here — after remediation composition — so
+        # its stored verdict matches exactly what this response returns to
+        # the UI, not a pre-remediation snapshot.
+        try:
+            from agents.rca_agent import chat as rca_chat
+            from demo.ui.rca_sessions import RcaSession
+            from demo.ui.rca_sessions import get_session_store as _get_rca_sessions
+
+            pack = rca_chat.build_grounding_pack(
+                verdict, verdict.investigation, verdict.affected_service
+            )
+            now = datetime.now(UTC)
+            _get_rca_sessions().put(
+                RcaSession(
+                    run_id=req.run_id,
+                    created_at=now,
+                    last_used_at=now,
+                    incident_id=req.incident_id,
+                    affected_service=verdict.affected_service,
+                    triage_verdict=req.triage_verdict,
+                    verdict=payload,
+                    investigation=verdict.investigation,
+                    grounding_pack=pack,
+                )
+            )
+        except Exception:
+            logger.exception("failed to seed chat session for run_id=%s", req.run_id)
+
+    if req.run_id:
+        _push_terminal_progress(
+            req.run_id,
+            ok=True,
+            detail="RCA verdict produced",
+            root_cause_status=payload.get("root_cause_status"),
+            confidence_score=payload.get("confidence_score"),
+        )
+
     return payload
+
+
+def _push_terminal_progress(run_id: str, *, ok: bool, detail: str, **data: Any) -> None:
+    """Push the ``complete``/``failed`` terminal event onto ``run_id``'s stream.
+
+    Fired from here, not from ``agent.py`` — the agent does not know about
+    remediation composition or persistence, both of which happen after
+    ``rca_analyze`` returns, and the terminal event should reflect the whole
+    request, not just the analysis half of it.
+    """
+    from agents.rca_agent.progress import RcaStage, StageEvent, StageOutcome
+
+    hub = _rca_progress_hub()
+    hub.push(
+        run_id,
+        StageEvent(
+            run_id=run_id,
+            seq=hub.next_seq(run_id),
+            stage=RcaStage.COMPLETE if ok else RcaStage.FAILED,
+            outcome=StageOutcome.OK if ok else StageOutcome.FAILED,
+            label=detail,
+            data=data,
+        ).model_dump(mode="json"),
+    )
 
 
 class CorrelateRequest(BaseModel):
@@ -2000,6 +2118,22 @@ def _post_fix_verify(req: RcaApplyFixRequest) -> None:
             health_query=req.health_query or "",
         )
     )
+
+
+@app.get("/api/rca/verify-status/{incident_id}")
+def rca_verify_status(incident_id: str) -> dict[str, Any]:
+    """Poll target for the Incident Workspace's "Verifying" lifecycle stage.
+
+    Read-only, side-effect-free. ``status`` is one of ``not_triggered``
+    (nothing to check yet — apply-fix never fired a verification, or this
+    incident has no ServiceNow ticket to key it by), ``in_progress`` (the
+    resolution_verifier's stabilization windows are still running — up to a
+    few minutes, see VerifyContext), or the completed run's own verdict
+    (``pass`` / ``fail`` / ...).
+    """
+    from agents.resolution_verifier.verifier import get_status
+
+    return get_status(incident_id)
 
 
 # ─── HITL approval surface (issue #77) ─────────────────────────────────────

@@ -133,9 +133,20 @@ class SlackWebhookAdapter:
         try:
             r = httpx.post(self._webhook_url, json=payload, timeout=_TIMEOUT)
             r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # str() of an HTTPStatusError embeds the full request URL — and a
+            # Slack webhook URL's *path* is the secret — so neither the
+            # exception nor its message may escape as-is. Re-raise a sanitized
+            # error carrying only the status code; ``from None`` so
+            # ChatOpsClient's logger.exception traceback (and the
+            # DeliveryResult.error it serializes into /api/triage responses)
+            # can't resurrect the URL-bearing original.
+            status = exc.response.status_code
+            logger.error("slack adapter: post failed for %r: HTTP %s", msg.title, status)
+            raise httpx.HTTPError(f"Slack webhook POST failed: HTTP {status}") from None
         except httpx.HTTPError as exc:
-            # Don't log the URL (secret). ChatOpsClient re-logs with adapter
-            # context anyway.
+            # Transport errors (DNS, connect, timeout) don't embed the URL in
+            # their message, so they are safe to log and propagate unchanged.
             logger.error("slack adapter: post failed for %r: %s", msg.title, exc)
             raise
 

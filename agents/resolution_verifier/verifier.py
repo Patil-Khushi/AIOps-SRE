@@ -230,6 +230,10 @@ class Verifier:
         self._failed_total = int(st.get("failed_total", 0))
         self._errors_total = int(st.get("errors_total", 0))
         self._last_error: str | None = st.get("last_error")
+        # In-memory only (never persisted) — a run in progress when the
+        # process restarts is, correctly, no longer "in progress" to a fresh
+        # process; it simply has no ledger entry yet, i.e. not_triggered.
+        self._in_progress: set[str] = set()
 
     # ── persistence / status ──
     def _load_state(self) -> dict[str, Any]:
@@ -332,6 +336,7 @@ class Verifier:
         if self.already_verified(ctx.incident_id):
             logger.info("verifier: incident %s already verified — skipping", ctx.incident_id)
             return None
+        self._in_progress.add(ctx.incident_id)
         try:
             report = self.verify(ctx)
         except Exception as exc:
@@ -339,6 +344,7 @@ class Verifier:
             self._last_error = str(exc)
             self._save_state()
             logger.exception("verifier: verification raised for %s", ctx.incident_id)
+            self._in_progress.discard(ctx.incident_id)
             return None
 
         sys_id = self._resolve_sys_id(ctx.incident_id)
@@ -348,6 +354,12 @@ class Verifier:
         closure: dict[str, Any] = {"status": "not_attempted"}
         if report.verdict is CheckStatus.PASS:
             self._passed_total += 1
+            # Close the RCA learning loop. This is the ONLY point at which a prediction may
+            # become recallable memory: the verifier has re-read the detection-time checks
+            # and they came back clean, which is what "verified" means. Fire-and-forget and
+            # lazily imported, matching the knowledge_synthesizer call below — recording an
+            # outcome is bookkeeping and must never affect a closure.
+            _record_rca_outcome(ctx, "resolved")
             # PASS → raise the HITL "close ticket?" card (blocks on the gate).
             with contextlib.suppress(Exception):
                 closure = self._close(ctx, sys_id, report) or {"status": "error"}
@@ -372,6 +384,11 @@ class Verifier:
                     synthesize_incident_now(ctx.incident_id)
         else:
             self._failed_total += 1
+            # A failed verification is recorded too, and stays UNVERIFIED so it can never
+            # influence a ranking. It is written because an approved, executed prediction
+            # that did not work is the most informative record the system produces —
+            # dropping it would leave calibration measuring only the successes.
+            _record_rca_outcome(ctx, "not_resolved")
             # FAIL → notify (NOT a closure card) and stop.
             with contextlib.suppress(Exception):
                 self._notify(ctx, report)
@@ -389,12 +406,47 @@ class Verifier:
             "closure_error": closure.get("error"),
         }
         self._save_state()
+        self._in_progress.discard(ctx.incident_id)
         return report
+
+    # ── per-incident status (read-only, for the UI's "Verifying" lifecycle
+    # stage — distinct from status() above, which reports aggregate counters) ──
+    def status_for(self, incident_id: str) -> dict[str, Any]:
+        """One of ``not_triggered`` / ``in_progress`` / the ledger's own
+        ``verdict`` (``pass``/``fail``/...) once a run has finished.
+
+        Read-only and side-effect-free — safe to poll from an HTTP handler.
+        """
+        if incident_id in self._in_progress:
+            return {"status": "in_progress"}
+        entry = self._ledger.get(incident_id)
+        if entry is None:
+            return {"status": "not_triggered"}
+        return {"status": entry.get("verdict", "unknown"), **entry}
 
 
 # ─── module singleton + fire-and-forget trigger ─────────────────────────────
 
 _VERIFIER: Verifier | None = None
+
+
+def _record_rca_outcome(ctx: VerifyContext, verification_result: str) -> None:
+    """Hand the verdict to the RCA agent's outcome store. Never raises.
+
+    A cross-agent call, which CLAUDE.md normally reserves for the orchestrator. The
+    precedent is in this same method: the PASS branch already reaches into
+    ``knowledge_synthesizer.snow_watcher`` the same way, for the same reason — the verifier
+    is the only component that knows recovery was confirmed, and the alternative is a
+    polling watcher that can miss the transition.
+    """
+    with contextlib.suppress(Exception):
+        from agents.rca_agent.learning import record_verified_outcome
+
+        record_verified_outcome(
+            ctx.incident_id,
+            service=ctx.service,
+            verification_result=verification_result,
+        )
 
 
 def get_verifier() -> Verifier:
@@ -421,6 +473,14 @@ def _get_pool() -> Any:
 
         _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="verifier")
     return _POOL
+
+
+def get_status(incident_id: str) -> dict[str, Any]:
+    """Read-only status for ``incident_id`` — what the UI polls for the
+    "Verifying" lifecycle stage. Never raises."""
+    with contextlib.suppress(Exception):
+        return get_verifier().status_for(incident_id)
+    return {"status": "not_triggered"}
 
 
 def trigger(ctx: VerifyContext) -> None:

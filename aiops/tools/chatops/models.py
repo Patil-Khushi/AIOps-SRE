@@ -16,6 +16,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .runbook_attachment import RunbookAttachment
+
 
 class Severity(StrEnum):
     """How loud a notification should be. Adapters map this to their own levels."""
@@ -25,6 +27,15 @@ class Severity(StrEnum):
     P2 = "p2"
     P1 = "p1"
     P0 = "p0"
+
+
+# Routing actions that mean "wake a human now". RA-005 attaches
+# "page_oncall" only where paging is the right move (Sev-1; Sev-2 after
+# hours); person-targeting adapters (Slack bot DM, Teams DM, PagerDuty)
+# filter on this set. Vendor-neutral, hence here rather than in any one
+# adapter; plural so escalation actions ("page_backup", "page_manager")
+# can be added without touching adapter logic.
+PAGE_ACTIONS: frozenset[str] = frozenset({"page_oncall"})
 
 
 @dataclass
@@ -104,6 +115,13 @@ class ChatMessage:
     knows exactly who owns it."""
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     interactive: InteractivePrompt | None = None
+    runbook: RunbookAttachment | None = None
+    """The incident's runbook resolved to actual markdown, when the library
+    has one. Adapters that can deliver a file (the Teams DM adapter uploads
+    it to OneDrive and posts a file card) ship the content; the rest ignore
+    it and fall back to the ``Runbook:`` line already in ``body``. Resolved
+    by RA-005 rather than per-adapter so every sink sees the same procedure.
+    """
 
 
 class DeliveryResult(BaseModel):
@@ -146,4 +164,17 @@ def to_record(msg: ChatMessage) -> dict[str, Any]:
         "assignee_name": msg.assignee_name,
         "assignee_email": msg.assignee_email,
         "interactive": interactive,
+        # Identity only — the markdown body can be kilobytes and every
+        # record would carry a copy of a file that lives in the runbook
+        # library anyway. Consumers that want the content read it from
+        # there by id.
+        "runbook": (
+            {
+                "runbook_id": msg.runbook.runbook_id,
+                "title": msg.runbook.title,
+                "filename": msg.runbook.filename,
+            }
+            if msg.runbook is not None
+            else None
+        ),
     }

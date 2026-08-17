@@ -6,15 +6,26 @@ the grammar tight — every assertion fits on one line, no nesting.
 
 Grammar:
 
-    <field>                  — exact equality on actual[<field>]
-    <field>_in: [list]       — list membership: actual[<field>] in [...]
-    <field>_contains: value  — substring (str) or element (list) containment
-                               in actual[<field>]
-    min_<field>: number      — numeric >= on actual[<field>]
-    max_<field>: number      — numeric <= on actual[<field>]
+    <field>                    — exact equality on actual[<field>]
+    <field>_in: [list]         — list membership: actual[<field>] in [...]
+    <field>_contains: value    — substring (str) or element (list) containment
+                                 in actual[<field>]
+    <field>_contains_any: [..] — ANY of the values is contained in actual[<field>]
+    min_<field>: number        — numeric >= on actual[<field>]
+    max_<field>: number        — numeric <= on actual[<field>]
 
 Suffix matching is ordered: prefix checks (``min_``, ``max_``) win over
-suffix checks (``_in``, ``_contains``) which win over plain equality.
+suffix checks (``_in``, ``_contains_any``, ``_contains``) which win over plain
+equality. ``_contains_any`` is tested before ``_contains`` because the shorter
+suffix is a suffix of the longer one, and checking the wrong way round would read
+``root_cause_contains_any`` as a ``_contains`` check on a field literally named
+``root_cause_contains_any``.
+
+``_contains_any`` exists for root-cause grading. The ecommerce truth files express
+the expected answer as ``grading.match_any_keyword`` — a *disjunction*, because a
+correct verdict may say "PostgreSQL", "database" or "connection" and all three are
+right. ``_contains`` can only express a conjunction of one, so grading a root cause
+with it would fail a correct answer that happened to pick a different synonym.
 """
 
 from __future__ import annotations
@@ -50,6 +61,28 @@ def _check(key: str, want: Any, actual: Any) -> tuple[bool, str]:
         if not isinstance(want, (list, tuple, set)):
             return (False, f"_in expects a list, got {type(want).__name__}")
         return (got in want, f"actual[{field!r}]={_short(got)} expected_in={_short(want)}")
+    if key.endswith("_contains_any"):
+        field = key[: -len("_contains_any")]
+        got = actual.get(field)
+        if not isinstance(want, (list, tuple, set)):
+            return (False, f"_contains_any expects a list, got {type(want).__name__}")
+        if got is None:
+            return (False, f"actual[{field!r}] is None")
+        # Case-insensitive for strings: the values are keywords matched against
+        # prose an LLM wrote, and "PostgreSQL" must satisfy the keyword "postgres".
+        if isinstance(got, str):
+            haystack = got.lower()
+            hits = [w for w in want if str(w).lower() in haystack]
+            return (
+                bool(hits),
+                f"actual[{field!r}]={_short(got)} matched={_short(hits)} "
+                f"of want_any={_short(list(want))}",
+            )
+        if isinstance(got, (list, tuple, set)):
+            hits = [w for w in want if w in got]
+            return (bool(hits), f"actual[{field!r}]={_short(got)} matched={_short(hits)}")
+        return (False, f"actual[{field!r}] is {type(got).__name__}; cannot 'contains_any'")
+
     if key.endswith("_contains"):
         field = key[:-9]
         got = actual.get(field)

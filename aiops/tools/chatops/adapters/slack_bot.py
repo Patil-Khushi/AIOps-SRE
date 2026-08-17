@@ -47,7 +47,7 @@ from typing import Any
 
 import httpx
 
-from ..models import ChatMessage, Severity
+from ..models import PAGE_ACTIONS, ChatMessage, Severity
 from ._slack_user_map import load_slack_user_map
 
 logger = logging.getLogger(__name__)
@@ -75,9 +75,9 @@ _HEADER_MAX_CHARS = 150
 _SECTION_TEXT_MAX_CHARS = 2900
 _MAX_FIELDS_PER_SECTION = 10
 
-# Routing actions that warrant a personal DM. RA-005 only includes
-# "page_oncall" for severities where waking a human is the right move.
-PAGE_ACTIONS = frozenset({"page_oncall"})
+# PAGE_ACTIONS is re-exported from ..models (hoisted there as the
+# vendor-neutral "wake a human" action set shared with the Teams DM
+# adapter); the name stays importable from this module for back-compat.
 
 
 class SlackBotAdapter:

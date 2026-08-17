@@ -15,6 +15,7 @@ import {
   BookOpen,
   Users,
   FileText,
+  ListChecks,
 } from 'lucide-react';
 import { clsx } from '@/lib/format';
 import { api } from '@/lib/api';
@@ -35,6 +36,7 @@ const ITEMS: Record<string, NavItem> = {
   '/console':               { to: '/console',               label: 'Overview',      icon: LayoutDashboard, end: true  },
   '/console/alerts':        { to: '/console/alerts',        label: 'Alert Stream',  icon: BellRing,        end: false },
   '/console/reasoning':     { to: '/console/reasoning',     label: 'AI Reasoning',  icon: Brain,           end: false },
+  '/console/incidents':     { to: '/console/incidents',     label: 'Incidents',     icon: ListChecks,      end: false },
   '/console/rca':           { to: '/console/rca',           label: 'RCA Agent',     icon: Sparkles,        end: false },
   '/console/log-correlation': { to: '/console/log-correlation', label: 'Log Correlation', icon: Layers,     end: false },
   '/console/incident-commander': { to: '/console/incident-commander', label: 'Incident Commander', icon: Siren, end: false },
@@ -57,8 +59,9 @@ const SHARED_TAIL = ['/console/topology', '/console/health'];
 // entry fall back to DEFAULT_SURFACES.
 const AGENT_SURFACES: Record<string, string[]> = {
   'alert-triage':        ['/console', '/console/alerts', '/console/reasoning', ...SHARED_TAIL],
-  // RCA's console is focused on the analysis + approvals — no Overview/Topology.
-  'rca-agent':           ['/console/rca', '/console/health'],
+  // RCA's console is focused on the incident list, the analysis, and
+  // approvals — no Overview/Topology.
+  'rca-agent':           ['/console/incidents', '/console/rca', '/console/health'],
   // Incident Commander coordinates from the alert; its console + the approvals
   // it hands off to are the surface that matters.
   'incident-commander':  ['/console/incident-commander', '/console/approvals', '/console/health'],

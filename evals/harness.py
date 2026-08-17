@@ -53,14 +53,42 @@ from .scoring import score_case
 REPO_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(REPO_ROOT / ".env")
 
-# v0 (EVAL-1 / #75): only alert_triage takes a bare Alert payload as input —
-# and it now runs triage AND incident classification on that one payload.
-# notification_assembler / auto_ticketing still require prior-step outputs
-# (triage_verdict, alert+verdict, etc.) — they're deferred to v1 once
-# [INFRA-2 #74] orchestrator can chain inputs through the truth-file path.
-# Agents listed in `exercises` but not in this set are recorded as "deferred"
-# rather than failed.
-_TRUTH_FILE_RUNNABLE_AGENTS = frozenset({"alert_triage"})
+# Agents the truth-file path can drive, and how each one's input is built.
+#
+# alert_triage takes the bare Alert payload (and runs triage AND classification on
+# it). rca_agent takes an RA-001 verdict, so its input is *adapted* from the truth
+# file rather than passed through — by evals/rca_truth.py, which is also where every
+# truth field the agent must never see is stripped and the result asserted blind.
+#
+# notification_assembler / auto_ticketing still require prior-step outputs and are
+# deferred to v1 once [INFRA-2 #74] lets the orchestrator chain inputs through this
+# path. Agents in an `exercises` block but not in this table are recorded as
+# "deferred" rather than failed.
+
+
+def _alert_payload_input(data: dict[str, Any]) -> dict[str, Any] | None:
+    return data.get("expected_alert_payload")
+
+
+def _rca_agent_input(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Adapt a truth file into a blind ``RCAInput``.
+
+    Imported lazily so ``evals.harness`` keeps working if the RCA eval module is
+    absent, and so a syntax error there cannot take down the alert_triage path.
+    """
+    if not data.get("expected_alert_payload"):
+        return None
+    from .rca_truth import rca_input_from_truth
+
+    return rca_input_from_truth(data)
+
+
+_TRUTH_FILE_INPUT_ADAPTERS: dict[str, Callable[[dict[str, Any]], dict[str, Any] | None]] = {
+    "alert_triage": _alert_payload_input,
+    "rca_agent": _rca_agent_input,
+}
+
+_TRUTH_FILE_RUNNABLE_AGENTS = frozenset(_TRUTH_FILE_INPUT_ADAPTERS)
 
 
 @dataclass
@@ -277,7 +305,14 @@ def run_truth_file(path: Path) -> TruthFileRun:
             reset_state()
         t0 = time.perf_counter()
         try:
-            actual = runner(payload)
+            # Built inside the try: an adapter that refuses to produce an input —
+            # notably the RCA one, which raises TruthLeakError rather than hand an
+            # agent the answer — must be recorded as a failed case, not crash the
+            # whole run.
+            agent_input = _TRUTH_FILE_INPUT_ADAPTERS[agent_name](data)
+            if agent_input is None:
+                raise ValueError(f"no truth-file input could be built for {agent_name!r}")
+            actual = runner(agent_input)
             scored = score_case(actual=actual, expected=expected)
         except Exception as exc:
             scored = {"passed": False, "score": 0.0, "details": {"error": str(exc)}}

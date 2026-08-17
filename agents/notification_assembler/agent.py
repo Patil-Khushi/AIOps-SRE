@@ -21,6 +21,7 @@ Public surface::
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
@@ -29,6 +30,7 @@ from zoneinfo import ZoneInfo
 from agents.alert_triage import TriageVerdict
 from aiops.tools import get_registry
 from aiops.tools.chatops import ChatMessage, Severity, get_client
+from aiops.tools.chatops.runbook_attachment import resolve_runbook
 
 from .models import (
     ContextPackItem,
@@ -255,7 +257,19 @@ def _render_body(
             else ""
         )
         lines.append(f"On-call: {who}{for_clause}{wildcard_clause}")
-    if verdict.recommended_runbook:
+    # Prefer the published runbook over ``verdict.recommended_runbook``: the
+    # latter is a CMDB reference that is usually a placeholder URL resolving
+    # nowhere, and printing both would show the engineer two runbook links
+    # where one is dead. Falls back to the raw reference only when the
+    # library has nothing, so services without a runbook are unchanged.
+    resolved = resolve_runbook(
+        service=verdict.affected_service,
+        runbook_ref=verdict.recommended_runbook,
+    )
+    if resolved is not None:
+        target = resolved.url or resolved.filename
+        lines.append(f"Runbook: {resolved.title} ({target})")
+    elif verdict.recommended_runbook:
         lines.append(f"Runbook: {verdict.recommended_runbook}")
     if verdict.duplicate_alert_count > 1:
         lines.append(f"Duplicate alerts grouped: {verdict.duplicate_alert_count}")
@@ -391,9 +405,11 @@ def _invited_smes(verdict: TriageVerdict, oncall: dict | None) -> list[InvitedSM
         return []
     handle = ""
     name = verdict.assigned_engineer
+    email = None
     if oncall is not None:
         handle = (oncall.get("slack_handle") or "").strip()
         name = oncall.get("engineer_name") or name
+        email = oncall.get("engineer_email")
     if not handle and verdict.assigned_engineer:
         handle = f"@{verdict.assigned_engineer}"
     elif handle and not handle.startswith("@"):
@@ -404,6 +420,7 @@ def _invited_smes(verdict: TriageVerdict, oncall: dict | None) -> list[InvitedSM
         InvitedSME(
             handle=handle,
             name=name,
+            email=email,
             team=verdict.assigned_team,
             reason=f"on-call for {verdict.assigned_team}",
             source="oncall",
@@ -465,6 +482,7 @@ def _dependency_owner_smes(verdict: TriageVerdict, exclude_handles: set[str]) ->
             InvitedSME(
                 handle=handle,
                 name=data.get("engineer_name") or email,
+                email=email,
                 team=team,
                 reason=f"owns dependency {dep} of {verdict.affected_service}",
                 source="dependency_owner",
@@ -517,6 +535,7 @@ def _past_resolver_smes(
             InvitedSME(
                 handle=handle,
                 name=row.get("resolver_name") or row.get("resolver_email"),
+                email=row.get("resolver_email"),
                 team=verdict.assigned_team,
                 reason=reason,
                 source="past_resolver",
@@ -769,6 +788,21 @@ def _create_bridge(assembly: WarRoomAssembly) -> WarRoomAssembly:
     url = data.get("url")
     meeting_url = data.get("meeting_url")
     status = "simulated" if simulated else "created"
+    audit_extra: list[str] = []
+
+    # Prefer a real Teams meeting over the bridge's own link. Teams has no
+    # Jitsi-style "invent a room name and join" URL, so the meeting has to
+    # be created and the SMEs actually invited; when that provider isn't
+    # registered or fails, the bridge's link (Jitsi) still stands.
+    meeting = _create_teams_meeting(assembly)
+    if meeting is not None:
+        teams_url, note, invited_emails = meeting
+        if teams_url:
+            meeting_url = teams_url
+        audit_extra.append(
+            f"meeting: teams invite to {len(invited_emails)} attendee(s)"
+            + (f" — {note}" if note else "")
+        )
     event = (
         f"Slack war room {'simulated' if simulated else 'created'}: {url}"
         if url
@@ -787,9 +821,68 @@ def _create_bridge(assembly: WarRoomAssembly) -> WarRoomAssembly:
                 *assembly.audit_trace,
                 f"bridge: {status} via {data.get('provider')} → {url}"
                 + (f" (note: {data['note']})" if data.get("note") else ""),
+                *audit_extra,
             ],
         }
     )
+
+
+def _meeting_attendees(assembly: WarRoomAssembly) -> list[str]:
+    """Emails to put on the war-room invite, on-call first.
+
+    Capped because a war room is a working call, not a broadcast: pulling
+    in every dependency owner and past resolver makes it a meeting nobody
+    owns. The on-call engineer is always first (they own the incident);
+    remaining slots go to SMEs in the order RA-006 ranked them —
+    dependency owners, then past resolvers. Tune with
+    ``AIOPS_WAR_ROOM_MAX_ATTENDEES``.
+    """
+    try:
+        cap = int(os.environ.get("AIOPS_WAR_ROOM_MAX_ATTENDEES", "3"))
+    except ValueError:
+        cap = 3
+    if cap <= 0:
+        return []
+
+    ordered = sorted(assembly.invited, key=lambda s: 0 if s.source == "oncall" else 1)
+    out: list[str] = []
+    for sme in ordered:
+        email = (sme.email or "").strip()
+        if not email or "@" not in email:
+            continue
+        if email.lower() in {e.lower() for e in out}:
+            continue
+        out.append(email)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _create_teams_meeting(
+    assembly: WarRoomAssembly,
+) -> tuple[str | None, str | None, list[str]] | None:
+    """Create the Teams war-room meeting. ``None`` when unavailable.
+
+    Best-effort by design: a missing provider, no resolvable attendee
+    emails, or a Power Automate failure all leave the war room with its
+    existing bridge link rather than failing assembly.
+    """
+    emails = _meeting_attendees(assembly)
+    if not emails:
+        return None
+    try:
+        res = get_registry().call(
+            "chatops.war_room.meeting.create",
+            subject=assembly.title,
+            attendee_emails=emails,
+            body_html=_render_war_room_opening(assembly).replace("\n", "<br>"),
+            incident_id=assembly.bridge_channel_id or assembly.channel,
+        )
+    except KeyError:
+        return None
+    if not res.ok or not isinstance(res.data, dict):
+        return None, (res.error or "meeting creation failed"), emails
+    return res.data.get("meeting_url"), (res.data.get("note") or None), emails
 
 
 def _render_war_room_opening(assembly: WarRoomAssembly) -> str:
@@ -842,6 +935,16 @@ def _combined_chat_message(
     if assembly is not None and assembly.assembled:
         body = f"{body}\n{_war_room_section(assembly)}"
         actions = [*actions, "open_war_room"]
+    # Resolve the runbook to real markdown so file-capable adapters can
+    # deliver the procedure itself. The ``Runbook:`` line in ``body`` is a
+    # CMDB reference that is often a placeholder URL resolving nowhere —
+    # attaching the library's actual content is what makes it usable at
+    # 3am. None when the library has no match; adapters then just render
+    # the existing text line.
+    runbook = resolve_runbook(
+        service=verdict.affected_service,
+        runbook_ref=verdict.recommended_runbook,
+    )
     return ChatMessage(
         channel=decision.channel,
         severity=decision.chat_severity,
@@ -857,6 +960,7 @@ def _combined_chat_message(
         assignee_name=decision.assignee_name,
         assignee_email=decision.assignee_email,
         timestamp=decision.decided_at,
+        runbook=runbook,
     )
 
 

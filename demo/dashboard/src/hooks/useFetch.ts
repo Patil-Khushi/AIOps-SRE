@@ -65,9 +65,24 @@ export function useFetch<T>(
 
     if (shouldFetch) run();
 
+    // Skip the tick while the tab is backgrounded — a dashboard left open in
+    // an unfocused tab has no reason to keep polling every page's endpoint
+    // every intervalMs. Catches up with one fetch on refocus instead.
     let timer: ReturnType<typeof setInterval> | null = null;
     if (intervalMs && intervalMs > 0) {
-      timer = setInterval(run, intervalMs);
+      timer = setInterval(() => {
+        if (document.visibilityState === 'visible') run();
+      }, intervalMs);
+      const onVisible = () => {
+        if (document.visibilityState === 'visible') run();
+      };
+      document.addEventListener('visibilitychange', onVisible);
+      const cleanupVisibility = () => document.removeEventListener('visibilitychange', onVisible);
+      return () => {
+        aliveRef.current = false;
+        if (timer) clearInterval(timer);
+        cleanupVisibility();
+      };
     }
     return () => {
       aliveRef.current = false;
