@@ -398,3 +398,41 @@ def _hermetic_chatops_hub():
         yield
     finally:
         get_hub()._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_rca_progress_hub():
+    """Reset the RCA progress hub (demo/ui/rca_progress.py) around every test.
+
+    Same discipline as ``_hermetic_chatops_hub`` immediately above, for the
+    same reason: the hub is a process-global singleton keyed by run_id, and a
+    run pushed by one test would otherwise linger and be replayable by a
+    later test that happens to reuse (or, worse, never reuses, silently
+    inflating the LRU) the same run_id.
+    """
+    from demo.ui.rca_progress import get_hub as get_rca_progress_hub
+
+    get_rca_progress_hub()._reset_for_tests()
+    try:
+        yield
+    finally:
+        get_rca_progress_hub()._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_rca_chat_sessions():
+    """Reset the in-memory RCA chat session store around every test.
+
+    Same discipline as ``_hermetic_rca_progress_hub`` immediately above: the
+    store (``demo/ui/rca_sessions.py``) is a process-global singleton, so a
+    session seeded by one test would otherwise be resolvable by
+    ``GET /api/rca/chat/by-incident/{id}`` in a later test that reuses the
+    same incident id.
+    """
+    from demo.ui.rca_sessions import get_session_store
+
+    get_session_store()._reset_for_tests()
+    try:
+        yield
+    finally:
+        get_session_store()._reset_for_tests()

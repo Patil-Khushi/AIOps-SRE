@@ -15,6 +15,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agents.rca_agent.investigation.models import Investigation, RootCauseStatus
+
+__all__ = [
+    "BlastRadius",
+    "FixActionType",
+    "RCAAuditMetadata",
+    "RCAInput",
+    "RCAVerdict",
+    "RankedFixStep",
+    "RootCauseStatus",
+]
+
 
 class BlastRadius(StrEnum):
     """Reversibility scale for a fix step.
@@ -139,3 +151,37 @@ class RCAVerdict(BaseModel):
     ranked_fix_steps: list[RankedFixStep] = Field(min_length=1)
     confidence_score: float = Field(ge=0.0, le=1.0)
     audit_metadata: RCAAuditMetadata
+
+    # ─── additive, optional: everything below has a default, so every existing
+    # constructor call and every stored verdict keeps validating unchanged. The
+    # five fields above remain the locked v0 wire contract.
+
+    root_cause_status: RootCauseStatus = RootCauseStatus.UNCERTAIN
+    """How much the evidence actually settles the question.
+
+    Defaults to ``UNCERTAIN`` rather than ``PROBABLE`` on purpose: a construction
+    path that forgets to set it should degrade to "we did not commit", not to a
+    claim of actionability. ``RootCauseStatus.is_actionable`` is False for
+    ``UNCERTAIN``, so a forgetful caller cannot accidentally license a one-click
+    remediation.
+    """
+
+    investigation: Investigation | None = None
+    """The deterministic investigation this verdict was derived from.
+
+    Additive and optional: ``None`` on the offline/eval path and whenever the stages could
+    not run, which keeps every pre-Phase-2 caller and stored verdict valid. When present it
+    carries the scope, timeline, completeness, baselines and the full ranked evidence
+    matrix — i.e. why this conclusion and not the runners-up, which is what makes the
+    verdict reviewable rather than merely readable.
+    """
+
+    llm_stated_confidence: float | None = None
+    """What the model said its confidence was, kept for diagnostics only.
+
+    ``confidence_score`` is the authoritative number and is bounded by what the
+    evidence actually supports. Recording the model's own figure alongside it is
+    what makes the gap measurable — a model that habitually claims 0.9 on evidence
+    worth 0.3 is a calibration problem you cannot see if you only store one of the
+    two. ``None`` when no model produced a figure (the deterministic paths).
+    """

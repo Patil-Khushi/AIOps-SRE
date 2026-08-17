@@ -276,6 +276,61 @@ class RCAResultRow(SQLModel, table=True):
     )
 
 
+class RCAOutcomeRow(SQLModel, table=True):
+    """What actually happened to one RCA prediction — the only thing eligible to
+    become historical memory.
+
+    Distinct from ``RCAResultRow``, which caches a *verdict* so the SNOW watcher does
+    not have to re-run RCA. A verdict is a prediction; this row is a prediction plus
+    what the world did about it. Only rows whose ``memory_status`` reached
+    ``verified``/``trusted`` may be recalled as a prior, so an unverified prediction
+    can never become the evidence that reproduces itself.
+
+    ``predicted_root_cause`` and ``human_corrected_root_cause`` are separate columns
+    on purpose: overwriting the prediction with the truth would destroy the only
+    record that the agent was wrong, which is exactly the data calibration needs.
+
+    Retrieval columns (``affected_service``, ``selected_hypothesis_id``,
+    ``memory_status``) are indexed and denormalised out of the JSON blob because a
+    recall filters on them. ``outcome`` keeps the full structured record for
+    provenance — a memory whose justification cannot be followed back to an incident,
+    an evidence id and a verification result is a rumour.
+    """
+
+    __tablename__ = "rca_outcomes"
+
+    id: int | None = Field(default=None, primary_key=True)
+    incident_id: str = Field(index=True)
+    affected_service: str = Field(default="", index=True)
+
+    predicted_root_cause: str = ""
+    predicted_status: str = ""
+    confidence: float = 0.0
+    selected_hypothesis_id: str | None = Field(default=None, index=True)
+    selected_hypothesis_class: str | None = Field(default=None, index=True)
+    """The failure *class* (catalog rule id). The key a recall joins on — unlike
+    ``selected_hypothesis_id``, which is scoped to the incident that produced it."""
+
+    action_key: str | None = None
+    human_decision: str = "not_requested"
+    verification_result: str = Field(default="not_run", index=True)
+    human_corrected_root_cause: str | None = None
+
+    memory_status: str = Field(default="new", index=True)
+    superseded_by: str | None = None
+
+    signatures: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    """Observable symptom identifiers for this incident — alert names, metric names,
+    log reason codes. What a later recall matches on. Never a cause description: the
+    match must be made on symptoms, or retrieval is just answer lookup."""
+
+    outcome: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    recorded_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+
+
 class EngineerRow(SQLModel, table=True):
     """An on-call engineer / SRE who can be paged.
 

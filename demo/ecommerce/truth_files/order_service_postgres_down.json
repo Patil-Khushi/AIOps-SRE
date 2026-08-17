@@ -79,5 +79,6 @@
       "min_confidence_score": 0.6,
       "assigned_team": "Order Experience"
     }
-  }
+  },
+  "rca_agent_exercise_note": "No rca_agent block here on purpose. evals/harness.py CAN drive rca_agent (see _TRUTH_FILE_INPUT_ADAPTERS), but opting a shared truth file in makes tests that call run_truth_file() run RCA, and RCA's evidence gathering reaches the live observability seam — which hangs against a real AIOPS_PROMETHEUS_URL from .env and trips the 60s per-test cap. RCA is covered instead by agents/rca_agent/evals/golden.json (all 12 scenarios, same evidence-independent contract), tests/test_rca_eval_blindness.py (guards that golden against adapter drift, no I/O), and evals/rca_eval.py (root-cause accuracy against simulated telemetry). Revisit once RCA has an explicit offline mode."
 }

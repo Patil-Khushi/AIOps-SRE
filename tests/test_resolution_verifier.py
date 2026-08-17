@@ -148,6 +148,23 @@ def test_idempotent_second_run_is_noop(tmp_path):
     assert v.status()["verified_total"] == 1
 
 
+def test_status_for_reports_not_triggered_then_pass(tmp_path):
+    itsm = FakeItsm()
+    checks = _checks(CheckResult(name="m", status=CheckStatus.PASS, detail="ok"))
+    v = _verifier(itsm, checks, tmp_path)
+    assert v.status_for("INC-STATUS")["status"] == "not_triggered"
+    v.run(_ctx(incident="INC-STATUS"))
+    assert v.status_for("INC-STATUS")["status"] == "pass"
+
+
+def test_status_for_reports_fail(tmp_path):
+    itsm = FakeItsm()
+    checks = _checks(CheckResult(name="m", status=CheckStatus.FAIL, detail="still bad"))
+    v = _verifier(itsm, checks, tmp_path)
+    v.run(_ctx(incident="INC-STATUS-FAIL"))
+    assert v.status_for("INC-STATUS-FAIL")["status"] == "fail"
+
+
 def test_ledger_persists_across_instances(tmp_path):
     itsm = FakeItsm()
     checks = _checks(CheckResult(name="m", status=CheckStatus.PASS, detail="ok"))

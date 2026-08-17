@@ -199,6 +199,16 @@ def warm(block: bool = False, timeout: float | None = None) -> None:
         thread.join(timeout)
 
 
+def get_shared_model() -> Any | None:
+    """Public accessor for the same lazily-loaded sentence-transformers model
+    this module uses for the truth-file corpus — so a second consumer
+    (agents/rca_agent/incident_rag.py, embedding a *different* corpus of
+    persisted RCA verdicts) does not load a second copy of the model into
+    memory. Returns ``None`` with the same tri-state semantics as the
+    private ``_get_model()`` this wraps — never raises."""
+    return _get_model()
+
+
 def is_ready() -> bool:
     """True when a search can be served from cache without loading anything."""
     return bool(_MODEL) and _INDEX is not None and _INDEX[0] == _MODEL_NAME

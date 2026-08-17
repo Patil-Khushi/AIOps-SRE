@@ -86,6 +86,12 @@ RETRIEVAL_LEDGER: dict[str, dict[str, int]] = {
     "observability.traces.search": {
         "agents/alert_triage/agent.py": 1,
         "agents/log_correlation/agent.py": 1,
+        # New: trace evidence for RCA (error status + latency, a third source
+        # alongside metrics/logs). Deliberately outside the Context Engineering
+        # Layer, same documented precedent as this file's own `recent_changes`
+        # (evidence.py's module docstring) — a live-only category, not a bypass
+        # of shared retrieval that the context layer would otherwise dedupe.
+        "agents/rca_agent/evidence.py": 1,
         # 2 references, only one a genuine call site. The Phase 5 migration added
         # a second: shadow mode (AIOPS_CONTEXT_LAYER=shadow) must compare against
         # the *real* legacy answer, so `_telemetry_items` reconstructs the exact

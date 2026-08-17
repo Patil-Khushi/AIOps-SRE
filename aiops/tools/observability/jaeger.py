@@ -88,6 +88,19 @@ def services() -> ToolResult:
     )
 
 
+def _span_has_error(span: dict[str, Any]) -> bool:
+    """Standard OTel span error markers: an explicit ``error`` tag, or an HTTP
+    status in the 5xx range. Checked against real live spans (both shapes seen
+    on this SUT's FastAPI instrumentation)."""
+    for t in span.get("tags") or []:
+        key = t.get("key")
+        if key == "error" and t.get("value") is True:
+            return True
+        if key == "http.status_code" and isinstance(t.get("value"), int) and t["value"] >= 500:
+            return True
+    return False
+
+
 def _summarize_trace(trace: dict[str, Any]) -> dict[str, Any]:
     spans = trace.get("spans", [])
     root = next(
@@ -100,6 +113,9 @@ def _summarize_trace(trace: dict[str, Any]) -> dict[str, Any]:
         "root_operation": root.get("operationName"),
         "duration_us": root.get("duration"),
         "start_time_us": root.get("startTime"),
+        # Additive field: any span in the trace carrying an OTel error marker.
+        # Existing consumers reading the other keys are unaffected.
+        "has_error": any(_span_has_error(s) for s in spans),
     }
 
 

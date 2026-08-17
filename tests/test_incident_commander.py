@@ -37,12 +37,12 @@ from aiops.tools.chatops import Severity as ChatSeverity
 @pytest.fixture(autouse=True)
 def _in_memory_db(monkeypatch):
     monkeypatch.setenv("AIOPS_STATE_DB_URL", "sqlite:///:memory:")
+    # RCA now resolves its provider per call and defers to an explicit platform
+    # ``stub`` (agents/rca_agent/agent.py::_rca_provider), so setting the platform
+    # var is enough to keep analyze() on its deterministic, no-network path. This
+    # used to require monkeypatching a private module constant, because the value
+    # was read at import and setenv could not move it.
     monkeypatch.setenv("AIOPS_LLM_PROVIDER", "stub")
-    # RCA reads its provider into a module constant at import time and defaults
-    # to "anthropic". Pin it to the stub so analyze() takes its deterministic
-    # fallback path (no network, no dependency on .env creds) — the locked
-    # slow-product-catalog verdict names the productCatalogFailure flag.
-    monkeypatch.setattr("agents.rca_agent.agent._RCA_PROVIDER", "stub")
     state_pkg.reset_engine_for_tests()
     state_pkg.init_db()
     yield

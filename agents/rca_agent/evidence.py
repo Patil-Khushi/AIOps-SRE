@@ -65,11 +65,31 @@ QueryFn = Callable[[str], list[dict[str, Any]]]
 # Dependency-health gauges the services publish. 0 means "cannot reach it",
 # which is the single most decisive signal available — it distinguishes a
 # datastore outage from every other failure mode without ambiguity.
-_DEP_GAUGES = {
+DEP_GAUGES = {
     "mysql_connection_status": "MySQL (user-service)",
     "postgres_connection_status": "PostgreSQL (order-service)",
     "redis_connection_status": "Redis (payment-service)",
 }
+
+
+# Which datastore StatefulSet backs each service, for a check that does NOT
+# depend on the service's own exporter being alive. DEP_GAUGES above answers
+# "does the service itself say it can reach its store" — but that gauge is
+# published BY the service, so when the service's own pod is crash-looping,
+# Prometheus has nothing to scrape and the gauge is simply absent, not "0".
+# A real dependency outage then looks identical to "no data" using the gauge
+# alone. This answers the same question a different way: is the datastore's
+# own pod actually up, checked directly, independent of whether the service
+# that depends on it can currently report anything about itself.
+DATASTORE_STATEFULSETS = {
+    "user-service": ("mysql", "MySQL"),
+    "order-service": ("postgres", "PostgreSQL"),
+    "payment-service": ("redis", "Redis"),
+}
+
+
+def datastore_ready_query(statefulset: str) -> str:
+    return f'kube_statefulset_status_replicas_ready{{namespace="ecommerce", statefulset="{statefulset}"}}'
 
 
 def _q(promql: str) -> list[dict[str, Any]]:
@@ -114,7 +134,7 @@ def _scalar(promql: str, q: QueryFn = _q) -> float | None:
 def dependency_health(q: QueryFn = _q) -> list[str]:
     """Which backing stores are unreachable, per the services' own gauges."""
     out: list[str] = []
-    for metric, label in _DEP_GAUGES.items():
+    for metric, label in DEP_GAUGES.items():
         v = _scalar(metric, q)
         if v is None:
             continue
@@ -122,26 +142,54 @@ def dependency_health(q: QueryFn = _q) -> list[str]:
     return out
 
 
-def error_breakdown(q: QueryFn = _q) -> list[str]:
-    """Order failures by reason — the label that names the mechanism.
+# The two by-reason error counters, as named constants so ``error_breakdown`` and
+# ``required_promql_queries`` cannot disagree about them. They used to be inline
+# literals duplicated between the two, which is the drift this file's own docstring
+# warns about for every other query.
+ORDERS_FAILED_QUERY = "sum by (reason) (rate(orders_failed_total[5m]))"
+PAYMENT_FAILURES_QUERY = "sum by (reason) (rate(payment_failures_total[5m]))"
+PAYMENT_TIMEOUT_QUERY = "rate(payment_timeout_total[5m])"
 
-    `reason` is the highest-value single field in the whole system:
-    injected_500 / db_error / payment_failed / payment_timeout / user_invalid
-    each point at a different root cause.
-    """
+
+def _by_reason(metric: str, promql: str, q: QueryFn) -> list[str]:
+    """Rows of a ``sum by (reason)`` counter, formatted, non-zero only."""
     out: list[str] = []
-    for row in q("sum by (reason) (rate(orders_failed_total[5m]))"):
+    for row in q(promql):
         reason = (row.get("metric") or {}).get("reason", "?")
         try:
             rate = float(row["value"][1])
         except (KeyError, IndexError, TypeError, ValueError):
             continue
         if rate > 0:
-            out.append(f"orders_failed_total reason={reason}: {rate:.3f}/s")
-    timeouts = _scalar("rate(payment_timeout_total[5m])", q)
-    if timeouts is not None and timeouts > 0:
-        out.append(f"payment_timeout_total: {timeouts:.3f}/s")
+            out.append(f"{metric} reason={reason}: {rate:.3f}/s")
     return out
+
+
+def error_breakdown(q: QueryFn = _q) -> list[str]:
+    """Failures by reason — the label that names the mechanism.
+
+    `reason` is the highest-value single field in the whole system:
+    injected_500 / db_error / payment_failed / payment_timeout / user_invalid
+    each point at a different root cause.
+
+    ``payment_failures_total`` was missing here, and its absence was measurable. The
+    RCA evaluation put ``payment_service.redis_down`` down to a DNS fault, and the
+    reasoning was *correct given the evidence*: the system prompt says a genuine Redis
+    outage shows ``payment_failures_total reason=redis_error``, this module never
+    queried that counter, so the model found no ``redis_error`` and concluded DNS.
+    ``reason`` also discriminates ``gateway_timeout`` from ``injected_500`` on the
+    payment path, which no other series does — so the gap cost the agent the single
+    most diagnostic label available for three of the twelve scenarios.
+    """
+    return [
+        *_by_reason("orders_failed_total", ORDERS_FAILED_QUERY, q),
+        *_by_reason("payment_failures_total", PAYMENT_FAILURES_QUERY, q),
+        *(
+            [f"payment_timeout_total: {timeouts:.3f}/s"]
+            if (timeouts := _scalar(PAYMENT_TIMEOUT_QUERY, q)) is not None and timeouts > 0
+            else []
+        ),
+    ]
 
 
 # p95 histograms each service publishes. order_latency_seconds is the one the
@@ -149,7 +197,7 @@ def error_breakdown(q: QueryFn = _q) -> list[str]:
 # service. Without login/payment p95 the model can see "something is slow" but
 # not "the slow hop is /login", which is the difference between diagnosing
 # user_service.high_latency and guessing.
-_LATENCY_HISTOGRAMS = {
+LATENCY_HISTOGRAMS = {
     "order_latency_seconds_bucket": ("order", 2.0),
     "login_latency_seconds_bucket": ("login (user-service)", None),
     "payment_latency_seconds_bucket": ("payment (payment-service)", None),
@@ -161,11 +209,53 @@ _LATENCY_HISTOGRAMS = {
 _CPU_REPORT_FLOOR_CORES = 0.2
 _MEM_REPORT_FLOOR_RATIO = 0.8
 
+# Query text shared with ``required_promql_queries`` and with
+# ``investigation/facts.py``. Named constants rather than inline literals repeated in
+# each place, which is the drift this module's own docstring warns about: a query
+# edited in one copy and not the other silently means the context path requests a
+# series the gathering path never reads.
+CPU_QUERY = 'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="ecommerce"}[2m]))'
+MEM_QUERY = (
+    'max by (pod) (container_memory_working_set_bytes{namespace="ecommerce"} / '
+    '(container_spec_memory_limit_bytes{namespace="ecommerce"} > 0))'
+)
+RESTARTS_QUERY = 'kube_pod_container_status_restarts_total{namespace="ecommerce"}'
+TERMINATED_QUERY = 'kube_pod_container_status_last_terminated_reason{namespace="ecommerce"} == 1'
+
+
+def service_pod_prefix(service: str) -> str:
+    """Base pod-name prefix for a service name that may carry a namespace-style
+    prefix.
+
+    Alert labels name services ``ecommerce-user-service``; the pods themselves
+    (and their Deployment) are named ``user-service-<hash>-<hash>``. Without
+    stripping this prefix, every pod-scoping check below silently matches
+    nothing and the caller falls back to reasoning over the whole namespace.
+    """
+    prefix = "ecommerce-"
+    return service[len(prefix) :] if service.startswith(prefix) else service
+
+
+def pod_belongs_to_service(pod: str, service: str) -> bool:
+    """Whether ``pod`` (a full pod name) is this incident's own service.
+
+    Namespace-wide pod-restart/CPU/memory queries return every pod in
+    ``ecommerce``, not just the affected one — an unrelated pod's stale crash
+    or resource spike must never outrank the affected service's own evidence.
+    """
+    base = service_pod_prefix(service)
+    return bool(base) and pod.startswith(base + "-")
+
+
+def latency_query(bucket: str) -> str:
+    """The p95 query for one histogram bucket."""
+    return f"histogram_quantile(0.95, sum by (le) (rate({bucket}[5m])))"
+
 
 def latency(q: QueryFn = _q) -> list[str]:
     out: list[str] = []
-    for bucket, (label, threshold) in _LATENCY_HISTOGRAMS.items():
-        p95 = _scalar(f"histogram_quantile(0.95, sum by (le) (rate({bucket}[5m])))", q)
+    for bucket, (label, threshold) in LATENCY_HISTOGRAMS.items():
+        p95 = _scalar(latency_query(bucket), q)
         if p95 is None:
             continue
         note = "  (ABOVE the 2s threshold)" if threshold and p95 > threshold else ""
@@ -173,8 +263,8 @@ def latency(q: QueryFn = _q) -> list[str]:
     return out
 
 
-def resource_saturation(q: QueryFn = _q) -> list[str]:
-    """Container CPU and memory against their limits.
+def resource_saturation(service: str, q: QueryFn = _q) -> list[str]:
+    """Container CPU and memory against their limits, for ``service``'s own pods.
 
     The alert rules for CPU and memory fire on these series, and the prompt
     forbids citing a metric absent from the observation block — so without this
@@ -189,12 +279,16 @@ def resource_saturation(q: QueryFn = _q) -> list[str]:
 
     The `> 0` on the limit denominator is not decoration: an unlimited container
     reports a limit of 0, and `x / 0` is `+Inf`, which clears any threshold.
+
+    The queries themselves are namespace-wide (see ``CPU_QUERY``/``MEM_QUERY``),
+    so rows are filtered to this incident's own service here — otherwise an
+    unrelated pod's resource spike would report as if it were this service's.
     """
     out: list[str] = []
-    for row in q(
-        'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="ecommerce"}[2m]))'
-    ):
+    for row in q(CPU_QUERY):
         pod = (row.get("metric") or {}).get("pod", "?")
+        if not pod_belongs_to_service(pod, service):
+            continue
         try:
             cores = float(row["value"][1])
         except (KeyError, IndexError, TypeError, ValueError):
@@ -202,11 +296,10 @@ def resource_saturation(q: QueryFn = _q) -> list[str]:
         if cores >= _CPU_REPORT_FLOOR_CORES:
             out.append(f"pod {pod}: cpu={cores:.2f} cores (limit 1)")
 
-    for row in q(
-        'max by (pod) (container_memory_working_set_bytes{namespace="ecommerce"} / '
-        '(container_spec_memory_limit_bytes{namespace="ecommerce"} > 0))'
-    ):
+    for row in q(MEM_QUERY):
         pod = (row.get("metric") or {}).get("pod", "?")
+        if not pod_belongs_to_service(pod, service):
+            continue
         try:
             ratio = float(row["value"][1])
         except (KeyError, IndexError, TypeError, ValueError):
@@ -216,26 +309,57 @@ def resource_saturation(q: QueryFn = _q) -> list[str]:
     return out
 
 
-def pod_state(q: QueryFn = _q) -> list[str]:
-    """Restart counts and termination reasons.
+def datastore_health(service: str, q: QueryFn = _q) -> list[str]:
+    """Is this service's OWN backing datastore StatefulSet actually up.
+
+    Checked at the cluster level via ``kube_statefulset_status_replicas_ready``,
+    which is published by kube-state-metrics about the datastore's own pod(s) —
+    not by the consuming service. It still answers correctly when the service
+    depending on that store cannot report on itself at all (see
+    ``DATASTORE_STATEFULSETS`` above for why that matters).
+    """
+    entry = DATASTORE_STATEFULSETS.get(service_pod_prefix(service))
+    if not entry:
+        return []
+    statefulset, label = entry
+    ready = _scalar(datastore_ready_query(statefulset), q)
+    if ready is None:
+        return []
+    if ready < 1:
+        return [f"{label} StatefulSet '{statefulset}': 0 ready replicas"]
+    return [f"{label} StatefulSet '{statefulset}': {ready:g} ready replica(s)"]
+
+
+def pod_state(service: str, q: QueryFn = _q) -> list[str]:
+    """Restart counts and termination reasons, for ``service``'s own pods.
 
     This is what separates the two failures that share the EcommerceServiceDown
     alert: `OOMKilled` means the memory leak, plain `Error` before the port
     binds means the crashloop. Without it the model cannot tell them apart.
+
+    Filtered to this incident's own service for the same reason as
+    ``resource_saturation`` — ``RESTARTS_QUERY``/``TERMINATED_QUERY`` are
+    namespace-wide, and an unrelated pod's stale restart count must not be
+    reported (or scored) as if it belonged to the affected service.
     """
     out: list[str] = []
-    for row in q('kube_pod_container_status_restarts_total{namespace="ecommerce"}'):
+    for row in q(RESTARTS_QUERY):
         pod = (row.get("metric") or {}).get("pod", "?")
+        if not pod_belongs_to_service(pod, service):
+            continue
         try:
             n = int(float(row["value"][1]))
         except (KeyError, IndexError, TypeError, ValueError):
             continue
         if n > 0:
             out.append(f"pod {pod}: restartCount={n}")
-    for row in q('kube_pod_container_status_last_terminated_reason{namespace="ecommerce"} == 1'):
+    for row in q(TERMINATED_QUERY):
         m = row.get("metric") or {}
+        pod = m.get("pod", "?")
+        if not pod_belongs_to_service(pod, service):
+            continue
         if reason := m.get("reason"):
-            out.append(f"pod {m.get('pod', '?')}: last terminated reason={reason}")
+            out.append(f"pod {pod}: last terminated reason={reason}")
     return out
 
 
@@ -278,17 +402,68 @@ def firing_alerts(fetch: Callable[[], Any] = _live_alerts) -> list[str]:
     return out
 
 
+def otel_service_name(service: str) -> str:
+    """Normalize to the OTel ``service.name`` convention this SUT actually uses.
+
+    Both Loki's ``service_name`` label and Jaeger's process ``serviceName`` are
+    ``ecommerce-<service>`` (confirmed live against
+    ``/loki/api/v1/label/service_name/values`` and ``/api/services`` — e.g.
+    ``ecommerce-payment-service``), but ``service`` here is the RCA agent's own
+    identity, which arrives WITHOUT that prefix (e.g. ``payment-service``, from
+    ``triage_verdict.affected_service``). Querying either backend with the raw
+    service name silently matches nothing — same class of mismatch as
+    ``pod_belongs_to_service`` above, just prefixed the opposite way.
+    """
+    return f"ecommerce-{service_pod_prefix(service)}"
+
+
 def _live_logs(service: str) -> Any:
     from datetime import UTC, datetime, timedelta
 
     now = datetime.now(UTC)
     return get_registry().call(
         "observability.logs.query",
-        service=service,
+        service=otel_service_name(service),
         start=now - timedelta(minutes=15),
         end=now,
         limit=200,
     )
+
+
+def _live_traces(service: str) -> Any:
+    return get_registry().call(
+        "observability.traces.search", service=otel_service_name(service), lookback="15m", limit=20
+    )
+
+
+def trace_health(service: str, fetch: Callable[[str], Any] = _live_traces) -> list[str]:
+    """Recent traces for the service, and whether any carry a real error status.
+
+    A third, independent evidence source alongside metrics and logs — a trace is
+    an actual end-to-end request record, so "0 of N recent traces show an error"
+    is itself decisive negative evidence, not merely an absent count. Never
+    raises; returns [] on any failure or when nothing was found (this endpoint
+    was just deployed onto a live SUT, so an empty trace window is common and
+    not itself informative — unlike ``recent_logs``'s explicit "NONE" handling,
+    a genuinely empty trace search is treated as unchecked rather than checked).
+    """
+    try:
+        res = fetch(service)
+    except Exception:
+        return []
+    if not getattr(res, "ok", False):
+        return []
+    data = getattr(res, "data", None) or {}
+    traces = data.get("traces") or []
+    total = len(traces)
+    if total == 0:
+        return []
+    errors = sum(1 for t in traces if t.get("has_error"))
+    out = [f"traces: {errors} of {total} recent traces show an error status"]
+    durations = [t["duration_us"] for t in traces if isinstance(t.get("duration_us"), (int, float))]
+    if durations:
+        out.append(f"traces: slowest recent trace root span {max(durations) / 1000:.0f}ms")
+    return out
 
 
 def recent_logs(
@@ -359,7 +534,7 @@ def required_promql_queries() -> tuple[str, ...]:
     """Every PromQL string ``gather`` will issue through ``Backend.query``.
 
     Derived from the same private constants the query functions read
-    (``_DEP_GAUGES``, ``_LATENCY_HISTOGRAMS``) or literally copied where a function
+    (``DEP_GAUGES``, ``LATENCY_HISTOGRAMS``) or literally copied where a function
     builds its own query text inline (``error_breakdown``, ``resource_saturation``,
     ``pod_state``) — never hand-duplicated. This is what
     ``agents/rca_agent/context_adapter.py`` calls to know which sections to request
@@ -368,18 +543,16 @@ def required_promql_queries() -> tuple[str, ...]:
     is requested automatically instead of silently missing from the context path.
     """
     return (
-        *_DEP_GAUGES,
-        "sum by (reason) (rate(orders_failed_total[5m]))",
-        "rate(payment_timeout_total[5m])",
-        *(
-            f"histogram_quantile(0.95, sum by (le) (rate({bucket}[5m])))"
-            for bucket in _LATENCY_HISTOGRAMS
-        ),
-        'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="ecommerce"}[2m]))',
-        'max by (pod) (container_memory_working_set_bytes{namespace="ecommerce"} / '
-        '(container_spec_memory_limit_bytes{namespace="ecommerce"} > 0))',
-        'kube_pod_container_status_restarts_total{namespace="ecommerce"}',
-        'kube_pod_container_status_last_terminated_reason{namespace="ecommerce"} == 1',
+        *DEP_GAUGES,
+        ORDERS_FAILED_QUERY,
+        PAYMENT_FAILURES_QUERY,
+        PAYMENT_TIMEOUT_QUERY,
+        *(latency_query(bucket) for bucket in LATENCY_HISTOGRAMS),
+        CPU_QUERY,
+        MEM_QUERY,
+        RESTARTS_QUERY,
+        TERMINATED_QUERY,
+        *(datastore_ready_query(statefulset) for statefulset, _ in DATASTORE_STATEFULSETS.values()),
     )
 
 
@@ -419,6 +592,50 @@ class LiveBackend:
         return live_commits(path, limit)
 
 
+class CachingBackend:
+    """Memoises one backend for the life of a single investigation.
+
+    Two consumers now read the same telemetry: ``gather`` builds the prompt's prose and
+    ``investigation/facts.py`` builds typed facts for the reasoning stages. Without this
+    they would each issue the full query set, doubling ~14 HTTP round-trips per incident
+    against Prometheus — the provider talks to httpx directly with no cache of its own.
+
+    It also buys correctness, not just speed: the prompt and the evidence matrix are
+    guaranteed to describe *the same readings*. Querying twice across a live incident can
+    return different numbers, which would leave an operator reading a prompt that cites a
+    value the score was not computed from.
+
+    Scoped per call and thrown away, so it can never serve stale data into a later
+    incident — the cache lifetime is one ``analyze``.
+    """
+
+    def __init__(self, inner: Backend) -> None:
+        self._inner = inner
+        self._queries: dict[str, list[dict[str, Any]]] = {}
+        self._alerts: Any | None = None
+        self._logs: dict[str, Any] = {}
+
+    def query(self, promql: str) -> list[dict[str, Any]]:
+        if promql not in self._queries:
+            self._queries[promql] = self._inner.query(promql)
+        return self._queries[promql]
+
+    def alerts(self) -> Any:
+        if self._alerts is None:
+            self._alerts = self._inner.alerts()
+        return self._alerts
+
+    def logs(self, service: str) -> Any:
+        if service not in self._logs:
+            self._logs[service] = self._inner.logs(service)
+        return self._logs[service]
+
+    def commits(self, path: str | None, limit: int) -> Any:
+        # Deliberately not cached: the two commit queries in this agent differ by path and
+        # limit, and keying a cache on both for a call made at most twice buys nothing.
+        return self._inner.commits(path, limit)
+
+
 def gather(service: str, backend: Backend | None = None) -> dict[str, list[str]]:
     """Collect every evidence category. Never raises.
 
@@ -441,8 +658,10 @@ def gather(service: str, backend: Backend | None = None) -> dict[str, list[str]]
         ("dependency_health", lambda: dependency_health(api.query)),
         ("error_breakdown", lambda: error_breakdown(api.query)),
         ("latency", lambda: latency(api.query)),
-        ("pod_state", lambda: pod_state(api.query)),
-        ("resource_saturation", lambda: resource_saturation(api.query)),
+        ("pod_state", lambda: pod_state(service, api.query)),
+        ("resource_saturation", lambda: resource_saturation(service, api.query)),
+        ("datastore_health", lambda: datastore_health(service, api.query)),
+        ("trace_health", lambda: trace_health(service)),
     ):
         try:
             if rows := fn():
@@ -476,6 +695,11 @@ def render(ev: dict[str, list[str]]) -> str:
         "latency": "Latency",
         "resource_saturation": "Container CPU and memory against limits",
         "pod_state": "Pod restarts and termination reasons",
+        "datastore_health": (
+            "Backing datastore health (cluster-level check, independent of the "
+            "affected service's own gauge)"
+        ),
+        "trace_health": "Recent distributed traces (error status + latency, a third source independent of metrics/logs)",
         "recent_logs": "Recent error log lines",
         "recent_changes": "Recent commits touching this service",
     }

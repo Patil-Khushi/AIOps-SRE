@@ -4,7 +4,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/otel-demo`, `demo/failure_injection`, `demo/truth_files`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack + Teams adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/ecommerce`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack + Teams adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+
+### The system under test is `demo/ecommerce/`, not the OpenTelemetry Demo
+
+**The OTel Demo has been removed from the repo.** The SUT is now a purpose-built
+e-commerce app in `demo/ecommerce/` (React frontend → order-service → user-service /
+payment-service → MySQL / Postgres / Redis / mock-payment-gateway, all FastAPI + OTel
+instrumented). `demo/otel-demo/`, `demo/scenarios/`, and `demo/failure_injection/` **no
+longer exist** — much of the older documentation in this repo still refers to them.
+
+What moved where:
+
+| Old (gone) | Now |
+|---|---|
+| `demo/otel-demo/` (Helm values for the upstream chart) | `demo/ecommerce/k8s/*.yaml` (plain manifests) + `k8s/build-images.ps1` |
+| `demo/failure_injection/inject.py` (flagd flag flipping) | `demo/ecommerce/failure_injection/` (env-var / scale / real-chaos toolkit) |
+| `demo/scenarios/` | `demo/ecommerce/scenarios/*.yaml` |
+| truth files as YAML in `demo/truth_files/` | `demo/ecommerce/truth_files/*.json` |
+| `otel-demo` namespace for everything | `ecommerce` (app) + `observability` (Prom/Grafana/Jaeger) + `otel-demo` (**Loki only** — it did not move) |
+
+Three consequences worth internalising before you touch anything:
+
+- **flagd is gone.** There is no feature-flag daemon in the cluster. A fault is an env var
+  on a Deployment, a StatefulSet scaled to zero, or real in-pod chaos. `aiops/tools/feature_flags/`
+  survives as an unused seam, and `tests/test_no_kubectl_for_flagd.py` has been **deleted** —
+  so ADR-001 and the "no kubectl patch for flagd" constraint below are now historical, not
+  enforced. Clearing a fault goes through the new `automation.fault.clear` capability
+  (`demo/ui/fault_clear.py`), which is what the RCA apply-fix loop executes after HITL approval.
+- **`demo/truth_files/` still exists on disk but is the old OTel-demo corpus.** The evaluated
+  truth files are the JSON ones under `demo/ecommerce/truth_files/`.
+- **17 failure keys, but only 12 scenarios/truth files.** The registry
+  (`failure_injection.FAILURES`) carries five infrastructure-only failures — `packet_loss`,
+  `memory_exhaust`, `disk_full`, `dns_failure`, `pool_exhaustion` — that have no scenario YAML
+  and therefore no truth file and no eval coverage. They are injectable by hand but invisible
+  to the dashboard catalog and to `reset_all`, which iterates scenarios, not failure keys.
+  Adding a scenario YAML for one of these means adding its truth file in the same change
+  (`test_every_scenario_has_a_truth_file`).
+- **`infra/bootstrap.ps1` is stale and will fail.** It still `helm upgrade`s the upstream
+  OTel Demo chart from `demo/otel-demo/values.yaml`, which no longer exists. Bring the stack
+  up with `infra/observability/install.ps1` (Prometheus/Grafana/Jaeger) plus the ecommerce
+  manifests — see "Common commands". `start.ps1` and `reset.ps1` *are* current.
 
 ### Agent mergers: the catalog says 30, the product ships 19
 
@@ -42,7 +82,7 @@ Architectural decisions are recorded as ADRs (`docs/adr/NNNN-*.md`, Nygard forma
 
 | ADR | Decision | Status |
 |---|---|---|
-| 001 | flagd mutation goes through the `feature_flags.*` seam, never `kubectl patch` | Accepted |
+| 001 | flagd mutation goes through the `feature_flags.*` seam, never `kubectl patch` | Accepted, but **moot** — flagd left with the OTel Demo; its enforcing test is deleted |
 | 002 | **No agent framework for the POC.** Agents are plain functions; `aiops/runtime/orchestrator.py` is the "framework". Do not add LangGraph/AutoGen/CrewAI. | Accepted |
 | 003 | Anthropic (Azure AI Foundry Claude) is the default; OpenAI the swap-in; Ollama the offline fallback; `stub` for tests/CI | Accepted |
 | 004 | One `ApprovalRequest` in `aiops/policy/approvals.py` fans out to chat + web surfaces; either can resolve it | Accepted |
@@ -55,6 +95,8 @@ Changing an Accepted decision means writing a *new* ADR that supersedes the old 
 ### Which root document answers what
 
 The repo root carries a lot of markdown. Rather than reading all of it: `README.md` (quick start; its status table is stale — trust this file's roadmap instead) · `ONBOARDING.md` (laptop setup, gotchas, tailing the audit log) · `RUNNING.md` (day-to-day run loop) · `CONTRIBUTING.md` (branching, PR gates) · `PRD.md` / `KPI.md` / `EVAL_METHODOLOGY.md` (product scope, metrics, how agents are scored) · `DEMO_PLAN.md` / `DEMO_SCRIPT.md` / `DEMO_SHOWCASE.md` (rehearsed demo narrative) · `PROJECT_STATE.md` / `SESSION_NOTES.md` (point-in-time status — may be stale, verify before relying on it) · `SECRETS.md` (git-crypt workflow) · `THREAT_MODEL.md` / `RISK_REGISTER.md` · `SOLUTION_BRIEF.md` (the long-form external-facing writeup).
+
+**All of these root markdown files predate the OTel-Demo → `demo/ecommerce/` migration.** Wherever one names `otel-demo`, flagd, a feature flag, `demo/failure_injection/`, or `frontend-proxy:8080`, it is describing a stack that is no longer deployed. The current bring-up and fault workflow is the one in "Common commands" below; `demo/ecommerce/README.md` and `demo/ecommerce/k8s/README.md` are the accurate SUT-level docs.
 
 ## What is being built
 
@@ -90,7 +132,7 @@ The owner is at POC stage and the explicit guidance is:
 
 - **Do not build all 19 agents.** A reasonable POC scope is **6–10 agents end-to-end** on one full Reactive→Prescriptive flow (typical: Alert Triage → Incident Classifier → Auto-Ticketing → Log Correlation → RCA Agent → Remediation Recommender, plus one or two SRE agents and one Predictive agent for the "wow" moment). The rest may be stubbed for narrative continuity.
 - **End-to-end ugly first, refactor second.** Get one full path working with tape-and-glue before designing shared abstractions. Working demo first; the architecture is for the production phase.
-- **Demo on synthetic / open-source / demo-app data**, not real customer data. Default demo target: the **OpenTelemetry Demo (Astronomy Shop)** on Kubernetes (Rancher Desktop's bundled k3s locally; AKS/GKE deferred until post-POC). Failure injection via OTel demo feature flags + Chaos Mesh; load via k6.
+- **Demo on synthetic / open-source / demo-app data**, not real customer data. Default demo target: **`demo/ecommerce/`**, the in-repo SUT, on Kubernetes (Rancher Desktop's bundled k3s locally; AKS/GKE deferred until post-POC). It replaced the OpenTelemetry Demo (Astronomy Shop) because half the scenarios needed real `OOMKilled` / `CrashLoopBackOff` pod states and kubectl-shaped remediation the agents could actually perform. Failure injection via `demo/ecommerce/failure_injection/`; load via k6 and the in-cluster `loadgen` Deployment.
 - **Scope creep is the silent killer.** "While we're at it" lands on the post-POC backlog, not the current sprint.
 
 ## Reference POC stack (defaults from the onboarding guide)
@@ -99,14 +141,14 @@ When picking a tool for a new component, default to the choice in this table unl
 
 | Concern | Default | Notes |
 |---|---|---|
-| Demo app | OpenTelemetry Demo | Already instrumented; has feature flags for failures. |
+| Demo app / SUT | **`demo/ecommerce/`** (in-repo FastAPI + React app) | Replaced the OpenTelemetry Demo. Own services, own datastores, own failure toolkit. |
 | Cluster | **Rancher Desktop's bundled k3s** (Windows/macOS) | Org policy bans Docker on dev machines, so kind/k3d/Docker Desktop are out. Cloud (AKS/GKE) deferred. |
 | Metrics / Logs / Traces | Prometheus / Loki / Tempo + Grafana | All FOSS, all integrate. |
 | Instrumentation | OpenTelemetry SDKs + Collector | Vendor-neutral. |
 | Tickets | ServiceNow PDI (primary) + Jira free tier (secondary) | Two integrations prove vendor-neutrality. |
 | Alerting / on-call | PagerDuty developer account | Real on-call workflow. |
 | Chat ops | Slack or Microsoft Teams | Match what the org uses. |
-| Failure injection | OTel demo flags + Chaos Mesh | Flags for easy, Chaos Mesh for advanced. |
+| Failure injection | `demo/ecommerce/failure_injection/` | Three modes (`FI_MODE`): `application` (env vars / scale-to-zero), `infrastructure` (tc, stress-ng, dd, DNS), `hybrid` (default, both). Two backends (`FI_BACKEND`): `k8s` (default) / `docker`. |
 | Load | k6 | Modern, scriptable. |
 | Agent framework | **None** — plain functions + `aiops/runtime/orchestrator.py` | Superseded by ADR-002. Do not add LangGraph/AutoGen/CrewAI to `pyproject.toml`. |
 | LLM | Anthropic (Azure Foundry Claude) default; OpenAI swap-in; Ollama offline; `stub` in CI | ADR-003. Pin model versions; never use "latest". RCA Agent is pinned to Anthropic regardless of `AIOPS_LLM_PROVIDER`. |
@@ -122,7 +164,7 @@ The onboarding guide specifies five phases. Use this to judge what's in scope at
 
 - **Phase 0 — Setup (W0–2):** ✅ *Shipped.* Repo skeleton, demo app deployed with OTel→Prom/Loki/Tempo flowing, failure-injection library, truth-file template, LLM API access.
 - **Phase 1 — Reactive backbone (W3–5):** ✅ *Shipped.* Alert Triage v1 (RA-001+002 merged), Auto-Ticketing v1 (ServiceNow PDI), Notification Assembler v1 (RA-005+006 merged), Log Correlation v1, eval harness, demo UI, dashboard. *Out of scope: predictive, full RCA, prescriptive autonomy.*
-- **Phase 2 — RCA backbone (W6–8):** ✅ *Mostly shipped.* RCA Agent v1, HITL UI, Incident Commander v1, Knowledge Synthesizer v0 (postmortem drafting + HITL-gated KB publish), audit trail. *Out of scope: predictive, prescriptive autonomy, chaos.*
+- **Phase 2 — RCA backbone (W6–8):** ✅ *Mostly shipped.* RCA Agent v1, HITL UI, Incident Commander v1, Knowledge Synthesizer v0 (postmortem drafting + HITL-gated KB publish), audit trail. *Out of scope: predictive, prescriptive autonomy, chaos.* The RCA Agent has since been rebuilt well past v1 into a deterministic evidence-ranking investigator with bounded historical memory and closed-loop learning — see "RCA Agent" below and `docs/rca_upgrade_checkpoint.md` for the full phase-by-phase record.
 - **Phase 3 — Proactive + first prediction (W9–10):** *In progress / planned.* Anomaly Detector, Dependency Mapper (live OTel service map), Early Warning, SLO Breach Predictor, Reliability Forecaster. *Out of scope: full predictive suite, chaos.*
 - **Phase 4 — Polish + demo (W11–12):** *Planned.* Rehearsed scenarios, recorded demo, postmortems, post-POC backlog.
 
@@ -149,7 +191,7 @@ aiops/                     # platform seams — never call vendor SDKs outside t
 │   └── collectors/        # thin translators from the tool registry into Observation objects
 ├── tools/                 # tool registry — every external integration registers here
 │   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket + Slack + Teams adapters
-│   ├── feature_flags/     # flagd adapter (replaces the kubectl-patch shell-out, ARCH-1)
+│   ├── feature_flags/     # DEAD: flagd adapter, kept after flagd left with the OTel Demo
 │   ├── itsm/              # ServiceNow PDI client (incident.create/update, cmdb.lookup)
 │   ├── observability/     # read-only Prometheus + Jaeger + K8s events queries (autonomy NONE)
 │   ├── scm/               # GitHub read-only source seam (scm.* capabilities, autonomy NONE)
@@ -173,21 +215,37 @@ agents/                    # Shipped agents (this tree is current; agents/README
 ├── auto_healer_lite/      # PRS-002: requests automation.runbook.execute (REQUIRED HITL)
 ├── knowledge_synthesizer/ # PRS-007: postmortem + KB draft (publish is HITL-gated)
 ├── resolution_verifier/   # PRS-007 companion: confirms the incident actually resolved
-└── rca_agent/             # PRS-008 ★: ranked fix steps + blast radius + rollback
+└── rca_agent/             # PRS-008 ★: deterministic evidence-ranking investigation,
+                          # bounded historical memory, ranked fix steps — see "RCA Agent" below
 evals/                     # hand-rolled JSON test harness; CI gates pass-rate
 demo/
-├── otel-demo/             # Helm values for the upstream OpenTelemetry Demo chart (+ Prom rules)
-├── scenarios/             # scenario YAMLs — the source of truth for injectable failures
-├── failure_injection/     # inject.py — the CLI that flips scenario flags via the seam
-├── truth_files/           # ground truth per scenario (cause + expected fix)
+├── ecommerce/             # ★ the system under test (replaced the OpenTelemetry Demo)
+│   ├── frontend/          #   React storefront                      → NodePort 30080
+│   ├── user-service/      #   FastAPI + MySQL                       → NodePort 30081
+│   ├── order-service/     #   FastAPI + Postgres                    → NodePort 30082
+│   ├── payment-service/   #   FastAPI + Redis (ClusterIP)
+│   ├── mock-payment-gateway/ # simulated external processor (ClusterIP)
+│   ├── k8s/               #   manifests + build-images.ps1 — the real deployment path
+│   ├── failure_injection/ #   the fault toolkit: 17 failures, CLI, k8s/docker backends
+│   ├── scenarios/         #   scenario YAMLs — schema-validated, one per failure key
+│   ├── truth_files/       #   ★ ground truth (JSON) — the corpus the evals actually read
+│   ├── observability/     #   NodePort bridge + promtail config
+│   └── docker-compose.yml #   still fine for plain app dev; k8s is what AIOps work uses
+├── truth_files/           # LEGACY OTel-demo truth files (YAML) — superseded by ecommerce/
 ├── load/                  # k6 baseline load script
 ├── audit/                 # chatops.jsonl — notification + approval audit log (gitignored)
+├── providers.py           # register_demo_providers() — binds demo-side tool providers
 ├── ui/                    # FastAPI demo server (uv extra: ui) — serves :8765 and mounts the SPAs
+│   └── fault_clear.py     #   automation.fault.clear provider (the post-HITL fix executor)
 ├── dashboard/             # main React SPA         → /dashboard/
 ├── combined-ui/           # RA-001+002 console     → /combined
 ├── classifier-ui/         # standalone classifier  → /classifier
 └── hitl-ui/               # approval console       → /hitl
-infra/                     # Rancher Desktop k3s bootstrap (PowerShell + bash) + Prometheus rules
+infra/
+├── observability/         # ★ Prometheus + Grafana + Jaeger install (install.ps1) + dashboards
+├── loki-values.yaml       # Loki — still installed into the `otel-demo` namespace
+├── bootstrap.ps1/.sh      # STALE: still helm-installs the removed OTel Demo chart
+└── port-forward.ps1 / teardown.ps1
 policies/                  # OPA policies (hitl.rego) — enforces Required-HITL actions
 scripts/                   # ops helpers (github_bulk runner, seed_oncall, verify_snow_creds.ps1)
 tests/                     # repo-level smoke + integration tests
@@ -207,14 +265,66 @@ start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-fo
 
 **`aiops/tools/resilience.py`** is the shared `guard()` wrapper (timeout, retry, circuit breaker, cache) that `topology`, `incident_history`, and `change_context` are all built on, because before it existed each provider seam reimplemented its own subset of these four and silently dropped others. Retries happen *before* the breaker trips (a breaker with no retry over-reacts to one dropped packet). Wrap any new remote provider in `guard` rather than hand-rolling timeout/retry/breaker logic — env vars `AIOPS_RESILIENCE_TIMEOUT` / `_RETRIES` / `_BACKOFF` / `_BREAKER` / `_CACHE_TTL` control it.
 
+## RCA Agent — deterministic investigation before the model (`agents/rca_agent/`)
+
+PRS-008 is not a single LLM call over telemetry. `agent.py::analyze()` runs an entirely
+deterministic pipeline first (`investigation/pipeline.py`, no LLM involved): gather
+evidence, generate candidate failure classes from a fixed catalog
+(`investigation/catalog.py` — generic SRE shapes like `dependency_unavailable`,
+`resource_saturation_cpu`; never a hardcoded fault name), classify every observation as
+supporting/contradicting/checked-absent/gap per hypothesis, and score each additively
+(`investigation/scoring.py`). **The platform's score is the verdict's authoritative
+confidence; the one LLM call that follows only explains the winning hypothesis** —
+`_authoritative_confidence` downgrades the verdict to `UNCERTAIN` if the model's prose
+doesn't actually describe the hypothesis that was scored. When the LLM is unavailable
+(stub, timeout, unparseable JSON), `_fallback_verdict` builds a full verdict from the
+investigation stages alone, no model involved at all.
+
+Bounded historical memory (`investigation/memory.py`) can nudge a score, but only from
+**verified outcomes** — never from the truth-file corpus, which is also the evaluation's
+answer key. Only providers in `memory.OUTCOME_BACKED_PROVIDERS` may supply a prior
+(`aiops/tools/incident_history/providers/outcomes.py` is the one shipped); a prior's
+contribution is capped below every current-evidence scoring term and cancelled outright
+when current evidence contradicts the hypothesis. Outcomes are written only after
+`resolution_verifier` confirms recovery, via `agents/rca_agent/learning.py` — a module
+restricted (by an AST check on its own source, not just a docstring) to writing outcome
+rows and nothing else: no prompt edits, no source edits, no tool or policy registration.
+
+`prompts.py` versions the system prompt by symbol (`SYSTEM_PROMPT_V1` … `V7`); each
+version after V3 is built by explicit `.replace()` calls with import-time assertions, so a
+half-applied edit fails the interpreter rather than shipping a prompt that silently still
+describes the old behavior. The current version carries **no injection-mechanism detail**
+(env var names, chaos implementation, alert→answer tables) — the executable action
+vocabulary is resolved at request time from the platform's action registry
+(`agent._action_vocabulary`), never hardcoded into the prompt.
+
+Two eval tiers measure this agent differently. `evals/harness.py` (CI, no cluster, no real
+LLM) checks contract properties against `agents/rca_agent/evals/golden.json` and
+truth-file `exercises` blocks. `evals/rca_eval.py` (human-run, real LLM) measures accuracy
+against simulated telemetry, with `--mode baseline/no-evidence/cold-start/learning/
+poisoned-memory/ablation`. `evals/rca_synthetic.py` projects each truth file's declared
+symptoms into a synthetic `IncidentContext` (Prometheus/Loki-shaped, matching the exact
+PromQL keys `evidence.required_promql_queries()` asks for) so `rca_eval.py` runs
+offline/reproducibly instead of against a live cluster; `evals/rca_metrics.py` then scores
+one verdict across many independent axes (root-cause/category/service/remediation
+accuracy, confidence calibration, fabricated-citation rate, evidence grounding, memory
+influence, …) rather than a single pass/fail number, and reports `timeline_accuracy` /
+`blast_radius_accuracy` as `not_measurable_yet` rather than as zero where no ground truth
+exists yet. Truth files (`demo/ecommerce/truth_files/*.json`) must never
+reach the agent directly — `evals/rca_truth.py::assert_blind` enforces this on the
+production path. `docs/rca_upgrade_checkpoint.md` is the full phase-by-phase record of
+this design (locked decisions, defects found and fixed, measured before/after deltas);
+read it before changing anything under `agents/rca_agent/`.
+
 ## When you write code
 
 ### Local environment constraints
 
-- **No Docker, no cloud, ~16 GB laptops.** Org policy bans Docker on dev machines; AKS/GKE are post-POC. All cluster work is Rancher Desktop's bundled k3s. Allocate ≥6 GB to its VM (Settings → Virtual Machine); the OTel demo uses ~3.5 GB inside.
-- **Rancher Desktop ships a `kuberlr`-wrapped `kubectl` that rejects standard flags from Python `subprocess` calls.** Install a standalone `kubectl` (`winget install --scope user Kubernetes.kubectl`) — `start.ps1` and `demo/failure_injection/inject.py` prefer it via `$LOCALAPPDATA\Programs\kubectl`.
+- **No Docker, no cloud, ~16 GB laptops.** Org policy bans Docker on dev machines; AKS/GKE are post-POC. All cluster work is Rancher Desktop's bundled k3s. Allocate ≥6 GB to its VM (Settings → Virtual Machine); the ecommerce SUT plus the observability stack use most of it.
+- **Rancher Desktop ships a `kuberlr`-wrapped `kubectl` that rejects standard flags from Python `subprocess` calls.** Install a standalone `kubectl` (`winget install --scope user Kubernetes.kubectl`) — `start.ps1` and `reset.ps1` prefer it via `$LOCALAPPDATA\Programs\kubectl`, while `demo/ecommerce/failure_injection/_kubectl.py` *probes* candidates instead (real kubectl emits `clientVersion` JSON; the kuberlr wrapper errors) — it is a deliberate copy of the old `inject.py` logic, kept duplicated so the package stays runnable standalone inside `demo/ecommerce/`. Keep the two in sync.
 - **Two PowerShell windows.** `start.ps1` runs port-forwards as background jobs in the *current* session; closing that shell kills them. Use `stop.ps1` to tear them down cleanly.
-- **flagd flag mutation goes through the seam.** Use `aiops.tools.get_registry().call("feature_flags.set_variant", flag=..., variant=...)` (or `feature_flags.get_variant` / `list_variants` / `reset_all`). Direct `kubectl patch flagd-config` is forbidden — `tests/test_no_kubectl_for_flagd.py` will fail CI for any new caller. Background: ARCH-1 (issue #70, `docs/arch_1_feature_flags_seam_design.md`).
+- **Demo-side tool providers only exist if you register them.** The `@tool` decorator fires as an import side effect, so a process that never imports the provider module has no provider for that capability. Every demo entry point calls `demo.providers.register_demo_providers()` — a new one must too, or `automation.fault.clear` silently has no implementation.
+- **Faults are k8s objects, not flags.** `aiops/tools/feature_flags/` and `docs/arch_1_feature_flags_seam_design.md` describe flagd, which is gone; treat both as historical. An app-layer fault is `kubectl set env` on a Deployment (recovery writes explicit defaults back rather than deleting the key, so the manifest's `configMapKeyRef` mapping survives an inject/recover cycle — see the `_FAULT_DEFAULTS` comment in `_k8s.py`, and keep those defaults matching `demo/ecommerce/k8s/01-config.yaml`). An infra-layer fault is real in-pod chaos and can report `unavailable` when the tool is missing from the image — `order_service.packet_loss` needs `tc`, which is not in the service Dockerfiles, so it neither injects nor recovers today.
 - **PowerShell 5.1's `Get-Content` default encoding is CP1252, not UTF-8.** Tailing `demo/audit/chatops.jsonl` without `-Encoding UTF8` turns em-dashes into `â€"` mojibake. See ONBOARDING.md §11 "Tailing the chatops audit log".
 - **`.env.shared` is git-crypt-encrypted** (`.gitattributes`). On a locked clone it reads as binary — that's expected, not corruption. Unlock with `scripts/secrets/unlock.ps1`, then copy it to `.env` for local overrides (`.env` is gitignored). `scripts/secrets/add-teammate.ps1` adds a GPG key. Full workflow in SECRETS.md.
 - **`.env` is not auto-loaded.** `uv run` doesn't read it, and neither does `import aiops`. Only entry points that call `aiops._dotenv.load_dotenv()` explicitly get it: `demo/ui/server.py`, `evals/harness.py`, and a couple of `scripts/`. Real env vars win — the file fills in defaults, it never overrides. A new entry point that needs config must call it itself.
@@ -230,30 +340,56 @@ uv sync --extra embeddings  # sentence-transformers for Alert Triage dedup (opti
 # Other extras: llm-anthropic / llm-openai / llm-ollama / all-llm (pull in that provider's
 # SDK — only imported inside aiops/llm/), itsm (ServiceNow client libs)
 
-# Bring up the OTel demo into Rancher Desktop k3s (one-time, ~10 min)
-.\infra\bootstrap.ps1                              # bash equivalent: ./infra/bootstrap.sh
+# One-time cluster bring-up. NOT infra\bootstrap.ps1 — that still targets the
+# removed OTel Demo chart and will fail.
+.\infra\observability\install.ps1                  # Prometheus + Grafana + Jaeger
+cd demo\ecommerce; .\k8s\build-images.ps1          # build the 5 SUT images
+kubectl apply -f k8s\00-namespace.yaml
+kubectl apply -f k8s\01-config.yaml
+kubectl apply -f k8s\10-datastores.yaml
+kubectl -n ecommerce rollout status statefulset/mysql --timeout=180s
+kubectl apply -f k8s\20-app.yaml; kubectl apply -f k8s\30-frontend.yaml
+# Datastores are applied and awaited FIRST: each service builds its SQLAlchemy
+# engine at import time, so starting them together crashloops the app pods
+# until the databases happen to win the race. See demo/ecommerce/k8s/README.md.
 
-# Then either: leave a single port-forward open for the OTel demo proxy...
-kubectl -n otel-demo port-forward svc/frontend-proxy 8080:8080
-
-# ...or: one-command bring-up — checks the cluster, port-forwards
-# Prometheus :9090 / Jaeger :16686 / frontend-proxy :8080, builds the
-# React dashboard if needed, starts the FastAPI UI on :8765, opens the browser.
+# Day-to-day bring-up — checks the cluster, port-forwards Prometheus :9090 /
+# Jaeger :16686 / Grafana :3001 / Loki :3100, recovers any injected failure,
+# builds the React dashboard if needed, starts the FastAPI UI on :8765.
+# The SUT itself needs no port-forward: it is on NodePorts 30080-30083.
 .\start.ps1                                        # tear down with: .\stop.ps1
 
 # Run the FastAPI demo server on its own (start.ps1 does this plus port-forwards)
 uv run uvicorn demo.ui.server:app --port 8765
 
-# Trigger a failure scenario
-uv run python -m demo.failure_injection.inject --list
-uv run python -m demo.failure_injection.inject slow-product-catalog
-uv run python -m demo.failure_injection.inject --clear
+# Failure injection (17 failures across the 3 services). Run from demo/ecommerce/,
+# where the package is importable as a top-level module.
+cd demo\ecommerce
+python -m failure_injection list --show-layers
+python -m failure_injection signals order_service.http_500   # L1 / L2 / expected RCA
+python -m failure_injection inject order_service.http_500 --load 60
+python -m failure_injection recover order_service.http_500
+# FI_MODE=application|infrastructure|hybrid (default hybrid)
+# FI_BACKEND=k8s (default)|docker · FI_NAMESPACE=ecommerce · FI_DRY_RUN=1
 
-# Back to a clean baseline before a rehearsal / demo (flags off, audit log
-# truncated). -Hard also wipes verdicts/classifications/tickets from state.db.
-# Touches neither the cluster nor start.ps1's port-forwards.
-.\reset.ps1
-.\reset.ps1 -Hard
+# Recover EVERY injected failure at once. The CLI has no `recover --all`, and
+# reset.ps1's default makes no cluster contact — this is the one that does it.
+uv run python -c "from demo.ui import scenario_provider as sp; print(sp.reset_all(sp.load()))"
+.\start.ps1 -Fresh                                 # same thing, plus state.db + audit log
+
+# Back to a clean baseline before a rehearsal / demo. Layered by cost:
+.\reset.ps1              # agent INPUTS: audit log truncated. Seconds, no cluster contact
+.\reset.ps1 -Hard        # + agent OUTPUTS: verdicts/classifications/tickets in state.db
+.\reset.ps1 -Data        # + the SUT's own orders/users/payments (bounces the 3 services,
+                         #   because Prometheus counters live in-process and a table
+                         #   truncate alone does not move them)
+.\reset.ps1 -Telemetry   # + metric/log/trace HISTORY (deletes + re-provisions PVCs, ~3 min).
+                         #   This is the one to run before recording a demo.
+.\reset.ps1 -All
+# Note: -Data and -Telemetry DO touch the cluster and will drop port-forwards to
+# any replaced pod — re-run start.ps1 if a UI stops responding afterwards.
+# Prometheus alert rules use rolling [2m] windows, so an alert from a cleared
+# fault keeps firing ~2 min. That is lag, not a failed reset.
 
 # Fire one fixture through the running server and print the routing decision
 .\scripts\demo\fire.ps1 -List
@@ -264,8 +400,8 @@ uv run python -m demo.failure_injection.inject --clear
 # log_correlation, notification_assembler, runbook_executor have __main__.py)
 uv run python -m agents.alert_triage
 
-# Run the tests (no cluster needed). testpaths = tests/ aiops/ evals/ — note that
-# aiops/ and evals/ carry their own tests; `uv run pytest tests/` is NOT the full suite.
+# Run the tests (no cluster needed). testpaths = tests/ aiops/ evals/, though
+# aiops/ and evals/ carry no test files today — everything lives in tests/.
 uv run pytest
 
 # Run a single test
@@ -302,8 +438,10 @@ uv run pre-commit install
 cd demo\dashboard; npm install; npm run build    # then: cd ..\..
 cd demo\dashboard; npm run dev                   # or hot-reload on Vite's own port
 
-# Tear down the OTel demo (leaves Rancher Desktop's k3s running)
+# Tear down (leaves Rancher Desktop's k3s running). Like bootstrap.ps1, this
+# still targets the removed otel-demo release — check it before trusting it.
 .\infra\teardown.ps1
+kubectl delete namespace ecommerce                 # the SUT itself
 
 # Bulk-create GitHub Issues + add to the project board (idempotent — safe to
 # re-run; see scripts/github_bulk/README.md for the manifest format).
@@ -338,12 +476,13 @@ Everything is env-var driven and read at the seam, never in agent code. Read fro
 | ITSM | `AIOPS_SERVICENOW_INSTANCE_URL` / `_USER` / `_PASSWORD`, `AIOPS_USE_MOCK_ITSM` | mock ITSM provider |
 | Observability | `AIOPS_PROMETHEUS_URL`, `AIOPS_LOKI_URL`, `AIOPS_JAEGER_URL`, `AIOPS_GRAFANA_URL` / `_API_KEY` | provider registered but calls fail soft |
 | ChatOps | `AIOPS_SLACK_WEBHOOK_URL`, `AIOPS_SLACK_BOT_TOKEN`, `AIOPS_SLACK_USER_MAP_JSON`, `AIOPS_TEAMS_WEBHOOK_URL`, `AIOPS_TEAMS_DM_WEBHOOK_URL`, `AIOPS_PAGERDUTY_INTEGRATION_KEY`, `AIOPS_JITSI_BASE` | JSON-file + WebSocket sinks only |
-| War-room meeting | `AIOPS_TEAMS_MEETING_WEBHOOK_URL`, `AIOPS_TEAMS_MEETING_FLOW_ID`, `AIOPS_WAR_ROOM_MAX_ATTENDEES`, `AIOPS_TEAMS_MEETING_MINUTES` | Jitsi room (no calendar invite) |
+| War-room meeting | `AIOPS_TEAMS_MEETING_WEBHOOK_URL`, `AIOPS_TEAMS_MEETING_FLOW_ID`, `AIOPS_POWER_AUTOMATE_ENV`, `AIOPS_WAR_ROOM_MAX_ATTENDEES`, `AIOPS_TEAMS_MEETING_MINUTES`, `AIOPS_TEAMS_MEETING_WAIT_SECONDS`, `AIOPS_TEAMS_MEETING_TIMEOUT`, `AIOPS_AZ_PATH` | Jitsi room (no calendar invite). **Gotcha:** even with all vars set, `teams_meeting.py` reads the real join URL back from the Power Automate flow's run history via an `az account get-access-token` call — if the `az` CLI isn't installed/logged in on the host, the meeting is still created (invites go out) but the code silently keeps the Jitsi link instead of surfacing the real `teams.microsoft.com/l/meetup-join/...` URL. Check `az account show` first when a war room shows Jitsi despite Teams config looking complete. |
 | Runbook links | `AIOPS_RUNBOOK_PUBLISHER_URL`, `AIOPS_RUNBOOK_PUBLISHER_FLOW_ID`, `AIOPS_RUNBOOK_LINKS_PATH` | Runbook name as plain text, no link |
 | HITL | `AIOPS_HITL_DEFAULT`, `AIOPS_HITL_APPROVAL_TIMEOUT` | Required-level actions deny without an approver |
 | Context layer | `AIOPS_CONTEXT_LAYER` (`off`/`shadow`/`on`), `AIOPS_CONTEXT_WORKERS` | `off` — agents keep their pre-existing per-agent retrieval |
 | Resilience (`aiops/tools/resilience.py`) | `AIOPS_RESILIENCE_TIMEOUT`, `_RETRIES`, `_BACKOFF`, `_BREAKER`, `_CACHE_TTL` | 3s timeout / 2 retries / 0.2s backoff / 30s breaker / 60s cache |
 | Incident history | `AIOPS_INCIDENT_HISTORY_PROVIDERS` | `mock` provider only |
+| Failure injection (`demo/ecommerce/`) | `FI_MODE` (`application`/`infrastructure`/`hybrid`), `FI_BACKEND` (`k8s`/`docker`), `FI_NAMESPACE`, `FI_DRY_RUN` | `hybrid` mode, `k8s` backend, `ecommerce` namespace. Note these are **not** `AIOPS_`-prefixed — the SUT is a standalone app. |
 
 The remote seams (Loki, Jaeger) have **circuit breakers** — `AIOPS_*_CIRCUIT_OPEN_SECONDS` — so a down backend degrades the agent rather than hanging the request. Preserve that when adding a new remote provider.
 
@@ -352,34 +491,30 @@ The remote seams (Loki, Jaeger) have **circuit breakers** — `AIOPS_*_CIRCUIT_O
 Each of these has a test that fails CI, so they are worth knowing before you write the code:
 
 - **No direct vendor SDK imports.** `import anthropic` / `import openai` outside `aiops/llm/` → `test_no_direct_llm_sdk_imports_outside_aiops_llm`.
-- **No direct flagd mutation via kubectl.** Use the `feature_flags.set_variant` capability → `test_no_kubectl_for_flagd_outside_seam` (ARCH-1, #70).
+- ~~No direct flagd mutation via kubectl~~ — **retired.** flagd left with the OTel Demo and `tests/test_no_kubectl_for_flagd.py` is deleted. Clearing a fault now goes through the `automation.fault.clear` capability (`tests/test_fault_clear_seam.py`), which refuses any `target` other than `off`: an approved "fix" that *injected* something would be the worst outcome of a HITL flow.
 - **No `@app.on_event` in `demo/ui/`.** Use lifespan handlers → `test_no_fastapi_on_event_in_demo_ui` (DEMO-15, #67).
 - **No HITL checks inside agent logic.** HITL is enforced at the *registry boundary* — just call `get_registry().call(capability, ...)` and a Required-level capability returns `ok=False` when no approver is wired. Agents never gate-check themselves.
 - **Every RCA fix step must set `requires_hitl=True`** → `test_rca_fix_step_rejects_requires_hitl_false`.
-- **Every new failure scenario ships with a truth file** → `test_every_scenario_has_a_truth_file`. Scenario YAMLs are also schema-validated and must have unique ids, and their UI descriptors must match the server's (`tests/test_scenarios_yaml.py`).
+- **Every new failure scenario ships with a truth file** → `test_every_scenario_has_a_truth_file`. `tests/test_scenarios_yaml.py` is strict about a lot more than that: the YAML `id` must equal the filename stem, ids must be unique, `failure_key` must resolve to a registered `Failure`, UI descriptors must match the server catalog, `needs_load` must agree with the registry's `LoadHint`, and every alertname the catalog references must exist as a real Prometheus rule. `tests/test_ecommerce_truth_files_evaluable.py` additionally requires each truth file to be *evaluable*, not merely present.
 - **Every new agent ships with `agents/<dir>/evals/golden.json`.** The eval harness discovers it automatically.
 - **`aiops/` never imports `agents/` (or `demo/`).** The dependency arrow is `demo/ → agents/ → aiops/`, checked by AST (not substring matching) → `tests/test_layering.py`. The one sanctioned exception is `aiops/runtime/orchestrator.py`, which by design sits above the agents it chains.
 - **Context-layer parity while it migrates.** `tests/test_context_shadow.py` requires zero mismatches between shadow-mode context output and legacy retrieval; `test_rca_context_adapter.py` / `test_notification_assembler_context_adapter.py` gate on byte-identical output between the adapter and the pre-migration prompt strings; `test_retrieval_call_sites.py` is a ratchet that fails if the count of duplicated per-agent retrieval call sites grows instead of shrinks.
+- **The RCA prompt cannot regain injection truth or a hardcoded action key.** `tests/test_rca_prompt_v7.py` is a two-sided ratchet on `SYSTEM_PROMPT_V7` — forbidden strings must stay out, required safety clauses must stay in — with a positive control proving the check isn't vacuous. Any edit to `agents/rca_agent/prompts.py` must keep it passing.
+- **RCA's historical memory cannot recall the truth-file corpus.** Only providers in `investigation.memory.OUTCOME_BACKED_PROVIDERS` may supply a prior; registering a new `incident_history` provider without classifying it fails `tests/test_rca_memory_blindness.py::test_every_shipped_provider_is_either_allowed_or_deliberately_not`.
+- **The RCA learning module cannot touch code.** `agents/rca_agent/learning.py` may only write outcome rows; `tests/test_rca_learning.py::TestLearningBoundary` parses its AST for any reference to a prompt symbol, file write, tool/policy registration, or dynamic execution.
 
 ### The seams to use, not bypass
 
 | Want to... | Use... | Don't... |
 |---|---|---|
 | Call an LLM | `aiops.llm.complete` / `acomplete` | `import anthropic` / `import openai` |
-| Call ServiceNow / Slack / flagd / Prom / Jaeger | `aiops.tools.get_registry().call(capability, ...)` | `httpx.post(...)` / `kubectl patch` |
+| Call ServiceNow / Slack / Prom / Jaeger / Loki | `aiops.tools.get_registry().call(capability, ...)` | `httpx.post(...)` / `kubectl` |
+| Clear an injected fault after HITL approval | `automation.fault.clear` via the registry | importing `demo.ecommerce.failure_injection` from `aiops/` (breaks the layering test) |
 | Gate a destructive action | `aiops.policy.get_gate().enforce(action, ctx)` | `if user_confirmed:` inside the agent |
 | Persist verdicts / classifications / state | `aiops.state.repository.save_*` / `load_*` | raw SQLAlchemy / SQL |
 | Chain the Reactive-Active flow | `aiops.runtime.orchestrator.run_reactive_flow(alert)` | re-wiring the agent calls inline |
 | Gather incident evidence for an agent | `aiops.context.build(request)` behind `AIOPS_CONTEXT_LAYER`, projected via an `agents/<name>/context_adapter.py` | each agent independently re-querying Prometheus/Loki/CMDB/on-call/Git |
 | Add timeout/retry/breaker/cache to a new provider | wrap the call in `aiops.tools.resilience.guard(...)` | hand-rolling a subset of the four and forgetting one |
-
-#### HITL levels live in two files that nothing forces to agree
-
-`policies/hitl.rego` is **reference-only today**; the runtime authority is `DEFAULT_LEVELS` in `aiops/policy/gate.py` (ADR-005 — wiring OPA in as the runtime check is a Phase 2 step). No test compares them, so they silently drift. **When you change an action's autonomy level, edit both**, and match the catalog row.
-
-#### HITL levels live in two files that nothing forces to agree
-
-`policies/hitl.rego` is **reference-only today**; the runtime authority is `DEFAULT_LEVELS` in `aiops/policy/gate.py` (ADR-005 — wiring OPA in as the runtime check is a Phase 2 step). No test compares them, so they silently drift. **When you change an action's autonomy level, edit both**, and match the catalog row.
 
 #### HITL levels live in two files that nothing forces to agree
 
@@ -395,6 +530,6 @@ Four callers share it: the `/api/triage` route, the live-alert sweep, the auto-t
 
 Tools register under a dotted `capability` name and are dispatched by `get_registry().call(capability, ...)`; multiple providers can serve one capability (e.g. `mock.*` vs `snow.*`, selected by whether real credentials are present). Namespaces currently in use:
 
-`itsm.incident.*` · `itsm.cmdb.*` · `itsm.ticket.close` · `observability.metrics.*` · `observability.logs.query` · `observability.traces.*` · `observability.events.query` · `feature_flags.*` · `oncall.schedule.lookup` · `incident.resolvers.lookup` · `notify.send` · `chatops.war_room.create` · `knowledge.publish` · `rca.fix_step.execute` · `automation.runbook.{execute,simulate,apply}` · `scm.file.read` · `scm.repo.tree` · `scm.commit.history` · `scm.diff` · `scm.pr.list`
+`itsm.incident.*` · `itsm.cmdb.*` · `itsm.ticket.close` · `observability.metrics.*` · `observability.logs.query` · `observability.traces.*` · `observability.events.query` · `automation.fault.clear` · `oncall.schedule.lookup` · `incident.resolvers.lookup` · `notify.send` · `chatops.war_room.create` · `knowledge.publish` · `rca.fix_step.execute` · `automation.runbook.{execute,simulate,apply}` · `scm.file.read` · `scm.repo.tree` · `scm.commit.history` · `scm.diff` · `scm.pr.list`
 
 Register a new one with the `@tool(name=, capability=, provider=)` decorator in `aiops/tools/`. Several subpackages are deliberately *not* registries: `aiops/tools/alerts/` holds pure webhook-payload → canonical `Alert` adapters (Alertmanager, CloudWatch, Datadog, Prometheus), most of `aiops/tools/chatops/` is the client/adapter seam rather than a registered capability, and `topology/` / `incident_history/` / `change_context/` are provider-chain seams (own `register_provider`, consumed by `aiops/context/collectors/`) rather than dispatch-by-capability.

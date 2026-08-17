@@ -26,6 +26,7 @@ from aiops.state.models import (
     IncidentResolverRow,
     KBArticleRow,
     NotificationRow,
+    RCAOutcomeRow,
     RCAResultRow,
     TicketRow,
     VerdictRow,
@@ -1096,6 +1097,35 @@ def save_rca_result(
         return int(row.id)  # type: ignore[arg-type]
 
 
+def list_rca_results(
+    *, limit: int = 200, exclude_incident_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Every persisted RCA verdict, newest first — the corpus for the chat's
+    read-only "similar past incidents" feature (agents/rca_agent/incident_rag.py).
+
+    Deliberately a *different* corpus from the truth-file eval fixtures
+    (aiops/tools/incident_history's embedding provider): these are incidents
+    this deployment actually processed, not hand-authored test fixtures, so a
+    chat answer citing one describes something that really happened here.
+    ``exclude_incident_id`` keeps the current incident out of its own
+    "similar incidents" list.
+    """
+    stmt = select(RCAResultRow).order_by(RCAResultRow.created_at.desc()).limit(max(1, limit))  # type: ignore[attr-defined]
+    with _session() as s:
+        rows = s.exec(stmt).all()
+    return [
+        {
+            "id": row.id,
+            "incident_id": row.incident_id,
+            "affected_service": row.affected_service,
+            "verdict": dict(row.verdict or {}),
+            "created_at": _aware(row.created_at).isoformat() if row.created_at else None,
+        }
+        for row in rows
+        if row.incident_id != exclude_incident_id
+    ]
+
+
 def get_rca_result(incident_id: str) -> dict[str, Any] | None:
     """Most recent stored RCA verdict for ``incident_id``, or None."""
     if not incident_id:
@@ -1127,6 +1157,169 @@ def delete_all_rca_results() -> int:
             s.delete(r)
         s.commit()
         return len(rows)
+
+
+# ─── RCA outcomes (the only population historical memory may recall) ────────
+#
+# Kept as primitives in and primitives out. ``aiops/`` may not import ``agents/``
+# (tests/test_layering.py, AST-checked), so this layer cannot take an ``RCAOutcome``
+# model — the agent maps its own type onto these keyword arguments.
+
+# Only these two lifecycle states may be recalled as a prior. Duplicated as a
+# literal here rather than imported from the agent's ``MemoryStatus`` for the
+# layering reason above; ``tests/test_rca_memory.py`` asserts the two agree, so the
+# duplication cannot drift silently.
+RECALLABLE_MEMORY_STATUSES: tuple[str, ...] = ("verified", "trusted")
+
+
+def save_rca_outcome(
+    *,
+    incident_id: str,
+    affected_service: str = "",
+    predicted_root_cause: str = "",
+    predicted_status: str = "",
+    confidence: float = 0.0,
+    selected_hypothesis_id: str | None = None,
+    selected_hypothesis_class: str | None = None,
+    action_key: str | None = None,
+    human_decision: str = "not_requested",
+    verification_result: str = "not_run",
+    human_corrected_root_cause: str | None = None,
+    memory_status: str = "new",
+    signatures: list[str] | None = None,
+    outcome: dict[str, Any] | None = None,
+    recorded_at: datetime | None = None,
+) -> int:
+    """Persist one RCA outcome. Returns the row id.
+
+    Writing a row does **not** make it recallable — ``memory_status`` governs that,
+    and the caller is expected to pass ``new``/``unverified`` until a verifier has
+    confirmed recovery. This function deliberately does not infer a status from
+    ``verification_result``: promotion is a policy decision that belongs with the
+    agent's lifecycle rules, not with the storage layer.
+    """
+    row = RCAOutcomeRow(
+        incident_id=incident_id,
+        affected_service=affected_service,
+        predicted_root_cause=predicted_root_cause,
+        predicted_status=predicted_status,
+        confidence=float(confidence),
+        selected_hypothesis_id=selected_hypothesis_id,
+        selected_hypothesis_class=selected_hypothesis_class,
+        action_key=action_key,
+        human_decision=human_decision,
+        verification_result=verification_result,
+        human_corrected_root_cause=human_corrected_root_cause,
+        memory_status=memory_status,
+        signatures=list(signatures or []),
+        outcome=dict(outcome or {}),
+    )
+    if recorded_at is not None:
+        row.recorded_at = recorded_at
+    with _session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return int(row.id)  # type: ignore[arg-type]
+
+
+def list_rca_outcomes(
+    *,
+    service: str | None = None,
+    statuses: tuple[str, ...] | None = None,
+    exclude_incident_ids: tuple[str, ...] = (),
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Outcomes newest-first, optionally filtered.
+
+    ``statuses=None`` returns every state, which is what a lifecycle or audit view
+    wants. A *recall* must pass ``RECALLABLE_MEMORY_STATUSES`` — that filtering is
+    the caller's to request, so a future caller cannot get unverified rows by
+    forgetting an argument and never noticing.
+
+    ``exclude_incident_ids`` supports leave-one-out evaluation: scoring a scenario
+    against memory that contains its own outcome measures nothing.
+    """
+    stmt = select(RCAOutcomeRow)
+    if service:
+        stmt = stmt.where(RCAOutcomeRow.affected_service == service)
+    if statuses:
+        stmt = stmt.where(RCAOutcomeRow.memory_status.in_(statuses))  # type: ignore[attr-defined]
+    stmt = stmt.order_by(RCAOutcomeRow.recorded_at.desc()).limit(  # type: ignore[attr-defined]
+        max(1, int(limit))
+    )
+    with _session() as s:
+        rows = list(s.exec(stmt).all())
+    excluded = {i for i in exclude_incident_ids if i}
+    return [_rca_outcome_row_to_dict(r) for r in rows if r.incident_id not in excluded]
+
+
+def get_rca_outcome(row_id: int) -> dict[str, Any] | None:
+    with _session() as s:
+        row = s.get(RCAOutcomeRow, row_id)
+        return _rca_outcome_row_to_dict(row) if row is not None else None
+
+
+def update_rca_outcome_memory_status(
+    row_id: int, memory_status: str, *, superseded_by: str | None = None
+) -> dict[str, Any] | None:
+    """Advance (or retract) one outcome's lifecycle state.
+
+    Retraction is an update, never a delete: ``invalidated`` knowledge is retained
+    because deleting it destroys the evidence that it was ever used to reach a
+    conclusion.
+    """
+    with _session() as s:
+        row = s.get(RCAOutcomeRow, row_id)
+        if row is None:
+            return None
+        row.memory_status = memory_status
+        if superseded_by is not None:
+            row.superseded_by = superseded_by
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return _rca_outcome_row_to_dict(row)
+
+
+def count_rca_outcomes(*, statuses: tuple[str, ...] | None = None) -> int:
+    stmt = select(RCAOutcomeRow)
+    if statuses:
+        stmt = stmt.where(RCAOutcomeRow.memory_status.in_(statuses))  # type: ignore[attr-defined]
+    with _session() as s:
+        return len(list(s.exec(stmt).all()))
+
+
+def delete_all_rca_outcomes() -> int:
+    """Eval/test hook."""
+    with _session() as s:
+        rows = list(s.exec(select(RCAOutcomeRow)).all())
+        for r in rows:
+            s.delete(r)
+        s.commit()
+        return len(rows)
+
+
+def _rca_outcome_row_to_dict(row: RCAOutcomeRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "incident_id": row.incident_id,
+        "affected_service": row.affected_service,
+        "predicted_root_cause": row.predicted_root_cause,
+        "predicted_status": row.predicted_status,
+        "confidence": row.confidence,
+        "selected_hypothesis_id": row.selected_hypothesis_id,
+        "selected_hypothesis_class": row.selected_hypothesis_class,
+        "action_key": row.action_key,
+        "human_decision": row.human_decision,
+        "verification_result": row.verification_result,
+        "human_corrected_root_cause": row.human_corrected_root_cause,
+        "memory_status": row.memory_status,
+        "superseded_by": row.superseded_by,
+        "signatures": list(row.signatures or []),
+        "outcome": dict(row.outcome or {}),
+        "recorded_at": _aware(row.recorded_at).isoformat() if row.recorded_at else None,
+    }
 
 
 def _kb_row_to_dict(row: KBArticleRow) -> dict[str, Any]:
@@ -1174,6 +1367,7 @@ __all__ = [
     "list_classifications",
     "list_kb_articles",
     "list_notifications",
+    "list_rca_results",
     "list_verdicts",
     "nearest_historical_incidents",
     "nearest_kb_articles",

@@ -112,7 +112,7 @@ def test_ensure_executable_action_keeps_a_real_failure_key():
     Replaces a test that asserted the curated map could correct a hallucinated
     flag ('recommendationFailure' -> 'recommendationCacheFailure'). With several
     faults per service there is nothing to correct *to*; invented keys are
-    instead caught downstream by _ground_set_flags_against_flagd, which checks
+    instead caught downstream by _ensure_executable_action, which checks
     them against the live automation.fault.clear registry and downgrades
     anything unrecognised to manual.
     """
@@ -183,7 +183,13 @@ def test_ensure_executable_action_downgrades_invented_flag_for_unmapped_service(
     out = _ensure_executable_action(steps, service="frontend", decision_trace=trace)
     assert out[0].action_type is FixActionType.MANUAL
     assert out[0].flag is None
-    assert any("not a configured flagd" in line for line in trace)
+    # Wording updated in Phase 5: the message no longer says "flagd", which was removed
+    # from this repo two migrations before the check was rewritten. The behaviour asserted
+    # above is unchanged, and this run caught a real regression in it — service-scoping had
+    # made "the registry has no action for this service" (authoritative) look like "nobody
+    # could tell us what is runnable" (ignorance), so the invented key survived.
+    assert any("downgraded fix step" in line for line in trace)
+    assert any("no executable action for 'frontend'" in line for line in trace)
 
 
 def test_ensure_executable_action_keeps_real_flag_for_unmapped_service(monkeypatch):

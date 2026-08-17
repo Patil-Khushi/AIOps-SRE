@@ -12,9 +12,18 @@ Usage::
     for attempt in attempts:
         attempt.provider, attempt.status, attempt.matches
 
-Default chain is ``mock`` (the demo truth files). Vector store, Elasticsearch and
-Postgres are opt-in via ``AIOPS_INCIDENT_HISTORY_PROVIDERS`` since none is
-configured in this deployment.
+Default chain is ``mock`` (the demo truth files). Vector store, Elasticsearch,
+Postgres and ``rca_outcomes`` are opt-in via ``AIOPS_INCIDENT_HISTORY_PROVIDERS``
+since none is configured or populated in this deployment.
+
+Two populations, and the difference matters
+-------------------------------------------
+``mock``/``embedding``/``vector``/``elastic``/``postgres`` search the truth-file
+corpus — hand-written records of what broke and what fixed it. ``rca_outcomes``
+searches *verified RCA outcomes*: past predictions whose recovery a verifier
+confirmed. The RCA agent may only recall the second, because the ecommerce truth
+files are also its graded evaluation cases and recalling them would be answer
+lookup rather than diagnosis. See ``providers/outcomes.py`` for the full argument.
 """
 
 from aiops.tools.incident_history.base import (

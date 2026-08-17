@@ -17,6 +17,25 @@ executable remediation is worse than none.
 Keys here are real failure keys from ``demo/ecommerce/failure_injection``:
 they are what ``automation.fault.clear`` accepts, so a step annotated from this
 map is one the executor can actually run.
+
+Demoted to a fallback in Phase 4
+--------------------------------
+This list is no longer the source of truth for what the model may propose.
+``agent._action_vocabulary`` asks the **action registry** first (via
+``_live_flag_names``, which reads what ``automation.fault.clear`` actually accepts) and
+falls back here only when the registry cannot be reached — offline, CI, no cluster.
+
+The reason is the Q2 constraint: failure keys must not be hardcoded into RCA's
+reasoning path. A static list goes stale silently, and the failure mode is specific —
+a fault added to the platform is invisible to the agent until someone remembers to edit
+a Python file, and a fault *removed* leaves the agent recommending a button that no
+longer exists. The registry cannot drift from itself.
+
+Kept because the alternative is worse: with no registry reachable, an empty vocabulary
+tells the model there are no executable actions when there are, and every remediation
+degrades to manual. So this list still serves the offline path — but wherever it is
+used, the prompt says so, and ``is_valid_fault`` remains the validation backstop that
+rejects an invented key before it reaches the executor.
 """
 
 from __future__ import annotations
@@ -96,12 +115,19 @@ def is_valid_fault(fault: str | None, service: str | None = None) -> bool:
 
 
 def flag_for_service(service: str | None) -> str | None:
-    """Back-compat shim for the flagd-era call site.
+    """Back-compat shim for the flagd-era call site. **No production caller.**
 
-    Returns a key only when the service has exactly one candidate — never true
-    for the ecommerce services, so in practice this returns ``None`` and the
-    agent falls through to evidence-based reasoning rather than a name lookup.
-    Kept so existing imports keep working; prefer ``faults_for_service``.
+    Returns a key only when the service has exactly one candidate — never true for the
+    ecommerce services, each of which has four. So it always returned ``None`` here, and
+    the branch it guarded in ``agent._ensure_executable_action`` — the branch that
+    *corrected* a wrong key — was unreachable dead code. Phase 5 deleted that call site.
+
+    Kept so existing imports keep working, and because two tests assert the
+    always-``None`` behaviour that made the dead branch visible in the first place. Do
+    not reintroduce a caller: picking a remediation from a service name is the lookup
+    this agent exists to replace, and with four candidates per service it cannot be done
+    from the name at all. Use ``faults_for_service`` (all candidates) or
+    ``is_valid_fault`` (validation).
     """
     keys = faults_for_service(service)
     return keys[0] if len(keys) == 1 else None
