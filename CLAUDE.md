@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/ecommerce`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack + Teams adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/ecommerce`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack + Teams adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard` (which now carries the Incident Command Center with its blast-radius graph, and the RCA chat dock with live SSE pipeline progress — see "The demo web tier"). The `docs/` design files remain the authoritative source for agent contracts and architecture.
 
 ### The system under test is `demo/ecommerce/`, not the OpenTelemetry Demo
 
@@ -235,9 +235,11 @@ demo/
 ├── load/                  # k6 baseline load script
 ├── audit/                 # chatops.jsonl — notification + approval audit log (gitignored)
 ├── providers.py           # register_demo_providers() — binds demo-side tool providers
-├── ui/                    # FastAPI demo server (uv extra: ui) — serves :8765 and mounts the SPAs
+├── ui/                    # FastAPI demo server (uv extra: ui) — serves :8765 and mounts the
+│                          #   SPAs; ~52 routes + 7 sibling router/hub modules. See
+│                          #   "The demo web tier" below before adding a route.
 │   └── fault_clear.py     #   automation.fault.clear provider (the post-HITL fix executor)
-├── dashboard/             # main React SPA         → /dashboard/
+├── dashboard/             # main React SPA         → /dashboard/ (18 pages; icc/ + chat/ trees)
 ├── combined-ui/           # RA-001+002 console     → /combined
 ├── classifier-ui/         # standalone classifier  → /classifier
 └── hitl-ui/               # approval console       → /hitl
@@ -315,6 +317,96 @@ reach the agent directly — `evals/rca_truth.py::assert_blind` enforces this on
 production path. `docs/rca_upgrade_checkpoint.md` is the full phase-by-phase record of
 this design (locked decisions, defects found and fixed, measured before/after deltas);
 read it before changing anything under `agents/rca_agent/`.
+
+### The chat layer is read-only over a frozen investigation
+
+`agents/rca_agent/chat.py` is **not a second reasoning path**. It explains, cites, and
+quantifies what the pipeline already computed; it cannot move a number, execute anything,
+pull new memory, or start a fresh investigation — and that is structural, not prompted:
+`ChatAnswer` has no field to put a new verdict in, and `tests/test_rca_chat_boundary.py`
+AST-checks the chat surface for any `aiops.tools.*` import beyond one allowed read-only RAG
+accessor. `answer()` grounds the model on a rendered snapshot of the `Investigation` (the
+"grounding pack") and validates the reply against that same snapshot — unknown evidence ids
+are dropped and counted as `fabricated_citations`, and a stated confidence that disagrees
+with the platform's is flagged in `warnings`, never silently edited.
+`_deterministic_answer()` is the no-LLM path (keyword-intent routing over a closed set,
+rendering `Investigation` sections directly) — the chat analogue of `_fallback_verdict`.
+
+That boundary is why sharing an answer to Teams lives in its own module
+(`demo/ui/rca_share_routes.py`) rather than beside the chat routes: it needs the chatops
+seam, which the AST check forbids inside the chat surface.
+
+`agents/rca_agent/progress.py` is the progress seam — a pure module (no asyncio, no FastAPI,
+no `aiops` import, so the agent stays individually runnable). `analyze()` emits `StageEvent`s
+at the same boundaries it already records in `decision_trace`; omitting `progress` reproduces
+`analyze()`'s output byte-for-byte. If a second agent ever wants the channel, move it to
+`aiops/progress/` unchanged and leave `RcaStage` behind.
+
+## The demo web tier (`demo/ui/` + `demo/dashboard/`)
+
+`demo/ui/server.py` is a 3k-line FastAPI app with ~52 routes, plus seven sibling modules it
+composes. **Add a new route family as a sibling module with its own `APIRouter` and a
+one-line `app.include_router` in `server.py`** — never by importing `demo.ui.server` from the
+sibling (circular import, and it couples that surface's failure mode to the core pipeline).
+`knowledge_routes.py` set the pattern; `rca_chat_routes.py` and `rca_share_routes.py` follow
+it. Shared state that both need (`rca_sessions.py`) goes in a third module both import.
+
+| Module | Owns |
+|---|---|
+| `server.py` | triage / RCA / correlate / incident-commander / remediation / execute routes, fixtures + live alerts, approvals, classifier + combined consoles, war room, scenarios (inject/reset/reset-all), topology, pods, and the four SPA mounts |
+| `knowledge_routes.py` | `/api/synthesize`, `/api/kb/*` (incl. HITL-gated publish + outcome poll), synthesizer/verifier status |
+| `rca_chat_routes.py` | `/api/rca/chat` (POST turn, GET transcript, GET by-incident, DELETE) |
+| `rca_share_routes.py` | `/api/rca/chat/share-teams` |
+| `rca_sessions.py` | the in-memory RCA chat session store (LRU + TTL) |
+| `rca_progress.py` | `/api/rca/stream/{run_id}` — the per-run SSE progress hub |
+| `chatops_ws.py` / `_alert_hub.py` | `/ws/chatops` and `/ws/alerts` |
+| `fault_clear.py` | the `automation.fault.clear` provider (post-HITL fix executor) |
+
+Three real-time transports, deliberately different:
+
+- **`/ws/chatops`** — one long-lived global feed, with a history ring.
+- **`/ws/alerts`** — a single broadcaster task polls `live_alerts()` every
+  `AIOPS_ALERT_BROADCAST_INTERVAL` and fans one payload out to all tabs, so cost stays flat
+  in the number of open browsers. Don't convert it to per-client polling.
+- **`/api/rca/stream/{run_id}`** — many short-lived per-run channels, **SSE not WebSocket**:
+  the stream terminates naturally at the terminal stage (finite, timeout-free CI tests),
+  needs no new dependency (a new `pyproject.toml` entry without a committed `uv.lock`
+  reddens CI, #155), and `EventSource` gives reconnect + `Last-Event-ID` resume for free.
+  Every method on the hub is keyed by `run_id` — two concurrent RCA runs must never
+  cross-talk. Pass a `run_id` on the RCA request to get a sink; omit it and it costs nothing.
+
+**In-memory over `aiops.state` is the established choice here, not an oversight.**
+`_HITL_OUTCOMES` (`server.py`), `_PUBLISH_OUTCOMES` (`knowledge_routes.py`), the chatops
+history ring, and the RCA session store are four bounded process-global stores; a fifth is
+idiomatic, a new SQLModel table is POC scope creep. Chat transcripts are lost on restart —
+grounding is not, because `rca_endpoint` calls `save_rca_result()` whenever a request carries
+an `incident_id`, so `GET /api/rca/chat/by-incident/{id}` rehydrates the verdict.
+
+The chat surface is unauthenticated like the rest of this POC, but it is the only
+LLM-*cost* surface, so three caps apply regardless: per-session turn cap, message-length cap,
+and one in-flight turn per `run_id`.
+
+### Dashboard structure
+
+`demo/dashboard/` is the main SPA (18 pages, React Router). Route groups: `/` landing,
+`/agents/*` browse, and `/console/*` the operator console (`alerts`, `rca`, `incidents`,
+`incidents/:incidentId`, `log-correlation`, `incident-commander`, `approvals`,
+`notifications`, `reasoning`, `knowledge`, `topology`, `health`). Retired routes redirect
+rather than 404 — `war-room` → `notifications`, `remediation-recommender` and `auto-healer`
+→ `/console/rca`. Keep that pattern when a page merges away.
+
+Two feature areas carry their own component trees rather than living in a page file:
+
+- **Incident Command Center** (`components/icc/`) — `IccRoot` + incident table/toolbar and an
+  `IncidentWorkspace` whose tabs (`icc/tabs/`) are Evidence, Hypotheses, Timeline, Changes,
+  History, Verification, and **Blast Radius** (`BlastRadiusGraph.tsx`). The page files
+  (`IncidentCommandCenter.tsx`, `RcaConsole.tsx`) are thin.
+- **RCA chat dock** (`components/chat/`) — `ChatDockProvider` + `RcaChatDock`, with
+  `ProgressStageList` rendering the SSE stage events above.
+
+Each of `dashboard` / `combined-ui` / `classifier-ui` / `hitl-ui` is its own Vite app and the
+server serves the built `dist/` — an unbuilt edit does not show up. `start.ps1` builds only
+`dashboard`.
 
 ## When you write code
 
@@ -482,6 +574,8 @@ Everything is env-var driven and read at the seam, never in agent code. Read fro
 | Context layer | `AIOPS_CONTEXT_LAYER` (`off`/`shadow`/`on`), `AIOPS_CONTEXT_WORKERS` | `off` — agents keep their pre-existing per-agent retrieval |
 | Resilience (`aiops/tools/resilience.py`) | `AIOPS_RESILIENCE_TIMEOUT`, `_RETRIES`, `_BACKOFF`, `_BREAKER`, `_CACHE_TTL` | 3s timeout / 2 retries / 0.2s backoff / 30s breaker / 60s cache |
 | Incident history | `AIOPS_INCIDENT_HISTORY_PROVIDERS` | `mock` provider only |
+| RCA chat / RAG | `AIOPS_RCA_LLM_PROVIDER`, `AIOPS_RCA_LLM_MODEL`, `AIOPS_RCA_CHAT_MAX_SESSIONS`, `_MAX_TURNS`, `_HISTORY_TURNS`, `_TTL`, `AIOPS_RCA_RAG_LIMIT`, `_RAG_MIN_SIMILARITY`, `AIOPS_RCA_MEMORY_PROVIDERS`, `AIOPS_RCA_CHANGE_LOOKBACK_HOURS` | Anthropic regardless of `AIOPS_LLM_PROVIDER` (ADR-003); deterministic answers when unavailable |
+| Real-time feeds | `AIOPS_RCA_STREAM_HEARTBEAT`, `AIOPS_RCA_STREAM_IDLE_TIMEOUT`, `AIOPS_ALERT_BROADCAST_INTERVAL` | 15 s heartbeat / 60 s idle close / 5 s alert poll |
 | Failure injection (`demo/ecommerce/`) | `FI_MODE` (`application`/`infrastructure`/`hybrid`), `FI_BACKEND` (`k8s`/`docker`), `FI_NAMESPACE`, `FI_DRY_RUN` | `hybrid` mode, `k8s` backend, `ecommerce` namespace. Note these are **not** `AIOPS_`-prefixed — the SUT is a standalone app. |
 
 The remote seams (Loki, Jaeger) have **circuit breakers** — `AIOPS_*_CIRCUIT_OPEN_SECONDS` — so a down backend degrades the agent rather than hanging the request. Preserve that when adding a new remote provider.
@@ -501,6 +595,7 @@ Each of these has a test that fails CI, so they are worth knowing before you wri
 - **Context-layer parity while it migrates.** `tests/test_context_shadow.py` requires zero mismatches between shadow-mode context output and legacy retrieval; `test_rca_context_adapter.py` / `test_notification_assembler_context_adapter.py` gate on byte-identical output between the adapter and the pre-migration prompt strings; `test_retrieval_call_sites.py` is a ratchet that fails if the count of duplicated per-agent retrieval call sites grows instead of shrinks.
 - **The RCA prompt cannot regain injection truth or a hardcoded action key.** `tests/test_rca_prompt_v7.py` is a two-sided ratchet on `SYSTEM_PROMPT_V7` — forbidden strings must stay out, required safety clauses must stay in — with a positive control proving the check isn't vacuous. Any edit to `agents/rca_agent/prompts.py` must keep it passing.
 - **RCA's historical memory cannot recall the truth-file corpus.** Only providers in `investigation.memory.OUTCOME_BACKED_PROVIDERS` may supply a prior; registering a new `incident_history` provider without classifying it fails `tests/test_rca_memory_blindness.py::test_every_shipped_provider_is_either_allowed_or_deliberately_not`.
+- **The RCA chat surface cannot reach the tool registry.** `tests/test_rca_chat_boundary.py` AST-checks `agents/rca_agent/chat.py` and `demo/ui/rca_chat_routes.py` for any `aiops.tools.*` import beyond the one allowed read-only RAG accessor — anything needing the chatops or automation seams goes in a sibling module (see `rca_share_routes.py`).
 - **The RCA learning module cannot touch code.** `agents/rca_agent/learning.py` may only write outcome rows; `tests/test_rca_learning.py::TestLearningBoundary` parses its AST for any reference to a prompt symbol, file write, tool/policy registration, or dynamic execution.
 
 ### The seams to use, not bypass
