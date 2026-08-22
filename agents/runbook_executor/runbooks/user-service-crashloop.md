@@ -2,11 +2,52 @@
 title: user-service — CrashLoopBackOff on startup
 service: user-service
 severity: sev1
+version: 1
+status: active
+owner: sre-platform
+approved_by: aiops-sre-review
 tags:
 - crashloop
 - startup
 - config
 - database
+applicability:
+  environments:
+  - demo
+  - production
+  failure_category: pod_crashloop
+  alerts:
+  - EcommerceServiceDown
+  required_signals:
+  - service_down
+  - pod_restarting
+  allowed_services:
+  - user-service
+  allowed_namespaces:
+  - ecommerce
+prerequisites:
+- id: incident_active
+  description: The incident is still open and within the configured max age.
+  mandatory: true
+  check: incident_active
+- id: target_in_scope
+  description: Every step targets a service/namespace this runbook declares.
+  mandatory: true
+  check: service_scope
+- id: alert_firing
+  description: EcommerceServiceDown is still firing (advisory — skipped when Prometheus is unreachable).
+  mandatory: false
+  check: alert_firing
+- id: signal_service_down
+  description: The service_down signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: service_down
+- id: signal_pod_restarting
+  description: The pod_restarting signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: pod_restarting
 steps:
 - name: clear-injected-fault
   action: clear_fault

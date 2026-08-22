@@ -2,11 +2,46 @@
 title: user-service — high login latency
 service: user-service
 severity: sev2
+version: 1
+status: active
+owner: sre-platform
+approved_by: aiops-sre-review
 tags:
 - latency
 - slow
 - login
 - p95
+applicability:
+  environments:
+  - demo
+  - production
+  failure_category: latency_degradation
+  alerts:
+  - EcommerceOrderLatencyHigh
+  required_signals:
+  - latency_high
+  allowed_services:
+  - user-service
+  allowed_namespaces:
+  - ecommerce
+prerequisites:
+- id: incident_active
+  description: The incident is still open and within the configured max age.
+  mandatory: true
+  check: incident_active
+- id: target_in_scope
+  description: Every step targets a service/namespace this runbook declares.
+  mandatory: true
+  check: service_scope
+- id: alert_firing
+  description: EcommerceOrderLatencyHigh is still firing (advisory — skipped when Prometheus is unreachable).
+  mandatory: false
+  check: alert_firing
+- id: signal_latency_high
+  description: The latency_high signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: latency_high
 steps:
 - name: clear-injected-fault
   action: clear_fault

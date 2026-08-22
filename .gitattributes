@@ -9,3 +9,6 @@
 #
 # To add another encrypted file, add a line here matching its path.
 .env.shared      filter=git-crypt diff=git-crypt
+
+# Shell scripts get copied into Linux images - CRLF breaks the shebang.
+*.sh text eol=lf

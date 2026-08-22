@@ -654,6 +654,10 @@ export type RunbookStepStatus =
 export type RunbookResolutionStatus =
   | 'pending'
   | 'resolved'
+  // Every step ran, but the Resolution Verifier has not yet said the incident
+  // recovered (§26/§34) — distinct from 'resolved' on purpose, so a naive `=== 'resolved'`
+  // check elsewhere cannot mistake "the executor is done" for "it worked".
+  | 'awaiting_verification'
   | 'rolled_back'
   | 'denied'
   | 'failed'
@@ -836,6 +840,351 @@ export interface RunbookOutcome {
     reason?: string;
     checks: { name: string; flag: string; variant: string | null; ok: boolean; available: boolean }[];
   };
+}
+
+// ─── Runbook Executor: production flow (candidates → plan → execute) ────────
+// Mirrors agents/runbook_executor/{matching,applicability,dryrun,execution_state}.py
+// and demo/ui/runbook_routes.py. The legacy shapes above (RunbookRunResponse,
+// RunbookOutcome, RunbookLibrary*) are unchanged and still serve the demo run route.
+
+// §34's state model. The BACKEND computes this — the UI renders it and never infers
+// it, which is why "COMPLETED" is not in the list: a completed execution is
+// WAITING_VERIFICATION until the Resolution Verifier answers.
+export type RunbookUiState =
+  | 'DISCOVERING_RUNBOOKS'
+  | 'RUNBOOKS_FOUND'
+  | 'RUNBOOK_SELECTED'
+  | 'VALIDATING'
+  | 'BLOCKED'
+  | 'DRY_RUN_READY'
+  | 'DRY_RUN_BLOCKED'
+  | 'WAITING_APPROVAL'
+  | 'APPROVED'
+  | 'EXECUTING'
+  | 'PAUSED'
+  | 'ROLLING_BACK'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'ROLLED_BACK'
+  | 'WAITING_VERIFICATION'
+  | 'VERIFICATION_PASSED'
+  | 'VERIFICATION_FAILED'
+  | 'ESCALATED_TO_RCA'
+  | 'NO_RUNBOOK';
+
+export type RunbookDiscoveryDecision =
+  | 'AUTO_SELECT'
+  | 'CANDIDATES'
+  | 'AMBIGUOUS'
+  | 'BLOCKED'
+  | 'NOT_APPLICABLE'
+  | 'NO_RUNBOOK';
+
+export type RunbookApplicabilityStatus =
+  | 'APPLICABLE'
+  | 'NOT_APPLICABLE'
+  | 'BLOCKED'
+  | 'UNKNOWN';
+
+export type RunbookRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export type RunbookLifecycleStatus =
+  | 'draft'
+  | 'pending_review'
+  | 'approved'
+  | 'active'
+  | 'superseded'
+  | 'archived'
+  | 'rejected';
+
+export type RunbookExecutorStatus =
+  | 'EXECUTED'
+  | 'NO_RUNBOOK'
+  | 'NOT_APPLICABLE'
+  | 'AMBIGUOUS'
+  | 'BLOCKED'
+  | 'FAILED'
+  | 'ROLLED_BACK';
+
+export type RunbookNextAction = 'VERIFY' | 'RCA' | 'ESCALATE';
+
+export type RunbookExecutionState =
+  | 'planned'
+  | 'waiting_approval'
+  | 'approved'
+  | 'executing'
+  | 'paused'
+  | 'rolling_back'
+  | 'completed'
+  | 'failed'
+  | 'rolled_back'
+  | 'aborted';
+
+// One line of the score's arithmetic, so "96% match" can be shown as a sum.
+export interface RunbookScoreComponent {
+  facet: string;
+  verdict: string;
+  weight: number;
+  earned: number;
+  comparable: boolean;
+  detail: string;
+}
+
+export interface RunbookFacetResult {
+  name: string;
+  verdict: 'match' | 'mismatch' | 'unknown' | 'unconstrained';
+  detail: string;
+}
+
+export interface RunbookPrerequisiteResult {
+  id: string;
+  description: string;
+  mandatory: boolean;
+  check: string;
+  status: 'satisfied' | 'failed' | 'unknown' | 'skipped';
+  detail: string;
+}
+
+export interface RunbookApplicability {
+  runbook_id: string;
+  runbook_version: number;
+  status: RunbookApplicabilityStatus;
+  reasons: string[];
+  blocking_reasons: string[];
+  warnings: string[];
+  facets: RunbookFacetResult[];
+  prerequisites: RunbookPrerequisiteResult[];
+}
+
+// The §4 candidate contract, plus the arithmetic and the refusal reasons.
+export interface RunbookCandidate {
+  runbook_id: string;
+  version: number;
+  title: string;
+  service: string;
+  status: RunbookLifecycleStatus;
+  match_score: number;
+  match_reasons: string[];
+  applicability_status: RunbookApplicabilityStatus;
+  risk_level: RunbookRiskLevel;
+  rollback_available: boolean;
+  hitl_required: boolean;
+  missing_prerequisites: string[];
+  warnings: string[];
+  blocking_reasons: string[];
+  specificity: number;
+  steps_total: number;
+  mutating_steps: number;
+  score_components: RunbookScoreComponent[];
+  validation_errors: string[];
+  applicability: RunbookApplicability | null;
+  // The top-ranked APPLICABLE candidate, set on at most one entry in the list —
+  // advisory only, never an auto-selection. True even when `decision` is
+  // 'CANDIDATES' (several applicable): the executor still has an opinion on which
+  // one best fits the failure, it just will not act on it without the SRE.
+  recommended: boolean;
+}
+
+// POST /api/runbook-executor/candidates
+export interface RunbookCandidatesResponse {
+  decision: RunbookDiscoveryDecision;
+  reason: string;
+  auto_selected: string | null;
+  incident: Record<string, unknown>;
+  candidates: RunbookCandidate[];
+  ui_state: RunbookUiState;
+}
+
+// One step of the dry run (§16).
+export interface RunbookDryRunStep {
+  step_id: string;
+  index: number;
+  action_id: string;
+  action_title: string;
+  target: string;
+  namespace: string;
+  parameters: Record<string, unknown>;
+  capability: string;
+  mutation: boolean;
+  destructive: boolean;
+  risk_level: RunbookRiskLevel;
+  autonomy_level: number;
+  rollback_available: boolean;
+  // 'action' = an explicit rollback step, 'baseline' = the action restores the
+  // declared default, 'not_needed' = read-only, 'none' = irreversible.
+  rollback_kind: 'action' | 'baseline' | 'not_needed' | 'none';
+  rollback_action: string | null;
+  retry_safe: boolean;
+  expected_impact: string;
+  risk_factors: string[];
+  simulation: SimulationDetail | null;
+  simulate_raw: Record<string, unknown> | null;
+  simulated_ok: boolean;
+  warnings: string[];
+  errors: string[];
+}
+
+// §17's structured dry-run result. BLOCKED means execution is not offered.
+export interface RunbookDryRun {
+  status: 'READY' | 'BLOCKED';
+  runbook_id: string;
+  runbook_version: number;
+  runbook_title: string;
+  service: string;
+  incident_id: string;
+  plan_hash: string;
+  steps: RunbookDryRunStep[];
+  risk_level: RunbookRiskLevel;
+  hitl_required: boolean;
+  rollback_available: boolean;
+  production_mutation: boolean;
+  blocking_reasons: string[];
+  warnings: string[];
+  risk_factors: string[];
+  applicability_status: RunbookApplicabilityStatus;
+  applicability: RunbookApplicability | null;
+  expected_impact: string;
+}
+
+// POST /api/runbook-executor/plan
+export interface RunbookPlanResponse {
+  decision: RunbookDiscoveryDecision;
+  reason: string;
+  ui_state: RunbookUiState;
+  selected_runbook_id: string | null;
+  selected_runbook_version: number | null;
+  selected_by: string;
+  execution_id: string | null;
+  execution_state: RunbookExecutionState | null;
+  already_executed: boolean;
+  blocking_reasons: string[];
+  warnings: string[];
+  candidates: RunbookCandidate[];
+  dry_run: RunbookDryRun | null;
+  incident: Record<string, unknown>;
+}
+
+// What the executor did, for the Resolution Verifier (§29). No verdict field —
+// whether the incident recovered is the verifier's answer, not the executor's.
+export interface RunbookVerificationHandoff {
+  execution_id: string;
+  incident_id: string;
+  service: string;
+  runbook_id: string;
+  runbook_version: number;
+  status: string;
+  steps: Record<string, unknown>[];
+  actions_executed: Record<string, unknown>[];
+  rollback_status: string;
+  completed_at: string | null;
+  audit_metadata: Record<string, unknown>;
+}
+
+// §27's result contract.
+export interface RunbookExecutorResult {
+  status: RunbookExecutorStatus;
+  next_action: RunbookNextAction;
+  reason: string;
+  runbook_id: string | null;
+  runbook_version: number | null;
+  execution_id: string | null;
+  execution_state: RunbookExecutionState | null;
+  ui_state: RunbookUiState;
+  risk_level: RunbookRiskLevel | null;
+  hitl_required: boolean;
+  approval_id: string | null;
+  steps: RunbookStepRecord[];
+  candidates: RunbookCandidate[];
+  blocking_reasons: string[];
+  warnings: string[];
+  rollback_status: string;
+  dry_run: RunbookDryRun | null;
+  verification_handoff: RunbookVerificationHandoff | null;
+  duplicate_of: string | null;
+  // Flattened from the legacy RunbookExecution by to_api_dict().
+  steps_total?: number;
+  steps_executed?: number;
+  destructive_steps?: number;
+  legacy?: RunbookOutcome;
+}
+
+// One persisted execution (GET /api/runbook-executor/executions[/{id}]).
+export interface RunbookExecutionRecord {
+  execution_id: string;
+  idempotency_key: string;
+  incident_id: string;
+  runbook_id: string;
+  runbook_version: number;
+  plan_hash: string;
+  service: string;
+  environment: string;
+  state: RunbookExecutionState;
+  status: string;
+  next_action: string;
+  risk_level: string;
+  hitl_required: boolean;
+  approval_id: string | null;
+  approver: string | null;
+  selected_by: string;
+  selection_reason: string;
+  match_score: number | null;
+  candidates: RunbookCandidate[];
+  dry_run: RunbookDryRun | Record<string, never>;
+  steps: RunbookStepRecord[];
+  audit_events: AuditEvent[];
+  rollback_status: string;
+  reason: string;
+  error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  // Added by the API on top of the row.
+  ui_state: RunbookUiState;
+  verification_status: string;
+  is_terminal: boolean;
+}
+
+// POST /api/runbook-executor/execute
+export interface RunbookExecuteResponse {
+  accepted: boolean;
+  duplicate: boolean;
+  decision?: RunbookDiscoveryDecision;
+  reason?: string;
+  ui_state?: RunbookUiState;
+  blocking_reasons?: string[];
+  candidates?: RunbookCandidate[];
+  dry_run?: RunbookDryRun | null;
+  // Present when the run was accepted.
+  execution_id?: string;
+  approval_id?: string | null;
+  hitl_required?: boolean;
+  risk_level?: RunbookRiskLevel | null;
+  result?: RunbookExecutorResult;
+  execution?: RunbookExecutionRecord | null;
+}
+
+export interface RunbookExecutionsResponse {
+  count: number;
+  executions: RunbookExecutionRecord[];
+}
+
+// The incident facts the API needs to match a runbook. Anything omitted reads as
+// "unknown" on the backend, which warns rather than guessing.
+export interface RunbookIncidentPayload {
+  incident_id?: string;
+  service: string;
+  severity?: string | null;
+  alert_name?: string;
+  summary?: string;
+  tags?: string[];
+  environment?: string;
+  failure_category?: string;
+  incident_type?: string;
+  observed_signals?: string[];
+  incident_status?: string;
+  detected_at?: string;
+  probe_alert?: boolean;
 }
 
 // ─── Remediation Recommender (PRS-001) ──────────────────────────────────────

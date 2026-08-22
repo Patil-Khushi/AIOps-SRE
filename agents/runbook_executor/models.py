@@ -8,6 +8,7 @@ declared outputs: *execution log, resolution status, rollback artifacts*).
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -21,6 +22,72 @@ ResolutionStatus = Literal["resolved", "rolled_back", "denied", "failed", "no_ru
 
 # Per-step execution outcome (the destructive path can be blocked at the gate).
 StepStatus = Literal["executed", "denied", "failed", "rolled_back", "skipped"]
+
+
+class RunbookStatus(StrEnum):
+    """Review/publication lifecycle of an *executable* runbook.
+
+    Only ``ACTIVE`` — and only with a recorded ``approved_by`` — may execute. Every
+    other value is a refusal, including ``APPROVED``: approval says a human signed
+    off on the content, activation says this is the version the executor should
+    reach for, and a superseded-but-approved version must not run.
+
+    Distinct from ``aiops.runbooks.models.ReviewStatus``, which is the *descriptive*
+    library's lifecycle (draft → pending_review → published → rejected) for prose
+    runbooks the Knowledge Synthesizer writes. That library has no executable steps,
+    so the two vocabularies stay separate rather than one being widened to serve both.
+    """
+
+    DRAFT = "draft"
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    ARCHIVED = "archived"
+    REJECTED = "rejected"
+
+
+class Prerequisite(BaseModel):
+    """One precondition a runbook declares before it may be executed.
+
+    ``check`` names *how* the platform evaluates it, from a closed vocabulary the
+    evaluator understands (``agents/runbook_executor/applicability.py``). It is a
+    plain ``str`` rather than a ``Literal`` on purpose: an unrecognised check must
+    degrade to UNKNOWN (which blocks a mandatory prerequisite) instead of making the
+    whole runbook unparseable and therefore invisible.
+
+    ``mandatory=True`` is the default — a prerequisite whose author forgot to say
+    how important it is gates execution rather than being waved through.
+    """
+
+    id: str
+    description: str = ""
+    mandatory: bool = True
+    check: str = "manual"
+    # For ``check="signal_present"``: the signal token that must be observed.
+    signal: str = ""
+
+
+class ApplicabilityScope(BaseModel):
+    """What incident this runbook is *declared* to handle, and what it may touch.
+
+    Every list is "empty means unconstrained" — a runbook that names no environments
+    applies in any, and scores no environment points either way. The one field that
+    is never unconstrained by omission is ``allowed_services``: parameter validation
+    falls back to the runbook's own ``service`` when it is empty, so a step can never
+    reach a second service just because nobody wrote the allow-list (§12).
+    """
+
+    # Incident-side matching facets.
+    environments: list[str] = Field(default_factory=list)
+    failure_category: str = ""
+    alerts: list[str] = Field(default_factory=list)
+    incident_types: list[str] = Field(default_factory=list)
+    required_signals: list[str] = Field(default_factory=list)
+    severities: list[str] = Field(default_factory=list)
+    # Execution-side scope (consumed by actions.validate_params).
+    allowed_services: list[str] = Field(default_factory=list)
+    allowed_namespaces: list[str] = Field(default_factory=list)
 
 
 class Incident(BaseModel):
@@ -58,7 +125,13 @@ class RunbookStep(BaseModel):
 
 
 class StepRecord(BaseModel):
-    """Evidence captured for a single step across the phases it went through."""
+    """Evidence captured for a single step across the phases it went through.
+
+    The fields below ``status`` are the v0 shape and are unchanged. Everything after
+    the "execution detail" divider was added for the production upgrade (§21) and is
+    optional with an inert default, so a consumer written against the v0 shape — the
+    dashboard, the goldens, the audit tests — reads exactly what it read before.
+    """
 
     name: str
     action: str
@@ -78,6 +151,27 @@ class StepRecord(BaseModel):
     rolled_back: bool = False
     rollback: dict[str, Any] | None = None
     error: str | None = None
+
+    # ── execution detail (§21) ───────────────────────────────────────────────
+    # ``step_id`` duplicates ``name`` today (a step name is unique within a runbook
+    # version) and exists so a future stable id can be introduced without another
+    # contract change.
+    step_id: str = ""
+    action_id: str = ""
+    target: str = ""
+    namespace: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    capability: str = ""
+    attempts: int = 0
+    # The approval that authorized THIS step. A run with two destructive steps needs two
+    # approvals, so the run-level id is not enough to say what authorized what.
+    approval_id: str = ""
+    started_at: str | None = None
+    completed_at: str | None = None
+    duration_ms: float | None = None
+    # "not_required" | "rolled_back" | "rollback_failed" | "pending"
+    rollback_status: str = "not_required"
+    timed_out: bool = False
 
 
 class RunbookExecution(BaseModel):

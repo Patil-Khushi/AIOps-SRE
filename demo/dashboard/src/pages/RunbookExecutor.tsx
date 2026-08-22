@@ -1,4 +1,4 @@
-import { Fragment, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PlayCircle, RotateCcw, Search, FlaskConical, Cog, UserCheck, BadgeCheck, Undo2,
   CheckCircle2, XCircle, Loader2, ExternalLink, ShieldCheck, AlertTriangle, Clock,
@@ -12,15 +12,12 @@ import { useFetch } from '@/hooks/useFetch';
 import { api } from '@/lib/api';
 import { getAgentById } from '@/data/agentCatalog';
 import { clsx, timeAgo } from '@/lib/format';
+import { executionToOutcome, incidentPayload, nextActionLabel, planToRun } from '@/lib/runbookFlow';
 import type {
-  ApprovalRecord, AuditEvent, AuditEventType, PlannedStep, RunbookOutcome,
-  RunbookRunResponse, RunbookStepRecord, SimulationComparison, Severity, VerdictRecord,
+  ApprovalRecord, AuditEvent, AuditEventType, PlannedStep, RunbookCandidate,
+  RunbookIncidentPayload, RunbookOutcome, RunbookPlanResponse, RunbookRunResponse,
+  RunbookStepRecord, SimulationComparison, VerdictRecord,
 } from '@/types/api';
-
-// Triage emits 'Sev-2'; the runbook selector matches 'sev2'.
-function sevToken(sev: Severity): string {
-  return sev.replace('Sev-', 'sev');
-}
 
 // ─── the six workflow stages the agent moves through, in order ───────────────
 type StageState = 'pending' | 'active' | 'done' | 'failed' | 'skipped';
@@ -62,19 +59,31 @@ function computeStages(
   let hitl: StageState;
   if (noRunbook || !hasDestructive) hitl = 'skipped';
   else if (final === 'denied' || appr === 'denied' || appr === 'expired') hitl = 'failed';
-  else if (final === 'resolved' || final === 'rolled_back' || appr === 'approved') hitl = 'done';
+  else if (
+    final === 'resolved' ||
+    final === 'awaiting_verification' ||
+    final === 'rolled_back' ||
+    appr === 'approved'
+  )
+    hitl = 'done';
   else if (running) hitl = 'active';
   else hitl = 'pending';
   let verify: StageState;
   if (noRunbook) verify = 'skipped';
   else if (final === 'resolved') verify = 'done';
+  // Every step ran, but the executor does not decide recovery (§26) — the Verify
+  // stage stays 'active' (in progress) rather than 'done' until the Resolution
+  // Verifier actually answers. Showing "done" here is what used to tell the operator
+  // the incident was resolved before anyone had checked.
+  else if (final === 'awaiting_verification') verify = 'active';
   else if (final === 'denied') verify = 'skipped';
   else if (final === 'failed' || final === 'rolled_back') verify = 'failed';
   else if (run && hitl === 'done') verify = 'active';
   else verify = 'pending';
   let rollback: StageState;
   if (noRunbook) rollback = 'skipped';
-  else if (final === 'rolled_back' || final === 'resolved') rollback = 'done';
+  else if (final === 'rolled_back' || final === 'resolved' || final === 'awaiting_verification')
+    rollback = 'done';
   else if (final === 'failed') rollback = 'failed';
   else rollback = 'pending';
 
@@ -102,32 +111,58 @@ export default function RunbookExecutor() {
   const [approval, setApproval] = useState<ApprovalRecord | null>(null);
   const [runErr, setRunErr] = useState<string | null>(null);
 
-  const approvalId = run?.approval_id ?? null;
+  // The execution id doubles as the approval id: it is passed to the gate as
+  // `approval_id`, so /api/approvals/{id} resolves for the HITL stage.
+  const [executionId, setExecutionId] = useState<string | null>(null);
+  const [handoff, setHandoff] = useState<string>('');
+  const approvalId = executionId;
 
-  const start = useCallback(async (incident: VerdictRecord, runbookId?: string) => {
-    setActiveIncident(incident);
-    setPickerFor(null);
-    setDetailOpen(true);
-    setRunErr(null);
-    setOutcome(null);
-    setApproval(null);
-    setRun(null);
-    setPhase('running');
-    try {
-      const res = await api.runbookExecutorRun({
-        service: incident.affected_service,
-        severity: sevToken(incident.severity),
-        incident_id: incident.incident_id || `verdict-${incident.id}`,
-        summary: incident.alert_summary,
-        runbook_id: runbookId,
-      });
-      setRun(res);
-      if (res.status === 'no_runbook') setPhase('done');
-    } catch (e) {
-      setRunErr(e instanceof Error ? e.message : String(e));
-      setPhase('idle');
-    }
-  }, []);
+  // Execute an already-validated plan. The dry run happened in the picker; this only
+  // starts the run, and a gated one returns immediately with WAITING_APPROVAL while the
+  // server thread blocks at the platform HITL gate.
+  const start = useCallback(
+    async (incident: VerdictRecord, plan: RunbookPlanResponse, payload: RunbookIncidentPayload) => {
+      setActiveIncident(incident);
+      setPickerFor(null);
+      setDetailOpen(true);
+      setRunErr(null);
+      setOutcome(null);
+      setApproval(null);
+      setHandoff('');
+      setRun(planToRun(plan, payload));
+      setExecutionId(null);
+      setPhase('running');
+      try {
+        const res = await api.runbookExecute({
+          ...payload,
+          runbook_id: plan.selected_runbook_id ?? undefined,
+          selected_by: 'operator',
+        });
+        if (!res.accepted) {
+          // Refused, or collapsed onto an execution that already ran (§20).
+          setRunErr(res.reason || 'The executor refused this plan.');
+          if (res.execution) {
+            setExecutionId(res.execution.execution_id);
+            setOutcome(executionToOutcome(res.execution));
+            setHandoff(nextActionLabel(res.execution.status));
+          }
+          setPhase('done');
+          return;
+        }
+        const id = res.execution_id ?? res.result?.execution_id ?? null;
+        setExecutionId(id);
+        if (res.result) {
+          setOutcome(executionToOutcome(res.execution ?? ({} as never)));
+          setHandoff(nextActionLabel(res.result.status));
+          setPhase('done');
+        }
+      } catch (e) {
+        setRunErr(e instanceof Error ? e.message : String(e));
+        setPhase('idle');
+      }
+    },
+    [],
+  );
 
   const reset = useCallback(() => {
     setPhase('idle');
@@ -136,20 +171,50 @@ export default function RunbookExecutor() {
     setApproval(null);
     setRunErr(null);
     setActiveIncident(null);
+    setExecutionId(null);
+    setHandoff('');
   }, []);
 
   // Poll the outcome store (+ the approval record) while a gated run is live.
+  //
+  // "Terminal" for the EXECUTION is not the same as "nothing left to show": an
+  // EXECUTED run hands off to the Resolution Verifier (§26/§29), which runs its own
+  // stabilization windows (up to ~5 min, see agents/resolution_verifier/verifier.py)
+  // AFTER the execution row is already 'completed'. Stopping here on
+  // `record.is_terminal` alone would freeze the UI at "verifying…" forever, even
+  // though the real verdict is still coming — so polling continues past execution
+  // completion until the verdict lands, bounded so a disabled/unreachable verifier
+  // cannot poll indefinitely.
   const aliveRef = useRef(true);
+  const verifyDeadlineRef = useRef<number | null>(null);
   useEffect(() => {
     aliveRef.current = true;
+    verifyDeadlineRef.current = null;
     if (phase !== 'running' || !approvalId) return () => { aliveRef.current = false; };
     const tick = async () => {
       try {
-        const oc = await api.runbookOutcome(approvalId);
+        // The durable execution row, not an in-memory outcome store: a page reload
+        // mid-approval picks the run back up instead of losing it.
+        const record = await api.runbookExecution(approvalId);
         if (!aliveRef.current) return;
-        setOutcome(oc);
-        if (oc.status !== 'pending') { setPhase('done'); return; }
-      } catch { /* transient */ }
+        setOutcome(executionToOutcome(record));
+        if (record.is_terminal) {
+          const stillWaitingOnVerifier =
+            record.status === 'EXECUTED' && !record.verification_status;
+          if (stillWaitingOnVerifier) {
+            if (verifyDeadlineRef.current === null) {
+              verifyDeadlineRef.current = Date.now() + 6 * 60_000; // longest verifier window + buffer
+            } else if (Date.now() > verifyDeadlineRef.current) {
+              setHandoff('Execution completed — verification is taking longer than expected');
+              setPhase('done');
+            }
+            return; // keep polling — the verdict has not landed yet
+          }
+          setHandoff(nextActionLabel(record.status));
+          setPhase('done');
+          return;
+        }
+      } catch { /* the row may not be readable for an instant after creation */ }
       try {
         const ap = await api.getApproval(approvalId);
         if (aliveRef.current) setApproval(ap);
@@ -192,6 +257,7 @@ export default function RunbookExecutor() {
                 approval={approval}
                 phase={phase}
                 runErr={runErr}
+                handoff={handoff}
                 onReset={reset}
               />
             );
@@ -200,7 +266,7 @@ export default function RunbookExecutor() {
             return (
               <RunbookPicker
                 incident={v}
-                onRun={(rbId) => start(v, rbId)}
+                onExecute={(plan, payload) => start(v, plan, payload)}
                 onCancel={() => setPickerFor(null)}
               />
             );
@@ -217,13 +283,16 @@ export default function RunbookExecutor() {
 // The full execution view — rendered inline, indented directly beneath the
 // incident row it belongs to (so it's obvious which incident it's for).
 function RunDetail({
-  run, outcome, approval, phase, runErr, onReset,
+  run, outcome, approval, phase, runErr, handoff, onReset,
 }: {
   run: RunbookRunResponse | null;
   outcome: RunbookOutcome | null;
   approval: ApprovalRecord | null;
   phase: Phase;
   runErr: string | null;
+  // What the executor says happens next (§27). Never "resolved" — a completed
+  // execution is waiting on the Resolution Verifier, and this line says so.
+  handoff?: string;
   onReset: () => void;
 }) {
   const stages = computeStages(run, outcome, approval, phase);
@@ -244,6 +313,14 @@ function RunDetail({
       </div>
 
       {runErr && <ErrorState error={runErr} />}
+
+      {handoff && (
+        <p className="flex items-center gap-1.5 text-xs text-ink-600 dark:text-ink-300">
+          <Activity className="h-3.5 w-3.5 text-accent" />
+          {/* The executor never says "resolved" — recovery is the verifier's verdict. */}
+          {handoff}
+        </p>
+      )}
 
       {run && (
         <>
@@ -308,16 +385,23 @@ function PageHeader({ summary, phase, finalStatus }: { summary: string; phase: P
         <p className="mt-1 max-w-2xl text-sm text-ink-500 dark:text-ink-400">{summary}</p>
       </div>
       <div className="flex items-center gap-2">
+        {/* 'awaiting_verification' gets its own accent look — neither the green
+            "resolved" nor the amber "something needs attention" of the others. The
+            executor is done; the Resolution Verifier has not spoken yet (§26). */}
         <span className={clsx('chip',
-          phase === 'running' && '!border-accent/40 !text-accent',
+          (phase === 'running' || finalStatus === 'awaiting_verification') && '!border-accent/40 !text-accent',
           finalStatus === 'resolved' && '!border-ok/40 !text-ok',
           (finalStatus === 'failed' || finalStatus === 'no_runbook') && '!border-bad/40 !text-bad',
           (finalStatus === 'denied' || finalStatus === 'rolled_back') && '!border-warn/40 !text-warn',
         )}>
           <span className={clsx('h-1.5 w-1.5 rounded-full',
-            phase === 'running' ? 'bg-accent animate-pulse-slow'
+            phase === 'running' || finalStatus === 'awaiting_verification'
+              ? 'bg-accent animate-pulse-slow'
               : phase === 'done' ? (finalStatus === 'resolved' ? 'bg-ok' : 'bg-warn') : 'bg-ink-400')} />
-          {phase === 'idle' ? 'idle' : phase === 'running' ? 'running' : (finalStatus ?? 'done')}
+          {phase === 'idle' ? 'idle'
+            : phase === 'running' ? 'running'
+            : finalStatus === 'awaiting_verification' ? 'verifying…'
+            : (finalStatus ?? 'done')}
         </span>
       </div>
     </div>
@@ -469,123 +553,354 @@ function IncidentRow({ v, active, pickerOpen, running, executed, detailOpen, onT
   );
 }
 
-// ─── runbook picker: review steps + choose a runbook other than the match ──────
+// ─── candidates → dry run → approve: the production selection flow ────────────
+//
+// Replaces the v0 picker, which listed the library and let the operator run anything
+// in it. This asks the backend for *candidates*: each one arrives with a deterministic
+// match score, the reasons behind it, its risk, its lifecycle status and — when it is
+// not eligible — why. A candidate that is not APPLICABLE cannot be selected here, and
+// could not be planned even if it were: the backend re-validates the choice (§7).
 function RunbookPicker({
-  incident, onRun, onCancel,
+  incident, onExecute, onCancel,
 }: {
   incident: VerdictRecord;
-  onRun: (runbookId: string) => void;
+  onExecute: (plan: RunbookPlanResponse, payload: RunbookIncidentPayload) => void;
   onCancel: () => void;
 }) {
-  // Keyed per incident; fetches once and restores from cache on re-selection.
-  const lib = useFetch(
-    () =>
-      api.runbookExecutorRunbooks({
-        service: incident.affected_service,
-        severity: sevToken(incident.severity),
-        summary: incident.alert_summary,
-      }),
-    { cacheKey: `runbooks-${incident.id}` },
-  );
+  const payload = useMemo(() => incidentPayload(incident), [incident]);
+  const candidates = useFetch(() => api.runbookCandidates(payload), {
+    cacheKey: `runbook-candidates-${incident.id}`,
+  });
+
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [plan, setPlan] = useState<RunbookPlanResponse | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planErr, setPlanErr] = useState<string | null>(null);
 
-  const runbooks = lib.data?.runbooks ?? [];
-  // Default the selection to the recommended runbook once loaded.
-  const recommended = lib.data?.recommended ?? null;
-  const chosen = selected ?? recommended ?? (runbooks[0]?.id ?? null);
+  const items = candidates.data?.candidates ?? [];
+  const eligible = items.filter((c) => c.applicability_status === 'APPLICABLE');
+  const autoSelected = candidates.data?.auto_selected ?? null;
+  const chosen = selected ?? autoSelected ?? eligible[0]?.runbook_id ?? null;
+
+  const runDryRun = async () => {
+    if (!chosen) return;
+    setPlanning(true);
+    setPlanErr(null);
+    setPlan(null);
+    try {
+      setPlan(await api.runbookPlan({ ...payload, runbook_id: chosen, selected_by: 'operator' }));
+    } catch (e) {
+      setPlanErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPlanning(false);
+    }
+  };
 
   return (
     <div className="mt-1 space-y-3 border-l-2 border-accent/40 pl-4">
       <div className="flex items-center justify-between">
-        <span className="chip !border-accent/40 !text-accent font-mono">choose runbook</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="chip !border-accent/40 !text-accent font-mono">
+            {candidates.data?.decision ?? 'discovering runbooks'}
+          </span>
+          {candidates.data && (
+            <span className="text-[11px] text-ink-500 dark:text-ink-400">
+              {eligible.length} of {items.length} applicable
+            </span>
+          )}
+        </div>
         <button onClick={onCancel} className="btn !py-1 !text-xs">
           <XCircle className="h-3.5 w-3.5" /> Cancel
         </button>
       </div>
 
-      {lib.loading && !lib.data ? (
-        <LoadingState label="Loading runbooks…" />
-      ) : lib.error ? (
-        <ErrorState error={lib.error} />
-      ) : runbooks.length === 0 ? (
+      {candidates.loading && !candidates.data ? (
+        <LoadingState label="Finding candidate runbooks…" />
+      ) : candidates.error ? (
+        <ErrorState error={candidates.error} />
+      ) : items.length === 0 ? (
         <EmptyState
           icon={<Inbox className="h-7 w-7" />}
-          label="No runbooks in the library"
-          hint="The executor library has no runbooks to choose from."
+          label="No runbook covers this service"
+          hint={candidates.data?.reason ?? 'The incident routes to RCA instead.'}
         />
       ) : (
         <>
           <div className="space-y-2">
-            {runbooks.map((rb) => {
-              const isChosen = chosen === rb.id;
-              const isExpanded = expanded === rb.id;
-              const destructive = rb.steps.filter((s) => s.destructive).length;
-              return (
-                <div
-                  key={rb.id}
-                  className={clsx(
-                    'rounded-lg border p-3 transition-colors',
-                    isChosen ? 'border-accent bg-accent/5 ring-1 ring-accent/30' : 'border-ink-200 dark:border-ink-700',
-                  )}
-                >
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="radio"
-                      name={`rb-${incident.id}`}
-                      checked={isChosen}
-                      onChange={() => setSelected(rb.id)}
-                      className="mt-1 accent-accent"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setSelected(rb.id)}
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold text-ink-900 dark:text-ink-50">{rb.title}</span>
-                        {rb.recommended && <span className="chip !border-ok/40 !text-ok">recommended</span>}
-                        {rb.matches_service && !rb.recommended && <span className="chip !border-accent/40 !text-accent">service match</span>}
-                      </div>
-                      <p className="mt-0.5 font-mono text-[10px] text-ink-500 dark:text-ink-400">
-                        {rb.id} · {rb.steps.length} step{rb.steps.length === 1 ? '' : 's'}
-                        {destructive > 0 && <> · {destructive} destructive</>}
-                        {' · '}service {rb.service}
-                      </p>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setExpanded(isExpanded ? null : rb.id)}
-                      className="btn !py-1 !text-xs flex-shrink-0"
-                    >
-                      {isExpanded ? 'Hide steps' : 'Review steps'}
-                    </button>
-                  </div>
-                  {isExpanded && (
-                    <ol className="mt-2 space-y-1 border-l border-ink-200 pl-3 dark:border-ink-700">
-                      {rb.steps.map((s, i) => (
-                        <li key={s.name} className="flex flex-wrap items-center gap-2 text-xs">
-                          <span className="font-mono text-ink-400">{i + 1}.</span>
-                          <span className="font-semibold text-ink-800 dark:text-ink-100">{s.name}</span>
-                          <span className="font-mono text-[10px] text-ink-500 dark:text-ink-400">{s.action}</span>
-                          {s.destructive && <span className="chip !border-bad/40 !text-bad !text-[10px]">destructive</span>}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              );
-            })}
+            {items.map((c) => (
+              <CandidateCard
+                key={c.runbook_id}
+                candidate={c}
+                incidentId={incident.id}
+                chosen={chosen === c.runbook_id}
+                recommended={c.recommended}
+                autoSelectable={autoSelected === c.runbook_id}
+                expanded={expanded === c.runbook_id}
+                onSelect={() => { setSelected(c.runbook_id); setPlan(null); }}
+                onToggle={() => setExpanded(expanded === c.runbook_id ? null : c.runbook_id)}
+              />
+            ))}
           </div>
-          <button
-            onClick={() => chosen && onRun(chosen)}
-            disabled={!chosen}
-            className="btn btn-primary !py-1 !text-xs"
-          >
-            <PlayCircle className="h-3.5 w-3.5" /> Run runbook
-          </button>
+
+          {!plan ? (
+            <button
+              onClick={runDryRun}
+              disabled={!chosen || planning}
+              className="btn btn-primary !py-1 !text-xs"
+            >
+              <Search className="h-3.5 w-3.5" /> {planning ? 'Validating…' : 'Validate & dry run'}
+            </button>
+          ) : (
+            <DryRunGate
+              plan={plan}
+              onCancel={() => setPlan(null)}
+              onApprove={() => onExecute(plan, payload)}
+            />
+          )}
+          {planErr && <p className="text-xs text-bad">{planErr}</p>}
         </>
       )}
+    </div>
+  );
+}
+
+const RISK_TONE: Record<string, string> = {
+  LOW: '!border-ok/40 !text-ok',
+  MEDIUM: '!border-warn/40 !text-warn',
+  HIGH: '!border-bad/40 !text-bad',
+  CRITICAL: '!border-bad !text-bad',
+};
+
+// One candidate: score, why it matched, risk, and — when refused — why not.
+function CandidateCard({
+  candidate, incidentId, chosen, recommended, autoSelectable, expanded, onSelect, onToggle,
+}: {
+  candidate: RunbookCandidate;
+  incidentId: number;
+  chosen: boolean;
+  // The executor's best-match suggestion (§6's "still say which one fits best"),
+  // shown even when several candidates are applicable and an SRE must choose.
+  recommended: boolean;
+  // True only in the true CASE 1 sense: exactly one applicable candidate, so the
+  // executor itself may act without a human picking. Distinct from `recommended`,
+  // which is advisory on every CANDIDATES list too — conflating the two would show
+  // "auto-selectable" on a runbook the SRE still has to click.
+  autoSelectable: boolean;
+  expanded: boolean;
+  onSelect: () => void;
+  onToggle: () => void;
+}) {
+  const selectable = candidate.applicability_status === 'APPLICABLE';
+  return (
+    <div
+      className={clsx(
+        'rounded-lg border p-3 transition-colors',
+        chosen && selectable
+          ? 'border-accent bg-accent/5 ring-1 ring-accent/30'
+          : 'border-ink-200 dark:border-ink-700',
+        !selectable && 'opacity-70',
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <input
+          type="radio"
+          name={`rb-${incidentId}`}
+          checked={chosen && selectable}
+          disabled={!selectable}
+          onChange={onSelect}
+          className="mt-1 accent-accent"
+          // A non-applicable runbook is shown (so the refusal is visible) but cannot
+          // be chosen — human selection picks among *eligible* procedures.
+          title={selectable ? 'Select this runbook' : 'Not eligible for this incident'}
+        />
+        <button
+          type="button"
+          onClick={selectable ? onSelect : undefined}
+          className="min-w-0 flex-1 text-left"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-ink-900 dark:text-ink-50">
+              {candidate.title}
+            </span>
+            <span className="chip !border-accent/40 !text-accent">
+              match {Math.round(candidate.match_score * 100)}%
+            </span>
+            <span className={clsx('chip', RISK_TONE[candidate.risk_level] ?? '')}>
+              risk {candidate.risk_level}
+            </span>
+            <span className="chip font-mono !text-[10px]">{candidate.status}</span>
+            {autoSelectable && (
+              <span className="chip !border-ok/40 !text-ok">auto-selectable</span>
+            )}
+            {recommended && !autoSelectable && (
+              <span className="chip !border-accent/40 !text-accent">best match</span>
+            )}
+            {!selectable && (
+              <span className="chip !border-bad/40 !text-bad">
+                {candidate.applicability_status}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 font-mono text-[10px] text-ink-500 dark:text-ink-400">
+            {candidate.runbook_id}-v{candidate.version} · {candidate.steps_total} step
+            {candidate.steps_total === 1 ? '' : 's'} · {candidate.mutating_steps} mutating ·
+            rollback {candidate.rollback_available ? 'available' : 'none'} ·
+            HITL {candidate.hitl_required ? 'required' : 'not required'}
+          </p>
+        </button>
+        <button type="button" onClick={onToggle} className="btn !py-1 !text-xs flex-shrink-0">
+          {expanded ? 'Hide why' : 'Why this matches'}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="mt-2 space-y-2 border-l border-ink-200 pl-3 dark:border-ink-700">
+          <ul className="space-y-1">
+            {candidate.match_reasons.map((reason) => (
+              <li key={reason} className="flex items-start gap-1.5 text-xs text-ink-700 dark:text-ink-200">
+                <CheckCircle2 className="mt-0.5 h-3 w-3 flex-shrink-0 text-ok" />
+                <span>{reason}</span>
+              </li>
+            ))}
+          </ul>
+          {candidate.blocking_reasons.length > 0 && (
+            <ul className="space-y-1">
+              {candidate.blocking_reasons.map((reason) => (
+                <li key={reason} className="flex items-start gap-1.5 text-xs text-bad">
+                  <XCircle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                  <span>{reason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {candidate.warnings.length > 0 && (
+            <ul className="space-y-1">
+              {candidate.warnings.map((warning) => (
+                <li key={warning} className="flex items-start gap-1.5 text-xs text-warn">
+                  <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                  <span>{warning}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {candidate.missing_prerequisites.length > 0 && (
+            <p className="font-mono text-[10px] text-ink-500 dark:text-ink-400">
+              unmet prerequisites: {candidate.missing_prerequisites.join(', ')}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The gate between "this is the procedure" and "run it". A BLOCKED dry run offers no
+// approve button at all — there is no path from blocked to executed.
+function DryRunGate({
+  plan, onApprove, onCancel,
+}: {
+  plan: RunbookPlanResponse;
+  onApprove: () => void;
+  onCancel: () => void;
+}) {
+  const dry = plan.dry_run;
+  if (!dry) {
+    return (
+      <div className="rounded-lg border border-bad/40 bg-bad/5 p-3">
+        <p className="text-xs text-bad">{plan.reason || 'This runbook cannot be planned.'}</p>
+        {plan.blocking_reasons.map((r) => (
+          <p key={r} className="mt-1 text-xs text-bad">· {r}</p>
+        ))}
+      </div>
+    );
+  }
+  const blocked = dry.status === 'BLOCKED';
+  return (
+    <div
+      className={clsx(
+        'rounded-lg border p-3',
+        blocked ? 'border-bad/40 bg-bad/5' : 'border-accent/40 bg-accent/5',
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="chip font-mono !border-accent/40 !text-accent">dry run</span>
+        <span className={clsx('chip', blocked ? '!border-bad/40 !text-bad' : '!border-ok/40 !text-ok')}>
+          {dry.status}
+        </span>
+        <span className="font-mono text-[10px] text-ink-500 dark:text-ink-400">
+          {dry.runbook_id}-v{dry.runbook_version}
+        </span>
+      </div>
+
+      <ol className="mt-2 space-y-1">
+        {dry.steps.map((step) => (
+          <li key={step.step_id} className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-mono text-ink-400">{step.index}.</span>
+            <span className="font-semibold text-ink-800 dark:text-ink-100">{step.action_title}</span>
+            <span className="font-mono text-[10px] text-ink-500 dark:text-ink-400">{step.target}</span>
+            <span className={clsx('chip !text-[10px]', RISK_TONE[step.risk_level] ?? '')}>
+              {step.risk_level}
+            </span>
+            {step.mutation ? (
+              <span className="chip !border-warn/40 !text-warn !text-[10px]">mutates</span>
+            ) : (
+              <span className="chip !text-[10px]">read-only</span>
+            )}
+            {step.mutation && (
+              <span className="chip !text-[10px]">
+                rollback: {step.rollback_kind === 'action'
+                  ? step.rollback_action
+                  : step.rollback_kind.replace('_', ' ')}
+              </span>
+            )}
+            {step.errors.map((e) => (
+              <span key={e} className="text-[10px] text-bad">{e}</span>
+            ))}
+          </li>
+        ))}
+      </ol>
+
+      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+        <div><dt className="text-ink-500 dark:text-ink-400">Overall risk</dt>
+          <dd className="font-semibold">{dry.risk_level}</dd></div>
+        <div><dt className="text-ink-500 dark:text-ink-400">Production mutation</dt>
+          <dd className="font-semibold">{dry.production_mutation ? 'YES' : 'NO'}</dd></div>
+        <div><dt className="text-ink-500 dark:text-ink-400">Rollback</dt>
+          <dd className="font-semibold">{dry.rollback_available ? 'AVAILABLE' : 'NOT AVAILABLE'}</dd></div>
+        <div><dt className="text-ink-500 dark:text-ink-400">HITL</dt>
+          <dd className="font-semibold">{dry.hitl_required ? 'REQUIRED' : 'NOT REQUIRED'}</dd></div>
+      </dl>
+
+      {dry.expected_impact && (
+        <p className="mt-2 text-xs text-ink-600 dark:text-ink-300">
+          <span className="text-ink-500 dark:text-ink-400">Expected impact: </span>
+          {dry.expected_impact}
+        </p>
+      )}
+
+      {blocked && dry.blocking_reasons.map((r) => (
+        <p key={r} className="mt-1 text-xs text-bad">· {r}</p>
+      ))}
+      {plan.already_executed && (
+        <p className="mt-1 text-xs text-warn">
+          · This exact plan has already been executed for this incident ({plan.execution_id}).
+        </p>
+      )}
+
+      <div className="mt-3 flex gap-2">
+        <button onClick={onCancel} className="btn !py-1 !text-xs">
+          <XCircle className="h-3.5 w-3.5" /> Cancel
+        </button>
+        <button
+          onClick={onApprove}
+          disabled={blocked || plan.already_executed}
+          className="btn btn-primary !py-1 !text-xs"
+        >
+          <PlayCircle className="h-3.5 w-3.5" />
+          {dry.hitl_required ? 'Approve & execute' : 'Execute'}
+        </button>
+      </div>
     </div>
   );
 }

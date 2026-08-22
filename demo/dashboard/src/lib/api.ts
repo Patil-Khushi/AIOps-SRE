@@ -14,8 +14,14 @@ import type {
   PrometheusAlert,
   RCAVerdict,
   RemediationOption,
+  RunbookCandidatesResponse,
+  RunbookExecuteResponse,
+  RunbookExecutionRecord,
+  RunbookExecutionsResponse,
+  RunbookIncidentPayload,
   RunbookLibraryResponse,
   RunbookOutcome,
+  RunbookPlanResponse,
   RunbookRunResponse,
   ScenariosResponse,
   VerdictsResponse,
@@ -347,6 +353,43 @@ export const api = {
   // Read one approval (PENDING → APPROVED/DENIED), to drive the HITL stage.
   getApproval: (approvalId: string) =>
     unwrap<ApprovalRecord>(http.get(`/api/approvals/${approvalId}`)),
+
+  // ─── Runbook Executor: production flow (RA-004) ────────────────────────────
+  // candidates → plan (dry run) → execute → poll the execution. Distinct from
+  // runbookExecutorRun above, which is the original one-shot demo route.
+  runbookCandidates: (incident: RunbookIncidentPayload) =>
+    unwrap<RunbookCandidatesResponse>(http.post('/api/runbook-executor/candidates', incident)),
+  // Re-validates the SRE's choice and dry-runs it. Reserves an execution only when
+  // the dry run is READY — a BLOCKED plan cannot be executed.
+  runbookPlan: (incident: RunbookIncidentPayload & { runbook_id?: string; selected_by?: string }) =>
+    unwrap<RunbookPlanResponse>(http.post('/api/runbook-executor/plan', incident)),
+  // Executes once. A gated plan returns WAITING_APPROVAL immediately and runs on a
+  // server pool thread; poll runbookExecution for progress. Re-sending the same body
+  // returns the existing execution instead of running it again.
+  runbookExecute: (
+    incident: RunbookIncidentPayload & {
+      runbook_id?: string;
+      selected_by?: string;
+      approver?: string;
+      approval_timeout_seconds?: number;
+      synchronous?: boolean;
+      alert_signature?: string;
+      metric_query?: string;
+      health_query?: string;
+      threshold?: number | null;
+    },
+  ) => unwrap<RunbookExecuteResponse>(http.post('/api/runbook-executor/execute', incident)),
+  runbookExecution: (executionId: string) =>
+    unwrap<RunbookExecutionRecord>(http.get(`/api/runbook-executor/executions/${executionId}`)),
+  runbookExecutions: (params?: {
+    incident_id?: string;
+    service?: string;
+    runbook_id?: string;
+    state?: string;
+    limit?: number;
+  }) => unwrap<RunbookExecutionsResponse>(http.get('/api/runbook-executor/executions', { params })),
+  runbookExecutorMetrics: () =>
+    unwrap<Record<string, unknown>>(http.get('/api/runbook-executor/metrics')),
 
   // ─── Knowledge Synthesizer (PRS-007) ──────────────────────────────────────
   // Synthesize a resolved-incident bundle → postmortem + runbook + KB draft.

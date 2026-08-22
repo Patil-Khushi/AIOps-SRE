@@ -2,12 +2,54 @@
 title: payment-service — Redis unavailable
 service: payment-service
 severity: sev1
+version: 1
+status: active
+owner: sre-platform
+approved_by: aiops-sre-review
 tags:
 - cache
 - redis
 - dependency
 - 5xx
 - payments
+applicability:
+  environments:
+  - demo
+  - production
+  failure_category: dependency_unavailable
+  alerts:
+  - EcommerceRedisDown
+  required_signals:
+  - dependency_unavailable
+  - error_rate_high
+  allowed_services:
+  - payment-service
+  - redis
+  allowed_namespaces:
+  - ecommerce
+prerequisites:
+- id: incident_active
+  description: The incident is still open and within the configured max age.
+  mandatory: true
+  check: incident_active
+- id: target_in_scope
+  description: Every step targets a service/namespace this runbook declares.
+  mandatory: true
+  check: service_scope
+- id: alert_firing
+  description: EcommerceRedisDown is still firing (advisory — skipped when Prometheus is unreachable).
+  mandatory: false
+  check: alert_firing
+- id: signal_dependency_unavailable
+  description: The dependency_unavailable signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: dependency_unavailable
+- id: signal_error_rate_high
+  description: The error_rate_high signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: error_rate_high
 steps:
 - name: clear-injected-fault
   action: clear_fault

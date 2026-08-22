@@ -25,7 +25,13 @@ import pytest
 
 # Side-effect import: registers the mock automation.runbook.* providers.
 import aiops.tools.mock_providers  # noqa: F401
-from agents.runbook_executor import ExecutableRunbook, Incident, RunbookStep, run_plan
+from agents.runbook_executor import (
+    ExecutableRunbook,
+    Incident,
+    RunbookStatus,
+    RunbookStep,
+    run_plan,
+)
 from aiops.policy import ApproverResult, get_gate
 from aiops.tools import ToolResult, get_registry
 from aiops.tools.registry import Tool
@@ -95,6 +101,8 @@ def _clear_fault_runbook(target: str = f"fault/{FAULT_KEY}") -> ExecutableRunboo
         service="order-service",
         severity="sev1",
         tags=["test"],
+        status=RunbookStatus.ACTIVE,
+        approved_by="test",
         steps=[
             RunbookStep(
                 name="clear-injected-fault",

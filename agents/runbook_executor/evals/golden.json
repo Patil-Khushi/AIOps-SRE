@@ -1,7 +1,7 @@
 {
   "agent": "RA-004",
-  "version": "v1",
-  "description": "Golden fixtures for the Runbook Executor. The eval path runs with skip_approval=True (no approver), so destructive steps deterministically resolve to 'denied' at the HITL gate while non-destructive steps execute autonomously. Cases assert selection + the resolution status + step accounting, not exact LLM strings (RA-004 uses no LLM). Retargeted from the OTel Demo services (payment/cart/checkout) to the ecommerce SUT when those runbooks were deleted in the migration.",
+  "version": "v2",
+  "description": "Golden fixtures for the Runbook Executor. Two halves are scored from one run: the legacy execution path (skip_approval=True, so destructive steps deterministically resolve to 'denied' at the HITL gate while non-destructive steps execute) and the read-only discovery pass that produces the candidate list and the routing decision. The five original cases are unchanged; the cases below cover the decision rules (AUTO_SELECT / CANDIDATES / NO_RUNBOOK / AMBIGUOUS / NOT_APPLICABLE) and the explainability of the score. RA-004 uses no LLM, so every expectation is exact.",
   "cases": [
     {
       "id": "payment_generic_restart_selects_and_gates",
@@ -10,7 +10,10 @@
         "incident_id": "INC-2001",
         "service": "payment-service",
         "severity": "sev3",
-        "tags": ["restart", "generic"]
+        "tags": [
+          "restart",
+          "generic"
+        ]
       },
       "expected": {
         "selected_runbook": "payment-service-restart",
@@ -28,7 +31,9 @@
         "incident_id": "INC-2002",
         "service": "paymentservice",
         "severity": "Sev-3",
-        "tags": ["restart"]
+        "tags": [
+          "restart"
+        ]
       },
       "expected": {
         "selected_runbook": "payment-service-restart",
@@ -42,7 +47,10 @@
         "incident_id": "INC-2003",
         "service": "order-service",
         "severity": "sev1",
-        "tags": ["memory", "oom"]
+        "tags": [
+          "memory",
+          "oom"
+        ]
       },
       "expected": {
         "selected_runbook": "order-service-memory-leak",
@@ -59,7 +67,10 @@
         "incident_id": "INC-2004",
         "service": "user-service",
         "severity": "sev1",
-        "tags": ["database", "mysql"]
+        "tags": [
+          "database",
+          "mysql"
+        ]
       },
       "expected": {
         "selected_runbook": "user-service-mysql-down",
@@ -75,12 +86,177 @@
         "incident_id": "INC-2005",
         "service": "telemetry-aggregator",
         "severity": "sev2",
-        "tags": ["lag"]
+        "tags": [
+          "lag"
+        ]
       },
       "expected": {
         "selected_runbook": null,
         "status": "no_runbook",
         "steps_total": 0
+      }
+    },
+    {
+      "id": "rich_context_returns_multiple_ranked_candidates",
+      "description": "The §4 example: order-service / EcommerceOrderErrorRateHigh / SEV-2 with an error-rate signal. The specific HTTP-500 runbook and the generic restart are both applicable, so the executor returns candidates for an SRE to choose instead of auto-selecting, and the specific one ranks first.",
+      "input": {
+        "incident_id": "INC-3001",
+        "service": "order-service",
+        "severity": "Sev-2",
+        "environment": "production",
+        "alert_name": "EcommerceOrderErrorRateHigh",
+        "failure_category": "application_error",
+        "observed_signals": [
+          "error_rate_high"
+        ],
+        "incident_status": "active",
+        "tags": [
+          "error",
+          "5xx"
+        ]
+      },
+      "expected": {
+        "decision": "CANDIDATES",
+        "applicable_count": 2,
+        "top_candidate": "order-service-http-500",
+        "min_top_match_score": 0.9,
+        "top_risk_level": "MEDIUM",
+        "top_rollback_available": true,
+        "executor_status": "AMBIGUOUS",
+        "next_action": "RCA",
+        "top_match_reasons_text_contains_any": [
+          "failure category",
+          "alert",
+          "required signals"
+        ]
+      }
+    },
+    {
+      "id": "wrong_category_eliminates_the_specific_runbook",
+      "description": "A memory-saturation incident on order-service: the HTTP-500 runbook is contradicted by the failure category and drops to NOT_APPLICABLE. What survives is every runbook that genuinely could explain memory pressure on this service — the application heap leak, the two external-pressure runbooks (release-only and release-then-recycle), and the always-applicable generic restart. That is four applicable candidates, so the SRE chooses (§6 CASE 2), and the executor reports AMBIGUOUS rather than guessing. The point of the case: working-set-over-limit cannot tell you WHOSE memory it is, so the library deliberately offers all the plausible causes instead of auto-picking one. No exact top_candidate is asserted — the three specific runbooks tie on score and specificity, so first place is decided by the id tie-break, and pinning it would test alphabetical ordering rather than matching.",
+      "input": {
+        "incident_id": "INC-3002",
+        "service": "order-service",
+        "severity": "Sev-1",
+        "environment": "production",
+        "alert_name": "EcommerceOrderServiceMemoryHigh",
+        "failure_category": "resource_saturation_memory",
+        "observed_signals": [
+          "memory_saturation",
+          "pod_restarting"
+        ],
+        "incident_status": "active",
+        "tags": [
+          "memory",
+          "oom"
+        ]
+      },
+      "expected": {
+        "decision": "CANDIDATES",
+        "applicable_count": 4,
+        "applicable_candidates": [
+          "order-service-memory-exhaust",
+          "order-service-memory-exhaust-recycle",
+          "order-service-memory-leak",
+          "order-service-restart"
+        ],
+        "min_top_match_score": 0.9,
+        "executor_status": "AMBIGUOUS",
+        "next_action": "RCA",
+        "min_not_applicable_count": 1
+      }
+    },
+    {
+      "id": "closed_incident_is_blocked_not_executed",
+      "description": "§24: a resolved incident blocks the mandatory incident_active prerequisite, so the matching runbook is refused rather than run.",
+      "input": {
+        "incident_id": "INC-3003",
+        "service": "order-service",
+        "severity": "Sev-2",
+        "environment": "production",
+        "alert_name": "EcommerceOrderErrorRateHigh",
+        "failure_category": "application_error",
+        "observed_signals": [
+          "error_rate_high"
+        ],
+        "incident_status": "resolved",
+        "tags": [
+          "error"
+        ]
+      },
+      "expected": {
+        "decision": "BLOCKED",
+        "applicable_count": 0,
+        "top_candidate": null,
+        "executor_status": "BLOCKED",
+        "next_action": "RCA"
+      }
+    },
+    {
+      "id": "sparse_legacy_handoff_is_ambiguous_not_a_guess",
+      "description": "The legacy hand-off carries only service + tags, so the incident's lifecycle cannot be verified and applicability is undeterminable (§6 CASE 4). The executor reports AMBIGUOUS rather than picking a runbook off a keyword — the exact behaviour the v0 selector got wrong. The legacy half still runs and still reports 'denied' at the gate.",
+      "input": {
+        "incident_id": "INC-3004",
+        "service": "order-service",
+        "severity": "sev1",
+        "tags": [
+          "memory",
+          "oom"
+        ]
+      },
+      "expected": {
+        "decision": "AMBIGUOUS",
+        "applicable_count": 0,
+        "executor_status": "AMBIGUOUS",
+        "next_action": "RCA",
+        "status": "denied",
+        "selected_runbook": "order-service-memory-leak"
+      }
+    },
+    {
+      "id": "unknown_service_routes_to_rca",
+      "description": "§6 CASE 3 through the new contract: nothing covers the service, so the decision is NO_RUNBOOK and the incident routes to RCA.",
+      "input": {
+        "incident_id": "INC-3005",
+        "service": "telemetry-aggregator",
+        "severity": "Sev-2",
+        "environment": "production",
+        "incident_status": "active",
+        "tags": [
+          "lag"
+        ]
+      },
+      "expected": {
+        "decision": "NO_RUNBOOK",
+        "candidate_count": 0,
+        "executor_status": "NO_RUNBOOK",
+        "next_action": "RCA",
+        "status": "no_runbook"
+      }
+    },
+    {
+      "id": "environment_mismatch_is_not_applicable",
+      "description": "The shipped library declares demo + production. An incident in 'staging' contradicts every candidate, so nothing is applicable and nothing runs.",
+      "input": {
+        "incident_id": "INC-3006",
+        "service": "order-service",
+        "severity": "Sev-2",
+        "environment": "staging",
+        "alert_name": "EcommerceOrderErrorRateHigh",
+        "failure_category": "application_error",
+        "observed_signals": [
+          "error_rate_high"
+        ],
+        "incident_status": "active",
+        "tags": [
+          "error"
+        ]
+      },
+      "expected": {
+        "decision": "NOT_APPLICABLE",
+        "applicable_count": 0,
+        "executor_status": "NOT_APPLICABLE",
+        "next_action": "RCA"
       }
     }
   ]

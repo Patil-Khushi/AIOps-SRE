@@ -24,6 +24,7 @@ from agents.runbook_executor import (
     EventLog,
     ExecutableRunbook,
     Incident,
+    RunbookStatus,
     RunbookStep,
     execute_runbook,
     run_plan,
@@ -118,6 +119,8 @@ def _safe_runbook() -> ExecutableRunbook:
         id="rb-safe",
         title="Safe",
         service="order-service",
+        status=RunbookStatus.ACTIVE,
+        approved_by="test",
         steps=[
             RunbookStep(
                 name="snap",
@@ -142,6 +145,8 @@ def _destructive_pair() -> ExecutableRunbook:
         service="payment-service",
         severity="sev3",
         tags=["crash"],
+        status=RunbookStatus.ACTIVE,
+        approved_by="test",
         steps=[
             RunbookStep(
                 name="step-one",

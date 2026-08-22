@@ -2,10 +2,31 @@
 title: order-service — restart (generic recovery)
 service: order-service
 severity: sev3
+version: 1
+status: active
+owner: sre-platform
+approved_by: aiops-sre-review
 tags:
 - restart
 - generic
 - unknown
+applicability:
+  environments:
+  - demo
+  - production
+  allowed_services:
+  - order-service
+  allowed_namespaces:
+  - ecommerce
+prerequisites:
+- id: incident_active
+  description: The incident is still open and within the configured max age.
+  mandatory: true
+  check: incident_active
+- id: target_in_scope
+  description: Every step targets a service/namespace this runbook declares.
+  mandatory: true
+  check: service_scope
 steps:
 - name: drain-connections
   action: drain

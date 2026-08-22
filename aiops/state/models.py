@@ -549,6 +549,101 @@ class IncidentResolverRow(SQLModel, table=True):
     )
 
 
+class RunbookExecutionRow(SQLModel, table=True):
+    """One Runbook Executor (RA-004) execution, durably.
+
+    RA-004 v0 kept a run's outcome in a process dict in ``demo/ui/server.py``, so a
+    restart lost it and a retried request re-ran the production actions. This row is
+    what makes an execution an *object*: it survives the process, it is the answer to
+    "has this already run?", and it is the audit record of who chose the runbook, what
+    the dry run authorized, and what each step did.
+
+    ``idempotency_key`` is uniquely indexed and is the duplicate-protection mechanism:
+    it covers incident + runbook + version + plan hash, so a retry (API, frontend,
+    orchestrator, network timeout) collides with the existing row instead of starting a
+    second run. ``execution_id`` is uniquely indexed too and is the handle callers use.
+
+    JSON columns for ``candidates`` / ``dry_run`` / ``steps`` / ``audit_events``: they
+    are per-execution structured logging that grows with the plan, and the alternative
+    is four join tables nothing would ever query independently (same reasoning as
+    ``ExecutionRow.tool_args``).
+    """
+
+    __tablename__ = "runbook_executions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    execution_id: str = Field(index=True, unique=True)
+    idempotency_key: str = Field(index=True, unique=True)
+    incident_id: str | None = Field(default=None, index=True)
+    runbook_id: str = Field(index=True)
+    runbook_version: int = 1
+    plan_hash: str = Field(default="", index=True)
+    service: str = Field(default="", index=True)
+    environment: str = ""
+    # ExecutionState.value — the durable state machine (§19).
+    state: str = Field(default="planned", index=True)
+    # ExecutorStatus.value — the result contract the orchestrator reads (§27).
+    status: str = Field(default="", index=True)
+    next_action: str = ""
+    risk_level: str = ""
+    hitl_required: bool = True
+    approval_id: str | None = Field(default=None, index=True)
+    approver: str | None = None
+    # "auto" when exactly one candidate was applicable, otherwise the operator.
+    selected_by: str = ""
+    selection_reason: str = ""
+    match_score: float | None = None
+    candidates: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    dry_run: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Per-step parameter overrides the plan was authorized with, keyed by step name.
+    # Persisted because execution happens in a later request (and possibly a later
+    # process) than planning: without them the execute-time re-validation would rebuild
+    # a different plan, fail the plan-hash check, and abort every overridden plan.
+    overrides: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    steps: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    audit_events: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    rollback_status: str = "not_required"
+    reason: str = ""
+    error: str | None = None
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True)),
+    )
+    started_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    completed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+
+
+class RunbookLeaseRow(SQLModel, table=True):
+    """A concurrency lease over one remediation target (§25).
+
+    One row per ``<namespace>/<service>`` being modified. Uniquely indexed on
+    ``resource_key`` so two executions cannot both hold it — the database, not the
+    application, decides who wins the race. ``expires_at`` bounds the damage from a
+    crashed executor: a lease past its expiry is stealable, so a dead process cannot
+    wedge a service forever.
+    """
+
+    __tablename__ = "runbook_leases"
+
+    id: int | None = Field(default=None, primary_key=True)
+    resource_key: str = Field(index=True, unique=True)
+    execution_id: str = Field(index=True)
+    incident_id: str | None = Field(default=None, index=True)
+    runbook_id: str = ""
+    acquired_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+    expires_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(DateTime(timezone=True), index=True),
+    )
+
+
 __all__ = [
     "ClassificationRow",
     "ClusterRow",
@@ -561,6 +656,8 @@ __all__ = [
     "KBArticleRow",
     "NotificationRow",
     "RCAResultRow",
+    "RunbookExecutionRow",
+    "RunbookLeaseRow",
     "ShiftRow",
     "TicketRow",
     "VerdictRow",

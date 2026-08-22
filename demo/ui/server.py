@@ -369,6 +369,14 @@ from demo.ui.rca_share_routes import router as rca_share_router  # noqa: E402
 
 app.include_router(rca_share_router)
 
+# Runbook Executor (RA-004) production surface: candidates -> plan/dry-run -> execute
+# -> durable execution state. Same decoupling rule as the routers above; the legacy
+# /api/demo/runbook-executor/run and /api/runbook-executor/runbooks routes in THIS file
+# are unchanged and still serve the existing dashboard page.
+from demo.ui.runbook_routes import register_routes as _register_runbook_routes  # noqa: E402
+
+_register_runbook_routes(app)
+
 
 # ─── routes ─────────────────────────────────────────────────────────────────
 

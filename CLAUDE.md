@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/ecommerce`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack + Teams adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. The `docs/` design files remain the authoritative source for agent contracts and architecture.
+The repo has the **Phase 0 platform seams** (`aiops/llm`, `aiops/tools`, `aiops/policy`, `aiops/state`, `aiops/runtime`), the demo bootstrap (`infra/`, `demo/ecommerce`, `demo/load`), the eval harness, OPA policy, and CI in place. **Phase 1 is shipped and Phase 2 is mostly shipped**: merged agents under `agents/` — `alert_triage/` (RA-001+002 combined: triage + classification), `auto_ticketing/` (RA-003), `notification_assembler/` (RA-005+006 combined: routing + war-room), plus `incident_commander/` (RA-008), `rca_agent/` (PRS-008), `knowledge_synthesizer/` (PRS-007), `log_correlation/` (RA-007), `auto_healer_lite/` (HITL demo), and post-POC stubs. The chatops seam lives under `aiops/tools/chatops/` (JSON-file + WebSocket + Slack + Teams adapters), the combined triage/classifier UI at `/combined`, and the React dashboard at `/dashboard`. Shipped since: the **Incident Command Center** (`/console/incidents`), the **RCA chat dock** with per-run SSE progress streaming and historical-incident RAG, and `resolution_verifier` — see "RCA's read-only surfaces" and "The demo server and the SPAs" below. The `docs/` design files remain the authoritative source for agent contracts and architecture.
 
 ### The system under test is `demo/ecommerce/`, not the OpenTelemetry Demo
 
@@ -26,12 +26,18 @@ What moved where:
 
 Three consequences worth internalising before you touch anything:
 
-- **flagd is gone.** There is no feature-flag daemon in the cluster. A fault is an env var
-  on a Deployment, a StatefulSet scaled to zero, or real in-pod chaos. `aiops/tools/feature_flags/`
-  survives as an unused seam, and `tests/test_no_kubectl_for_flagd.py` has been **deleted** —
-  so ADR-001 and the "no kubectl patch for flagd" constraint below are now historical, not
-  enforced. Clearing a fault goes through the new `automation.fault.clear` capability
-  (`demo/ui/fault_clear.py`), which is what the RCA apply-fix loop executes after HITL approval.
+- **flagd is gone, and so is its seam.** There is no feature-flag daemon in the cluster, and
+  `aiops/tools/feature_flags/` has since been **deleted** as well (along with
+  `tests/test_no_kubectl_for_flagd.py`) — so ADR-001 and the "no kubectl patch for flagd"
+  constraint below are historical, not enforced. A fault is now an env var on a Deployment, a
+  StatefulSet scaled to zero, or real in-pod chaos, and clearing one goes through the
+  `automation.fault.clear` capability (`demo/ui/fault_clear.py`) — what the RCA apply-fix loop
+  executes after HITL approval. Two live references to the dead capability survive **by design**:
+  `aiops/context/denylist.py` names `feature_flags.*` as permanently refused, and
+  `change_context/providers.py`'s `FeatureFlagChangeProvider` probes for a capability nobody
+  registers and reports unavailable forever (a documented orphan, not a bug). `pyproject.toml`'s
+  `ui` extra still justifies its `kubernetes` dependency by citing the removed package — the
+  dependency is real, that comment is stale.
 - **`demo/truth_files/` still exists on disk but is the old OTel-demo corpus.** The evaluated
   truth files are the JSON ones under `demo/ecommerce/truth_files/`.
 - **17 failure keys, but only 12 scenarios/truth files.** The registry
@@ -96,6 +102,8 @@ Changing an Accepted decision means writing a *new* ADR that supersedes the old 
 
 The repo root carries a lot of markdown. Rather than reading all of it: `README.md` (quick start; its status table is stale — trust this file's roadmap instead) · `ONBOARDING.md` (laptop setup, gotchas, tailing the audit log) · `RUNNING.md` (day-to-day run loop) · `CONTRIBUTING.md` (branching, PR gates) · `PRD.md` / `KPI.md` / `EVAL_METHODOLOGY.md` (product scope, metrics, how agents are scored) · `DEMO_PLAN.md` / `DEMO_SCRIPT.md` / `DEMO_SHOWCASE.md` (rehearsed demo narrative) · `PROJECT_STATE.md` / `SESSION_NOTES.md` (point-in-time status — may be stale, verify before relying on it) · `SECRETS.md` (git-crypt workflow) · `THREAT_MODEL.md` / `RISK_REGISTER.md` · `SOLUTION_BRIEF.md` (the long-form external-facing writeup).
 
+For code-level orientation prefer `docs/` over the root markdown: **`docs/CODEBASE_INTERNALS.md`** (how each agent is built, what it calls, the full backend flow, every tool and its call sites — file:line accurate), **`docs/PROJECT_OVERVIEW.md`** (the one honest end-to-end narrative, flagging demo shortcuts as such), **`docs/AGENT_EXECUTION_ANALYSIS.md`** (a single incident traced step by step through Alert Triage's eight internal stages and downstream), and **`docs/rca_upgrade_checkpoint.md`** (the phase-by-phase RCA design record). These postdate the migration; the root files mostly do not.
+
 **All of these root markdown files predate the OTel-Demo → `demo/ecommerce/` migration.** Wherever one names `otel-demo`, flagd, a feature flag, `demo/failure_injection/`, or `frontend-proxy:8080`, it is describing a stack that is no longer deployed. The current bring-up and fault workflow is the one in "Common commands" below; `demo/ecommerce/README.md` and `demo/ecommerce/k8s/README.md` are the accurate SUT-level docs.
 
 ## What is being built
@@ -151,7 +159,7 @@ When picking a tool for a new component, default to the choice in this table unl
 | Failure injection | `demo/ecommerce/failure_injection/` | Three modes (`FI_MODE`): `application` (env vars / scale-to-zero), `infrastructure` (tc, stress-ng, dd, DNS), `hybrid` (default, both). Two backends (`FI_BACKEND`): `k8s` (default) / `docker`. |
 | Load | k6 | Modern, scriptable. |
 | Agent framework | **None** — plain functions + `aiops/runtime/orchestrator.py` | Superseded by ADR-002. Do not add LangGraph/AutoGen/CrewAI to `pyproject.toml`. |
-| LLM | Anthropic (Azure Foundry Claude) default; OpenAI swap-in; Ollama offline; `stub` in CI | ADR-003. Pin model versions; never use "latest". RCA Agent is pinned to Anthropic regardless of `AIOPS_LLM_PROVIDER`. |
+| LLM | Anthropic (Azure Foundry Claude) default; OpenAI swap-in; Ollama offline; `stub` in CI | ADR-003. Pin model versions; never use "latest". The RCA Agent resolves its provider separately (`agent._rca_provider`): `AIOPS_RCA_LLM_PROVIDER` wins if set, otherwise a global `AIOPS_LLM_PROVIDER=stub` is honoured so CI stays offline, otherwise Anthropic — so "pinned to Anthropic" holds for `openai`/`ollama`, not for `stub`. |
 | Vector store | Deferred; **pgvector** when first needed | ADR-006. Alert Triage dedup embeds in memory today — no store is deployed. |
 | Topology graph | Neo4j Community or in-process JSON | Start simple. |
 | Policy / governance | Open Policy Agent (OPA) | Industry-standard policy-as-code. |
@@ -188,10 +196,10 @@ The onboarding guide specifies five phases. Use this to judge what's in scope at
 aiops/                     # platform seams — never call vendor SDKs outside this package
 ├── llm/                   # provider-agnostic LLM gateway (anthropic / openai / ollama / stub)
 ├── context/               # Context Engineering Layer — shared evidence pipeline (opt-in, see below)
-│   └── collectors/        # thin translators from the tool registry into Observation objects
+│   ├── collectors/        # thin translators from the tool registry into Observation objects
+│   └── denylist.py        # capabilities the layer refuses to serve (mutations + dead flagd)
 ├── tools/                 # tool registry — every external integration registers here
 │   ├── chatops/           # ChatOpsClient + JSON-file + WebSocket + Slack + Teams adapters
-│   ├── feature_flags/     # DEAD: flagd adapter, kept after flagd left with the OTel Demo
 │   ├── itsm/              # ServiceNow PDI client (incident.create/update, cmdb.lookup)
 │   ├── observability/     # read-only Prometheus + Jaeger + K8s events queries (autonomy NONE)
 │   ├── scm/               # GitHub read-only source seam (scm.* capabilities, autonomy NONE)
@@ -207,14 +215,15 @@ aiops/                     # platform seams — never call vendor SDKs outside t
 agents/                    # Shipped agents (this tree is current; agents/README.md has fallen behind, see above)
 ├── alert_triage/          # RA-001+002 combined: triage + incident classification
 ├── auto_ticketing/        # RA-003: ServiceNow ticketing
-├── runbook_executor/      # RA-004: runbook execution (REQUIRED HITL)
+├── runbook_executor/      # RA-004: candidates → dry run → gated execution
+│                          #   (REQUIRED HITL; durable state — see below)
 ├── notification_assembler/# RA-005+006 combined: notification routing + war-room assembly
 ├── log_correlation/       # RA-007: cross-service log correlation (Loki-backed)
 ├── incident_commander/    # RA-008 (SRE): coordinates Sev-1/2, chains the flow + RCA
 ├── remediation_recommender/ # PRS-001: candidate fixes
 ├── auto_healer_lite/      # PRS-002: requests automation.runbook.execute (REQUIRED HITL)
 ├── knowledge_synthesizer/ # PRS-007: postmortem + KB draft (publish is HITL-gated)
-├── resolution_verifier/   # PRS-007 companion: confirms the incident actually resolved
+├── resolution_verifier/   # confirms recovery post-fix; the gate that unlocks RCA learning
 └── rca_agent/             # PRS-008 ★: deterministic evidence-ranking investigation,
                           # bounded historical memory, ranked fix steps — see "RCA Agent" below
 evals/                     # hand-rolled JSON test harness; CI gates pass-rate
@@ -236,8 +245,18 @@ demo/
 ├── audit/                 # chatops.jsonl — notification + approval audit log (gitignored)
 ├── providers.py           # register_demo_providers() — binds demo-side tool providers
 ├── ui/                    # FastAPI demo server (uv extra: ui) — serves :8765 and mounts the SPAs
-│   └── fault_clear.py     #   automation.fault.clear provider (the post-HITL fix executor)
-├── dashboard/             # main React SPA         → /dashboard/
+│   ├── server.py          #   ~3.4k-line route monolith; new surfaces go in a sibling, not here
+│   ├── fault_clear.py     #   automation.fault.clear provider (the post-HITL fix executor)
+│   ├── scenario_provider.py #  scenario catalog + inject / reset / reset_all
+│   ├── rca_chat_routes.py #   RCA chat HTTP surface (AST-restricted — see below)
+│   ├── rca_sessions.py    #   in-memory LRU+TTL chat transcripts (deliberately not a DB table)
+│   ├── rca_progress.py    #   per-run SSE hub → GET /api/rca/stream/{run_id}
+│   ├── rca_share_routes.py#   share a chat answer / postmortem to Teams (outside the AST boundary)
+│   ├── knowledge_routes.py#   Knowledge Synthesizer surface (publish is HITL-gated)
+│   ├── chatops_ws.py      #   /ws chatops feed + history ring
+│   └── _alert_hub.py      #   /ws/alerts broadcaster (one poll fanned out to every tab)
+├── dashboard/             # main React SPA → /dashboard/ (components/icc = Incident Command
+│                          #   Center, components/chat = RCA chat dock; see below)
 ├── combined-ui/           # RA-001+002 console     → /combined
 ├── classifier-ui/         # standalone classifier  → /classifier
 └── hitl-ui/               # approval console       → /hitl
@@ -250,20 +269,109 @@ policies/                  # OPA policies (hitl.rego) — enforces Required-HITL
 scripts/                   # ops helpers (github_bulk runner, seed_oncall, verify_snow_creds.ps1)
 tests/                     # repo-level smoke + integration tests
 start.ps1 / stop.ps1       # one-command bring-up / tear-down of cluster port-forwards + UI
-.github/workflows/         # CI: ruff + pytest + eval gate + opa check
+.github/workflows/         # CI: ruff + pytest + eval gate · SUT-service matrix · opa check
 ```
 
 > **Why `aiops/` and not `platform/`:** Python's stdlib has a module called `platform`. Using that name as a top-level package shadows it and breaks pytest, uv, and most libraries that introspect the runtime. Don't change it back.
 
 ## Context Engineering Layer (in progress, opt-in)
 
-`aiops/context/` fixes a real bug: four agents each independently queried Prometheus/Loki/Jaeger/CMDB/on-call/Git for the same incident, so `oncall.schedule.lookup` fired 4x, `itsm.cmdb.lookup` 3x, and RCA reasoned from a different evidence set than Log Correlation looking at the same failure — no shared ranking, redaction, or token budgeting anywhere. `ContextBuilder.build(request)` runs eight stages — Collect (the only impure one, fanning out over `aiops/context/collectors/`) → Normalize → Correlate → Rank → Enrich → Redact → Budget → Assemble — into a frozen `IncidentContext`. It never raises on the incident path; a failed source degrades to an `UNAVAILABLE` section rather than costing a verdict.
+`aiops/context/` fixes a real bug: four agents each independently queried Prometheus/Loki/Jaeger/CMDB/on-call/Git for the same incident, so `oncall.schedule.lookup` fired 4x, `itsm.cmdb.lookup` 3x, and RCA reasoned from a different evidence set than Log Correlation looking at the same failure — no shared ranking, redaction, or token budgeting anywhere. `ContextBuilder.build(request)` runs eight stages — Collect (the only impure one, fanning out over `aiops/context/collectors/`) → Normalize → Correlate → Enrich → **Redact → Rank** → Budget → Assemble — into a frozen `IncidentContext`. It never raises on the incident path; a failed source degrades to an `UNAVAILABLE` section rather than costing a verdict.
+
+**Redact deliberately precedes Rank**, so the ranker only ever scores text a consumer will actually see. `builder.py`'s module docstring flags the reverse order as a documented past error in exactly this list — don't "fix" it back. Stages 2-8 are pure functions over data structures, so everything except Collect is testable with no mocks, no network, and no clock.
 
 - **Rollout gate:** `AIOPS_CONTEXT_LAYER` (`off` / `shadow` / `on`, default `off`), read **per call**, not at import — this is a deliberate fix for an earlier RA-007 bug where an import-time env read broke `monkeypatch` in tests. While `off`, every agent keeps its existing retrieval untouched.
 - **Adapter pattern:** agent-specific projection lives in `agents/<name>/context_adapter.py` (e.g. `rca_agent/context_adapter.py`, `notification_assembler/context_adapter.py`), never in `aiops/context/` itself — reproducing one agent's exact prompt shape is that agent's concern, not the platform's. `tests/test_layering.py` statically (AST-based) enforces that `aiops/context/` never imports `agents/`.
 - **Don't bypass it once a capability is behind it.** `aiops/tools/topology/`, `incident_history/`, and `change_context/` are provider-chain seams (their own `register_provider`, not registry capabilities) that the context layer's collectors wrap — call through the collector/context layer for new agent code rather than hitting these providers directly, so evidence stays deduplicated and consistently ranked across agents.
 
 **`aiops/tools/resilience.py`** is the shared `guard()` wrapper (timeout, retry, circuit breaker, cache) that `topology`, `incident_history`, and `change_context` are all built on, because before it existed each provider seam reimplemented its own subset of these four and silently dropped others. Retries happen *before* the breaker trips (a breaker with no retry over-reacts to one dropped packet). Wrap any new remote provider in `guard` rather than hand-rolling timeout/retry/breaker logic — env vars `AIOPS_RESILIENCE_TIMEOUT` / `_RETRIES` / `_BACKOFF` / `_BREAKER` / `_CACHE_TTL` control it.
+
+## Runbook Executor — controlled execution, not diagnosis (`agents/runbook_executor/`)
+
+RA-004 answers *"do we have a known, approved, safe procedure for this?"* — nothing else.
+It does not determine root cause (RCA does) and it does not decide whether the incident
+recovered (`resolution_verifier` does). Its strongest possible answer is `EXECUTED` +
+`next_action=VERIFY`, and `ExecutorStatus` has no value that means "resolved" — that
+absence is the point, and `tests/test_runbook_boundaries.py` AST-checks the package for
+any LLM import, shell/eval call, tool registration, gate call, or import of
+`rca_agent` / `resolution_verifier` / `knowledge_synthesizer` / `aiops.runbooks`.
+
+**Two generations of entry point, both live.** The v0 surface (`execute_runbook`,
+`run_plan`, `select`, `run`) is unchanged and still serves the CLI, the original
+`POST /api/demo/runbook-executor/run` route and the eval harness. The production surface
+is `discover_candidates` → `plan_execution` → `execute_plan` (or `execute` for both),
+returning `PlanResult` / `ExecutorResult`; `ExecutorResult.legacy` carries the old
+`RunbookExecution` verbatim so either consumer keeps working. `execute_plan` does **not**
+reimplement the step loop — it calls `run_plan`, so there is exactly one place a step is
+dispatched and the HITL gate is still the registry boundary.
+
+**Selection is deterministic and explainable, and applicability — not score — decides
+who chooses.** `matching.py` scores every service-scoped runbook as
+`(earned + specificity) / (comparable + max_specificity)`: a facet counts only when the
+runbook declares a constraint *and* the incident supplied the fact, so an unknown fact is
+excluded from both halves rather than scored as a match or a miss. Every point comes back
+as a `ScoreComponent`. One applicable candidate ⇒ `AUTO_SELECT`; several ⇒ `CANDIDATES`
+(the SRE picks); none ⇒ `NOT_APPLICABLE` / `NO_RUNBOOK`; undeterminable ⇒ `AMBIGUOUS`,
+which never executes. Because every service also ships a generic recovery runbook that
+constrains nothing, `AUTO_SELECT` is rare in practice — the SRE almost always chooses,
+which is the intended posture.
+
+**A human's choice picks what to evaluate, never what to skip.** `plan_execution` runs
+the *same* lifecycle, applicability, prerequisite, action and parameter checks on an
+operator-selected runbook as on an auto-selected one, and refuses a candidate that is not
+APPLICABLE with its reasons. The old `runbook_id` override on the demo route used to skip
+all of that.
+
+**Only `status: active` with a recorded `approved_by` executes** (fail-closed: a missing
+status parses as `draft`). All 22 shipped runbooks are *generated* by
+`scripts/generate_runbooks.py` from one table that also owns the alert name, the failure
+category and the required signals — the same table `demo/ui/scenario_provider.py`'s
+`ALERTNAMES` mirrors, with `tests/test_runbook_applicability.py` asserting they still
+agree and that every declared alert exists as a real Prometheus rule. Three runbooks were
+naming an alert their fault does not fire; that is now a test failure rather than a
+mis-ranked candidate.
+
+**The action registry is the only execution vocabulary** (`actions.py`). A step's
+`action` must resolve there or the plan is refused; targets are parsed and checked
+against the runbook's declared `allowed_services` / `allowed_namespaces` (absent ⇒ the
+runbook's own service, i.e. the narrowest scope); parameters are type/range checked; and
+anything shell-, Python- or kubectl-shaped is rejected at the boundary. A *disruptive*
+action that declares `destructive: false` is a validation error, because that declaration
+would route it through the autonomous capability. Capability routing itself is unchanged
+from v0 (`destructive` decides).
+
+**The dry run is a gate, not a preview.** `dryrun.dry_run` returns `READY` or `BLOCKED`
+with reasons, dispatches only the NONE-level `automation.runbook.simulate` capability
+(asserted by recording every capability a dry run reaches for), and produces the
+`plan_hash` that ties an approval to one exact plan. `PlanResult.ready` is False for a
+blocked dry run *and* for a plan whose execution already ran.
+
+**Execution is durable and idempotent.** `runbook_executions` (unique on
+`idempotency_key` = incident + runbook + version + plan hash) replaces the in-memory
+`_HITL_OUTCOMES` dict for the new path: a retry from any source joins the existing
+execution instead of re-running production actions, and the row carries the candidates
+offered, the dry run that authorized it, per-step timing and the append-only audit
+events. `runbook_leases` (unique on `<namespace>/<service>`) refuses a second concurrent
+remediation of one service; an expired lease is stealable so a crashed executor cannot
+wedge a service. Applicability is re-checked *at execute time*, which is where a
+resolved or aged-out incident is caught.
+
+**Retries are the dangerous part, so they are narrow.** `execution_state.step_policy`
+allows retries only for actions the registry marks `retry_safe`, and a call that goes
+through the HITL gate is never retried and gets a timeout of the step budget *plus* the
+approval window — a shorter one would abandon an approval that is still pending, and a
+retry would ask the human twice. Caching is always off: a cached mutation result would
+report success for a call that never ran.
+
+**Where the boundaries are drawn in code.** The alert→category and summary→signal
+translations live in `demo/ui/runbook_routes.py`, not in the agent, because they are
+facts about this deployment. That router (mounted via `register_routes`, so `server.py`
+does not grow) also fires `resolution_verifier.trigger` after an `EXECUTED` result, the
+same way `server.py::_post_fix_verify` does for the RCA fix path — so the executor
+produces a `VerificationHandoff` describing what it did and never learns what it
+achieved. `agents/rca_agent/**`, `agents/resolution_verifier/**`, `aiops/policy/gate.py`
+and `policies/hitl.rego` are untouched; no new capability was introduced, so the
+gate.py/hitl.rego drift hazard does not apply.
 
 ## RCA Agent — deterministic investigation before the model (`agents/rca_agent/`)
 
@@ -316,6 +424,107 @@ production path. `docs/rca_upgrade_checkpoint.md` is the full phase-by-phase rec
 this design (locked decisions, defects found and fixed, measured before/after deltas);
 read it before changing anything under `agents/rca_agent/`.
 
+## RCA's read-only surfaces: chat, streaming, historical RAG
+
+Three subsystems hang off the RCA verdict, and all three are deliberately **incapable of
+changing it**. That property is structural and AST-enforced, not a prompt instruction — the
+threat being designed against is a conversational surface that quietly becomes a second,
+ungated reasoning path.
+
+- **`agents/rca_agent/chat.py`** answers questions over one *frozen* `Investigation`.
+  `ChatAnswer` has no field a new verdict could go in. It has the same two-path shape as
+  `analyze()`: a grounded LLM call whose reply is validated back against the rendered snapshot
+  (unknown evidence ids are dropped and counted as `fabricated_citations`; a stated confidence
+  that disagrees with the platform's is flagged in `warnings`, never silently edited), and
+  `_deterministic_answer()` — keyword-intent routing over a closed set of `Investigation`
+  sections — when the model is unavailable.
+- **`agents/rca_agent/investigation_context.py`** is the retrieval layer under the chat. The
+  model never receives a callable; it picks from a closed **menu of section names** and this
+  module renders them. It intentionally does not reuse `chat.py`'s `_render_*` functions,
+  because existing tests monkeypatch those by name in `chat.py`'s namespace.
+- **`agents/rca_agent/incident_rag.py`** is a *different corpus* from
+  `investigation/memory.py::recall()`. Memory recall can nudge a confidence score and is
+  restricted to `OUTCOME_BACKED_PROVIDERS`; incident RAG searches **persisted RCA verdicts this
+  deployment actually produced**, is never imported by `analyze()` or anything on the scoring
+  path, writes nothing, and returns historical facts plus retrieval scores only — no field
+  asserts a past cause applies now. Don't blur the two.
+
+`tests/test_rca_chat_boundary.py` AST-checks these modules for any reference to the policy gate,
+the tool registry, `analyze()`, or the memory subsystem. This is why sharing an answer to Teams
+lives in `demo/ui/rca_share_routes.py` rather than in `rca_chat_routes.py` — it needs the chatops
+seam, which the boundary forbids inside the chat surface.
+
+**Live progress** is `demo/ui/rca_progress.py`: a per-`run_id` SSE hub behind
+`GET /api/rca/stream/{run_id}`, fed by `agents/rca_agent/progress.py`'s `ProgressSink`. Named
+events (`received`, `change_correlation`, `evidence`, `context_pack`, `memory_recall`, …,
+`complete`/`failed`, plus `timeout` and `: ping` heartbeats), one bounded history ring per run so
+a late subscriber replays rather than joining blind, and LRU-by-last-touch eviction so a
+long-running demo doesn't accumulate a channel per run. SSE over WebSocket was chosen because the
+stream terminates naturally at run end (finite, timeout-free CI tests) and `EventSource` supplies
+reconnect + `Last-Event-ID` for free. Two concurrent runs must never cross-talk — everything is
+keyed by `run_id`.
+
+**Chat transcripts are in-memory** (`demo/ui/rca_sessions.py`, LRU + TTL), matching three
+existing process-global stores rather than adding a SQLModel table (POC scope discipline).
+Transcripts die with the server; *grounding* does not — `rca_endpoint` persists via
+`save_rca_result()` whenever the request carries an `incident_id`, so
+`GET /api/rca/chat/by-incident/{id}` rehydrates the verdict after a restart. That endpoint also
+doubles as the incident list's "does an RCA already exist for this?" lookup.
+
+**Deduped alerts still get their RCA persisted.** A Suppressed alert has no verdict row of its
+own, so `save_rca_result_for_cluster()` writes against the **cluster identity** instead
+(`aiops/state/repository.py`, `tests/test_rca_result_cluster_fallback.py`). If you add a path
+that stores or looks up an RCA result, handle both identities or suppressed incidents will
+silently show no RCA.
+
+**`agents/resolution_verifier/`** closes the loop: it re-runs the *detection-time* observability
+checks across a stabilization window (T+1m / T+3m / T+5m), attaches a proof work note to the
+ServiceNow incident, and lets the final round decide. PASS means nothing FAILED — a check whose
+data source is unavailable is `SKIPPED`, never a failure. Everything is dependency-injected
+(`itsm_call`, `metrics_call`, `sleep_fn`, `checks`), so it unit-tests with no Prometheus, Loki, or
+ServiceNow. Only after it confirms recovery may `agents/rca_agent/learning.py` write an outcome
+row — that ordering is what keeps historical memory grounded in verified reality.
+
+## The demo server and the SPAs
+
+`demo/ui/server.py` is a ~3,400-line route monolith and should not grow. New surfaces get their
+own module that imports only `agents` and `aiops` — never `demo.ui.server` (circular import, and
+a slow or crashing side surface must not take the Triage→…→RCA pipeline with it). Two mount
+idioms already exist and either is fine: `app.include_router(...)` (knowledge, RCA chat, RCA
+share) or a `register_routes(app)` function (alert hub, chatops WS, RCA progress).
+
+There is **no auth anywhere** in this POC's API — that's the deliberate posture, documented at
+the HITL-2 note in `server.py`. Surfaces that spend LLM tokens compensate with cheap caps instead:
+`rca_chat_routes.py` enforces a per-session turn cap, a message-length cap, and one in-flight turn
+per `run_id`. A new unauthenticated model-calling endpoint needs the same.
+
+Four independent Vite apps live under `demo/`: `dashboard/` (the main SPA, `/dashboard/`),
+`combined-ui/` (`/combined`), `classifier-ui/` (`/classifier`), `hitl-ui/` (`/hitl`). FastAPI
+serves each one's built `dist/`, so **an edit you haven't built will not appear** — and
+`start.ps1` builds only `dashboard`.
+
+Inside `demo/dashboard/`:
+
+- **`npm run dev`** on :5173 proxies `/api` and `/ws` to uvicorn on :8765, so hot-reload works
+  against the real backend. `vite.config.ts` sets `base: '/dashboard/'` on *build* only, which is
+  why the dev server lives at `/` and the built app doesn't.
+- **`@/` aliases `src/`.** Use it; relative `../../` chains are the exception here.
+- **`components/icc/`** is the Incident Command Center (incident table → workspace → tabs:
+  Evidence, Timeline, Hypotheses, Changes, Blast Radius, History, Verification), routed at
+  `/console/incidents`. **`components/chat/`** is the RCA chat dock consuming
+  `/api/rca/chat` + the SSE stream via `lib/rcaStream.ts` (one `addEventListener` per known
+  stage — `onmessage` alone never fires for named events). `IccRoot` re-stamps `data-theme` over
+  its subtree from the same single store as `<html>`, so the ICC paints its own
+  `styles/theme.css` scope without becoming a second source of truth.
+- **`lib/incidentVm.ts` normalizes service names**, stripping the `ecommerce-` prefix that
+  `OTEL_SERVICE_NAME` carries into Prometheus/Loki/Jaeger labels, because the same real service
+  arrives as both `order-service` (scenario YAMLs, truth files) and `ecommerce-order-service`
+  (telemetry labels). This mirrors `evidence.py::service_pod_prefix()` on the backend — a
+  cross-stack invariant, so fix both sides or neither.
+- **`lib/persistentCache.ts`** backs caches with an in-memory `Map` plus `localStorage`, so demo
+  state survives a reload. If a stale value confuses a rehearsal, `clearAllCaches()` reaches both
+  layers.
+
 ## When you write code
 
 ### Local environment constraints
@@ -324,7 +533,7 @@ read it before changing anything under `agents/rca_agent/`.
 - **Rancher Desktop ships a `kuberlr`-wrapped `kubectl` that rejects standard flags from Python `subprocess` calls.** Install a standalone `kubectl` (`winget install --scope user Kubernetes.kubectl`) — `start.ps1` and `reset.ps1` prefer it via `$LOCALAPPDATA\Programs\kubectl`, while `demo/ecommerce/failure_injection/_kubectl.py` *probes* candidates instead (real kubectl emits `clientVersion` JSON; the kuberlr wrapper errors) — it is a deliberate copy of the old `inject.py` logic, kept duplicated so the package stays runnable standalone inside `demo/ecommerce/`. Keep the two in sync.
 - **Two PowerShell windows.** `start.ps1` runs port-forwards as background jobs in the *current* session; closing that shell kills them. Use `stop.ps1` to tear them down cleanly.
 - **Demo-side tool providers only exist if you register them.** The `@tool` decorator fires as an import side effect, so a process that never imports the provider module has no provider for that capability. Every demo entry point calls `demo.providers.register_demo_providers()` — a new one must too, or `automation.fault.clear` silently has no implementation.
-- **Faults are k8s objects, not flags.** `aiops/tools/feature_flags/` and `docs/arch_1_feature_flags_seam_design.md` describe flagd, which is gone; treat both as historical. An app-layer fault is `kubectl set env` on a Deployment (recovery writes explicit defaults back rather than deleting the key, so the manifest's `configMapKeyRef` mapping survives an inject/recover cycle — see the `_FAULT_DEFAULTS` comment in `_k8s.py`, and keep those defaults matching `demo/ecommerce/k8s/01-config.yaml`). An infra-layer fault is real in-pod chaos and can report `unavailable` when the tool is missing from the image — `order_service.packet_loss` needs `tc`, which is not in the service Dockerfiles, so it neither injects nor recovers today.
+- **Faults are k8s objects, not flags.** ADR-001 and `docs/arch_1_feature_flags_seam_design.md` describe flagd, which is gone along with its seam; treat both as historical. An app-layer fault is `kubectl set env` on a Deployment (recovery writes explicit defaults back rather than deleting the key, so the manifest's `configMapKeyRef` mapping survives an inject/recover cycle — see the `_FAULT_DEFAULTS` comment in `_k8s.py`, and keep those defaults matching `demo/ecommerce/k8s/01-config.yaml`). An infra-layer fault is real in-pod chaos and can report `unavailable` when the tool is missing from the image — `order_service.packet_loss` needs `tc`, which is not in the service Dockerfiles, so it neither injects nor recovers today.
 - **PowerShell 5.1's `Get-Content` default encoding is CP1252, not UTF-8.** Tailing `demo/audit/chatops.jsonl` without `-Encoding UTF8` turns em-dashes into `â€"` mojibake. See ONBOARDING.md §11 "Tailing the chatops audit log".
 - **`.env.shared` is git-crypt-encrypted** (`.gitattributes`). On a locked clone it reads as binary — that's expected, not corruption. Unlock with `scripts/secrets/unlock.ps1`, then copy it to `.env` for local overrides (`.env` is gitignored). `scripts/secrets/add-teammate.ps1` adds a GPG key. Full workflow in SECRETS.md.
 - **`.env` is not auto-loaded.** `uv run` doesn't read it, and neither does `import aiops`. Only entry points that call `aiops._dotenv.load_dotenv()` explicitly get it: `demo/ui/server.py`, `evals/harness.py`, and a couple of `scripts/`. Real env vars win — the file fills in defaults, it never overrides. A new entry point that needs config must call it itself.
@@ -410,6 +619,10 @@ uv run pytest tests/test_smoke.py::test_hitl_gate_blocks_required_without_approv
 # Skip tests that need a live cluster or a real LLM (markers: integration, llm)
 uv run pytest -m "not integration and not llm"
 
+# The three SUT services are NOT collected by the root pytest run — each has its
+# own src/ package and its own pytest.ini, so run them from inside their dir.
+cd demo\ecommerce\order-service; pytest; cd ..\..\..
+
 # Run the eval harness for all agents
 uv run python -m evals.harness
 
@@ -450,14 +663,17 @@ kubectl delete namespace ecommerce                 # the SUT itself
 
 ### What CI actually runs
 
-`.github/workflows/ci.yml`, two jobs, on every PR:
+`.github/workflows/ci.yml`, three jobs, on every PR:
 
-1. `uv sync --locked --extra dev --extra ui` → `ruff check .` → `ruff format --check .` → `pytest` → `evals.harness --ci --min-pass-rate 0.85`, all with `AIOPS_LLM_PROVIDER=stub`.
-2. `opa fmt --diff policies/` → `opa check policies/`.
+1. **`lint-and-test`** — `uv sync --locked --extra dev --extra ui` → `ruff check .` → `ruff format --check .` → `pytest` → `evals.harness --ci --min-pass-rate 0.85`, all with `AIOPS_LLM_PROVIDER=stub`.
+2. **`ecommerce-service-tests`** — a matrix over `order-service` / `payment-service` / `user-service`, each `pip install -r requirements.txt pytest httpx` then `pytest` **run from inside its own directory**.
+3. **`policy-validate`** — `opa fmt --diff policies/` → `opa check policies/`.
 
 Consequences worth knowing before you push:
 
-- **`--locked` means a `pyproject.toml` dependency change without a committed `uv lock` fails CI.** Run `uv lock` and commit `uv.lock` in the same change (#155).
+- **`--locked` means a `pyproject.toml` dependency change without a committed `uv lock` fails CI.** Run `uv lock` and commit `uv.lock` in the same change (#155). It is also why a new runtime need is usually met over the stdlib rather than with a dependency — `demo/ui/rca_progress.py` hand-rolls SSE over `StreamingResponse` instead of pulling in `sse-starlette` for exactly this reason.
+- **The three SUT services are not in the uv workspace, and `uv run pytest` never collects them.** Root `testpaths` deliberately excludes `demo/ecommerce/**`: order/payment/user-service each ship their own top-level `src/` package, so collecting all three from the repo root collides on the name. Each has its own `pytest.ini` (`pythonpath = .`) and runs from inside its own directory — which is what CI job 2 does. A test added under `demo/ecommerce/<svc>/tests/` passes locally only if you `cd` there first.
+- **`tests/conftest.py` carries 13 autouse hermetic fixtures** — LLM provider, state DB, gate approver, chatops sinks and hub, observability circuits, resilience, topology chain, RCA progress hub, RCA chat sessions, the auto-triage loop, and more. They exist because process-global state in this codebase leaks between tests (#113 was a full-suite hang). Adding a new module-level cache, hub, session store, or env-driven seam means adding its reset here too. Autouse fixtures also run *before* a test's own `monkeypatch.setenv`, so a test that overrides one of these vars still wins — which is why several suites document that ordering explicitly.
 - **CI installs only `dev` + `ui`** — not `embeddings`, not `all-llm`. Anything importing `sentence_transformers` at module scope breaks CI; keep those imports lazy and rule-based fallbacks working.
 - **No test may hit a real LLM or a cluster.** `stub` is the CI provider; mark anything else `@pytest.mark.integration` or `@pytest.mark.llm`. Markers are `--strict-markers`, so a typo is an error, not a skip.
 - **Every test has a 60 s wall-clock cap** (`timeout_method="thread"`, for Windows). A test that waits on HITL approval or an asyncio event must set its own `@pytest.mark.timeout(N)` rather than blocking the suite (#113).
@@ -467,6 +683,8 @@ Consequences worth knowing before you push:
 ### Configuration surface
 
 Everything is env-var driven and read at the seam, never in agent code. Read from `.env` (loaded explicitly — `uv run` does *not* auto-load it). Every seam degrades to a mock/stub when its vars are absent, so the whole demo runs unconfigured.
+
+There are ~150 `AIOPS_*` vars in total; the table below is the families that change behaviour, not the full list. **`.env.example` is the exhaustive annotated reference** — each entry there cites the module that reads it. Read env vars *inside the function*, never into a module-level constant: an import-time read defeats `monkeypatch` in tests, which is a bug this repo has already paid for twice (RA-007's opt-in gates, and the fix documented in `aiops/context/config.py`).
 
 | Area | Vars | Default behaviour when unset |
 |---|---|---|
@@ -481,7 +699,14 @@ Everything is env-var driven and read at the seam, never in agent code. Read fro
 | HITL | `AIOPS_HITL_DEFAULT`, `AIOPS_HITL_APPROVAL_TIMEOUT` | Required-level actions deny without an approver |
 | Context layer | `AIOPS_CONTEXT_LAYER` (`off`/`shadow`/`on`), `AIOPS_CONTEXT_WORKERS` | `off` — agents keep their pre-existing per-agent retrieval |
 | Resilience (`aiops/tools/resilience.py`) | `AIOPS_RESILIENCE_TIMEOUT`, `_RETRIES`, `_BACKOFF`, `_BREAKER`, `_CACHE_TTL` | 3s timeout / 2 retries / 0.2s backoff / 30s breaker / 60s cache |
-| Incident history | `AIOPS_INCIDENT_HISTORY_PROVIDERS` | `mock` provider only |
+| Incident history | `AIOPS_INCIDENT_HISTORY_PROVIDERS`, `_LIMIT`, `_MIN_SIMILARITY`, `_EMBED_MODEL` | `mock` provider only |
+| RCA LLM | `AIOPS_RCA_LLM_PROVIDER`, `AIOPS_RCA_LLM_MODEL` | Anthropic, unless the global provider is `stub` |
+| RCA chat | `AIOPS_RCA_CHAT_MAX_TURNS`, `_MAX_SESSIONS`, `_TTL`, `_HISTORY_TURNS` | bounded in-memory sessions (64 / 1 h defaults) |
+| RCA progress stream | `AIOPS_RCA_STREAM_HEARTBEAT`, `_IDLE_TIMEOUT` | SSE with heartbeat comments + idle timeout event |
+| RCA historical RAG | `AIOPS_RCA_RAG_LIMIT`, `AIOPS_RCA_RAG_MIN_SIMILARITY`, `AIOPS_RCA_MEMORY_PROVIDERS` | persisted verdicts only; memory limited to outcome-backed providers |
+| Runbook Executor (RA-004) | `AIOPS_RUNBOOK_MAX_INCIDENT_AGE_MINUTES`, `AIOPS_RUNBOOK_HITL_RISK_THRESHOLD`, `AIOPS_RUNBOOK_STEP_TIMEOUT`, `AIOPS_RUNBOOK_MAX_RETRIES`, `AIOPS_RUNBOOK_RETRY_BACKOFF`, `AIOPS_RUNBOOK_STEP_BREAKER_SECONDS`, `AIOPS_RUNBOOK_EXECUTION_TIMEOUT`, `AIOPS_RUNBOOK_LEASE_SECONDS`, `AIOPS_RUNBOOK_EXECUTOR_DIR`, `AIOPS_ENVIRONMENT` | 4 h incident age cap · human demanded at HIGH risk · 60 s step timeout (plus the approval window for a gated step) · 1 retry, and only for `retry_safe` actions · 15 min lease · shipped library · environment `demo` (so a laptop is not treated as production) |
+| Auto-triage loop | `AIOPS_AUTO_TRIAGE_ENABLED`, `AIOPS_AUTO_TRIAGE_INTERVAL_SECONDS` | **on**, sweeping every 3 s — one of the few seams whose default is *not* inert. A `conftest.py` autouse fixture force-disables it so tests don't run a background triage loop. |
+| Provider selection | `AIOPS_TOOL_PROVIDERS`, `AIOPS_TOPOLOGY_PROVIDERS`, `AIOPS_CHANGE_CONTEXT_PROVIDERS` | each seam's default chain |
 | Failure injection (`demo/ecommerce/`) | `FI_MODE` (`application`/`infrastructure`/`hybrid`), `FI_BACKEND` (`k8s`/`docker`), `FI_NAMESPACE`, `FI_DRY_RUN` | `hybrid` mode, `k8s` backend, `ecommerce` namespace. Note these are **not** `AIOPS_`-prefixed — the SUT is a standalone app. |
 
 The remote seams (Loki, Jaeger) have **circuit breakers** — `AIOPS_*_CIRCUIT_OPEN_SECONDS` — so a down backend degrades the agent rather than hanging the request. Preserve that when adding a new remote provider.
@@ -496,11 +721,15 @@ Each of these has a test that fails CI, so they are worth knowing before you wri
 - **No HITL checks inside agent logic.** HITL is enforced at the *registry boundary* — just call `get_registry().call(capability, ...)` and a Required-level capability returns `ok=False` when no approver is wired. Agents never gate-check themselves.
 - **Every RCA fix step must set `requires_hitl=True`** → `test_rca_fix_step_rejects_requires_hitl_false`.
 - **Every new failure scenario ships with a truth file** → `test_every_scenario_has_a_truth_file`. `tests/test_scenarios_yaml.py` is strict about a lot more than that: the YAML `id` must equal the filename stem, ids must be unique, `failure_key` must resolve to a registered `Failure`, UI descriptors must match the server catalog, `needs_load` must agree with the registry's `LoadHint`, and every alertname the catalog references must exist as a real Prometheus rule. `tests/test_ecommerce_truth_files_evaluable.py` additionally requires each truth file to be *evaluable*, not merely present.
+- **RA-004 cannot execute anything the action registry does not define, and cannot claim recovery.** `tests/test_runbook_boundaries.py` AST-scans every module under `agents/runbook_executor/` for an LLM import, a shell/`eval`/`exec` call, a tool registration, a direct gate call, or an import of `rca_agent` / `resolution_verifier` / `knowledge_synthesizer` / `aiops.runbooks`; it also asserts `ExecutorStatus` has no "resolved"-shaped value and the verifier handoff carries no verdict field. `tests/test_runbook_action_safety.py` covers the parameter/target/scope refusals.
+- **A runbook without `status: active` + `approved_by` cannot execute** → `tests/test_runbook_applicability.py`. Regenerate the library (`uv run python scripts/generate_runbooks.py`) rather than hand-editing frontmatter; the generator also owns the alert/category/signal facets and self-checks them against `scenario_provider.ALERTNAMES` and the real Prometheus rules.
 - **Every new agent ships with `agents/<dir>/evals/golden.json`.** The eval harness discovers it automatically.
 - **`aiops/` never imports `agents/` (or `demo/`).** The dependency arrow is `demo/ → agents/ → aiops/`, checked by AST (not substring matching) → `tests/test_layering.py`. The one sanctioned exception is `aiops/runtime/orchestrator.py`, which by design sits above the agents it chains.
 - **Context-layer parity while it migrates.** `tests/test_context_shadow.py` requires zero mismatches between shadow-mode context output and legacy retrieval; `test_rca_context_adapter.py` / `test_notification_assembler_context_adapter.py` gate on byte-identical output between the adapter and the pre-migration prompt strings; `test_retrieval_call_sites.py` is a ratchet that fails if the count of duplicated per-agent retrieval call sites grows instead of shrinks.
 - **The RCA prompt cannot regain injection truth or a hardcoded action key.** `tests/test_rca_prompt_v7.py` is a two-sided ratchet on `SYSTEM_PROMPT_V7` — forbidden strings must stay out, required safety clauses must stay in — with a positive control proving the check isn't vacuous. Any edit to `agents/rca_agent/prompts.py` must keep it passing.
 - **RCA's historical memory cannot recall the truth-file corpus.** Only providers in `investigation.memory.OUTCOME_BACKED_PROVIDERS` may supply a prior; registering a new `incident_history` provider without classifying it fails `tests/test_rca_memory_blindness.py::test_every_shipped_provider_is_either_allowed_or_deliberately_not`.
+- **The RCA chat surface cannot execute, gate, or re-reason.** `tests/test_rca_chat_boundary.py` AST-checks `chat.py`, `investigation_context.py`, `incident_rag.py`, and `rca_chat_routes.py` for any reference to the policy gate, the tool registry, `analyze()`, or the investigation-memory subsystem. `rca_chat_routes.py` may import at most one read-only RAG accessor from `aiops.tools.*` — anything needing more of the seam goes in a sibling module (the reason `rca_share_routes.py` exists).
+- **RCA results must persist for deduped alerts too.** A Suppressed alert has no verdict row, so the fallback writes against cluster identity → `tests/test_rca_result_cluster_fallback.py`.
 - **The RCA learning module cannot touch code.** `agents/rca_agent/learning.py` may only write outcome rows; `tests/test_rca_learning.py::TestLearningBoundary` parses its AST for any reference to a prompt symbol, file write, tool/policy registration, or dynamic execution.
 
 ### The seams to use, not bypass
@@ -515,6 +744,9 @@ Each of these has a test that fails CI, so they are worth knowing before you wri
 | Chain the Reactive-Active flow | `aiops.runtime.orchestrator.run_reactive_flow(alert)` | re-wiring the agent calls inline |
 | Gather incident evidence for an agent | `aiops.context.build(request)` behind `AIOPS_CONTEXT_LAYER`, projected via an `agents/<name>/context_adapter.py` | each agent independently re-querying Prometheus/Loki/CMDB/on-call/Git |
 | Add timeout/retry/breaker/cache to a new provider | wrap the call in `aiops.tools.resilience.guard(...)` | hand-rolling a subset of the four and forgetting one |
+| Answer a follow-up question about an existing RCA | `agents.rca_agent.chat.answer()` over the frozen `Investigation` | re-running `analyze()`, or letting the chat path touch the registry / gate / memory |
+| Run a known procedure against an incident | `agents.runbook_executor.plan_execution(ctx, runbook_id=…)` then `execute_plan(plan, ctx)` — candidates, dry run and durable idempotent execution | calling `run_plan` directly for anything but the legacy path, or executing without a READY dry run |
+| Add an endpoint to the demo server | a new `demo/ui/<name>_routes.py` + one `include_router` / `register_routes` line | growing `demo/ui/server.py`, or importing it from a sibling |
 
 #### HITL levels live in two files that nothing forces to agree
 
@@ -530,6 +762,6 @@ Four callers share it: the `/api/triage` route, the live-alert sweep, the auto-t
 
 Tools register under a dotted `capability` name and are dispatched by `get_registry().call(capability, ...)`; multiple providers can serve one capability (e.g. `mock.*` vs `snow.*`, selected by whether real credentials are present). Namespaces currently in use:
 
-`itsm.incident.*` · `itsm.cmdb.*` · `itsm.ticket.close` · `observability.metrics.*` · `observability.logs.query` · `observability.traces.*` · `observability.events.query` · `automation.fault.clear` · `oncall.schedule.lookup` · `incident.resolvers.lookup` · `notify.send` · `chatops.war_room.create` · `knowledge.publish` · `rca.fix_step.execute` · `automation.runbook.{execute,simulate,apply}` · `scm.file.read` · `scm.repo.tree` · `scm.commit.history` · `scm.diff` · `scm.pr.list`
+`itsm.incident.{create,update,get,query}` · `itsm.incident.attachment.add` · `itsm.cmdb.{lookup,dependencies}` · `itsm.ticket.close` · `observability.metrics.{query,alerts,render_panel}` · `observability.logs.query` · `observability.traces.{search,services}` · `observability.events.query` · `automation.fault.clear` · `automation.runbook.{execute,simulate,apply}` · `k8s.deployment.restart` · `oncall.schedule.lookup` · `incident.resolvers.lookup` · `notify.send` · `chatops.war_room.create` · `chatops.war_room.meeting.create` · `knowledge.publish` · `rca.fix_step.execute` · `scm.{file.read,repo.tree,commit.history,diff,pr.list}`
 
 Register a new one with the `@tool(name=, capability=, provider=)` decorator in `aiops/tools/`. Several subpackages are deliberately *not* registries: `aiops/tools/alerts/` holds pure webhook-payload → canonical `Alert` adapters (Alertmanager, CloudWatch, Datadog, Prometheus), most of `aiops/tools/chatops/` is the client/adapter seam rather than a registered capability, and `topology/` / `incident_history/` / `change_context/` are provider-chain seams (own `register_provider`, consumed by `aiops/context/collectors/`) rather than dispatch-by-capability.

@@ -48,6 +48,25 @@ class AuditEventType(StrEnum):
     STEP_FAILED = "STEP_FAILED"
     STEP_BLOCKED = "STEP_BLOCKED"
     STEP_ROLLED_BACK = "STEP_ROLLED_BACK"
+    # ── run-scoped lifecycle (§30) ───────────────────────────────────────────
+    # Added for the production upgrade. These are the only events that are NOT
+    # step-scoped: they describe the run as a whole, and carry ``step_id=""``.
+    # Kept in the same enum (and the same append-only log) so an execution has one
+    # ordered story rather than two logs a reader has to interleave.
+    CANDIDATES_DISCOVERED = "CANDIDATES_DISCOVERED"
+    RUNBOOK_SELECTED = "RUNBOOK_SELECTED"
+    APPLICABILITY_CHECKED = "APPLICABILITY_CHECKED"
+    PREREQUISITE_CHECKED = "PREREQUISITE_CHECKED"
+    PARAMS_VALIDATED = "PARAMS_VALIDATED"
+    RISK_ASSESSED = "RISK_ASSESSED"
+    DRY_RUN_COMPLETED = "DRY_RUN_COMPLETED"
+    EXECUTION_STARTED = "EXECUTION_STARTED"
+    EXECUTION_BLOCKED = "EXECUTION_BLOCKED"
+    EXECUTION_COMPLETED = "EXECUTION_COMPLETED"
+    DUPLICATE_SUPPRESSED = "DUPLICATE_SUPPRESSED"
+    STALE_INCIDENT_BLOCKED = "STALE_INCIDENT_BLOCKED"
+    CONCURRENCY_BLOCKED = "CONCURRENCY_BLOCKED"
+    HANDOFF_TO_VERIFIER = "HANDOFF_TO_VERIFIER"
 
 
 class AuditEventMetadata(BaseModel):
@@ -88,6 +107,50 @@ class AuditEvent(BaseModel):
     metadata: AuditEventMetadata = Field(default_factory=AuditEventMetadata)
 
 
+# Parameter/metadata keys whose VALUE is never written to the audit trail (§30).
+# Matched as a substring of the lower-cased key, so ``db_password`` and
+# ``AIOPS_SERVICENOW_PASSWORD`` are both caught. The key itself is kept — knowing that
+# a credential was passed is useful; knowing its value is a liability.
+_SECRET_MARKERS: tuple[str, ...] = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "credential",
+    "authorization",
+    "auth",
+    "private_key",
+    "webhook",
+    "session",
+    "cookie",
+)
+
+_REDACTED = "[redacted]"
+
+
+def redact(value: Any) -> Any:
+    """Recursively replace secret-looking values with ``[redacted]``.
+
+    Applied to anything the audit trail records that came from outside the executor —
+    step parameters, provider payloads, approval context. Structure is preserved so the
+    trail still shows the shape of what was passed.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(marker in lowered for marker in _SECRET_MARKERS):
+                out[str(key)] = _REDACTED
+            else:
+                out[str(key)] = redact(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [redact(v) for v in value]
+    return value
+
+
 class EventLog:
     """An append-only, ordered event log for a single runbook execution.
 
@@ -100,6 +163,10 @@ class EventLog:
         self._incident_id = incident_id
         self._runbook_id = runbook_id
         self._events: list[AuditEvent] = []
+
+    def emit_run(self, status: AuditEventType, *, reason: str = "", **extra: Any) -> AuditEvent:
+        """Emit a run-scoped event (no step). Sugar for ``emit(..., step_id="")``."""
+        return self.emit(status, step_id="", reason=reason, **extra)
 
     def emit(
         self,
@@ -121,7 +188,12 @@ class EventLog:
             timestamp=datetime.now(UTC),
             status=status,
             metadata=AuditEventMetadata(
-                reason=reason, gate_type=gate_type, approval_id=approval_id, **extra
+                reason=reason,
+                gate_type=gate_type,
+                approval_id=approval_id,
+                # Redact here rather than at every call site: one place to be right,
+                # and a new emitter cannot forget it (§30 "never log secrets").
+                **redact(extra),
             ),
         )
         self._events.append(event)
