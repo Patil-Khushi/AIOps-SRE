@@ -418,6 +418,7 @@ def mock_runbook_execute(
     step: str = "",
     action: str = "",
     mode: str = "execute",
+    params: dict[str, Any] | None = None,
 ) -> ToolResult:
     """Execute (or roll back) a DESTRUCTIVE runbook step. REQUIRED-HITL.
 
@@ -440,6 +441,12 @@ def mock_runbook_execute(
         "step": step,
         "action": action,
         "mode": mode,
+        # Validated step parameters, echoed back so the audit trail records what was
+        # actually passed. RA-004 validates these against the action registry's schema
+        # before dispatch (agents/runbook_executor/actions.py) — a provider never has to
+        # trust them, and one that does not accept them is unaffected (the registry
+        # filters kwargs by signature).
+        "params": dict(params or {}),
         "exit_code": 0,
         "stdout": (
             f"[dry-run] would {verb} {target or '<unspecified>'} in {namespace or 'default'}"
@@ -488,6 +495,7 @@ def mock_runbook_simulate(
     action: str = "",
     target: str = "",
     namespace: str = "",
+    params: dict[str, Any] | None = None,
 ) -> ToolResult:
     """Preview what a step *would* do, without performing it.
 
@@ -504,6 +512,7 @@ def mock_runbook_simulate(
             "action": action or "<unspecified>",
             "target": target,
             "namespace": namespace or "default",
+            "params": dict(params or {}),
             "dry_run": True,
             "changes": [],
             "preview": preview,
@@ -530,6 +539,7 @@ def mock_runbook_apply(
     action: str = "",
     target: str = "",
     namespace: str = "",
+    params: dict[str, Any] | None = None,
 ) -> ToolResult:
     """Run a non-destructive step (drain, snapshot, health-check, …).
 
@@ -548,6 +558,7 @@ def mock_runbook_apply(
             "action": action or "<unspecified>",
             "target": target,
             "namespace": namespace or "default",
+            "params": dict(params or {}),
             "applied": True,
             "exit_code": 0,
             # Observed outcome for RA-004's sim-vs-execution comparison (#213).

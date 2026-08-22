@@ -15,6 +15,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from aiops.state import get_engine
@@ -28,6 +30,8 @@ from aiops.state.models import (
     NotificationRow,
     RCAOutcomeRow,
     RCAResultRow,
+    RunbookExecutionRow,
+    RunbookLeaseRow,
     TicketRow,
     VerdictRow,
 )
@@ -1407,33 +1411,388 @@ def _kb_row_to_dict(row: KBArticleRow) -> dict[str, Any]:
     }
 
 
+# ─── runbook executions (RA-004 durable state) ─────────────────────────────
+
+
+_RUNBOOK_EXECUTION_FIELDS = frozenset(
+    {
+        "incident_id",
+        "runbook_id",
+        "runbook_version",
+        "plan_hash",
+        "service",
+        "environment",
+        "state",
+        "status",
+        "next_action",
+        "risk_level",
+        "hitl_required",
+        "approval_id",
+        "approver",
+        "selected_by",
+        "selection_reason",
+        "match_score",
+        "candidates",
+        "dry_run",
+        "overrides",
+        "steps",
+        "audit_events",
+        "rollback_status",
+        "reason",
+        "error",
+        "started_at",
+        "completed_at",
+    }
+)
+
+
+def claim_runbook_execution(
+    *,
+    execution_id: str,
+    idempotency_key: str,
+    **fields: Any,
+) -> tuple[dict[str, Any], bool]:
+    """Insert an execution, or return the existing one for this idempotency key.
+
+    Returns ``(row, created)``. ``created=False`` means an execution for this
+    (incident, runbook, version, plan) already exists and the caller must NOT run the
+    production actions again — it reports that execution's state instead (§20).
+
+    Uniqueness is enforced by the database, not by a read-then-write in Python, so two
+    concurrent requests cannot both believe they created the row: the loser catches the
+    IntegrityError and re-reads. That is what makes this safe under the demo server's
+    thread pool.
+    """
+    unknown = set(fields) - _RUNBOOK_EXECUTION_FIELDS
+    if unknown:
+        raise ValueError(f"unknown runbook execution field(s): {sorted(unknown)}")
+    row = RunbookExecutionRow(execution_id=execution_id, idempotency_key=idempotency_key, **fields)
+    with _session() as s:
+        s.add(row)
+        try:
+            s.commit()
+        except IntegrityError:
+            s.rollback()
+        else:
+            s.refresh(row)
+            return _runbook_execution_to_dict(row), True
+    existing = find_runbook_execution_by_key(idempotency_key)
+    if existing is None:  # pragma: no cover - only if the row vanished mid-race
+        raise RuntimeError(
+            f"runbook execution {idempotency_key!r} collided but could not be read back"
+        )
+    return existing, False
+
+
+def claim_runbook_execution_state(
+    execution_id: str,
+    *,
+    expected_states: tuple[str, ...],
+    new_state: str,
+    **fields: Any,
+) -> dict[str, Any] | None:
+    """Compare-and-set an execution's state. Returns the row when this caller won.
+
+    ``None`` means the row was absent, or its state was not one of ``expected_states``
+    — i.e. somebody else moved it first. **This is the concurrency control for starting
+    an execution**, and it has to be a conditional UPDATE rather than a read-then-write:
+    two threads that both read ``state='planned'`` in Python would both pass a
+    guard-then-update and both dispatch the production steps. The ``WHERE state IN (…)``
+    clause makes the database the arbiter, and ``rowcount`` reports who won.
+
+    The unique ``idempotency_key`` is not enough on its own: it guarantees one *row*, not
+    one *run*. Two requests for the same plan legitimately resolve to the same row, and
+    without this the second one would happily execute it again.
+    """
+    unknown = set(fields) - _RUNBOOK_EXECUTION_FIELDS
+    if unknown:
+        raise ValueError(f"unknown runbook execution field(s): {sorted(unknown)}")
+    values: dict[str, Any] = dict(fields)
+    values["state"] = new_state
+    values["updated_at"] = datetime.now(UTC)
+    stmt = (
+        update(RunbookExecutionRow)
+        .where(
+            RunbookExecutionRow.execution_id == execution_id,
+            RunbookExecutionRow.state.in_(expected_states),  # type: ignore[attr-defined]
+        )
+        .values(**values)
+    )
+    with _session() as s:
+        result = s.exec(stmt)  # type: ignore[call-overload]
+        won = bool(getattr(result, "rowcount", 0))
+        s.commit()
+    if not won:
+        return None
+    return get_runbook_execution(execution_id)
+
+
+def count_runbook_executions_for_plan(idempotency_prefix: str) -> int:
+    """How many executions already exist under this plan's key prefix.
+
+    Used to salt a retry key: a refused execution that never dispatched anything is a
+    *refusal record*, not a run, and it must not lock the plan out forever.
+    """
+    stmt = select(RunbookExecutionRow).where(
+        RunbookExecutionRow.idempotency_key.startswith(idempotency_prefix)  # type: ignore[attr-defined]
+    )
+    with _session() as s:
+        return len(list(s.exec(stmt).all()))
+
+
+def get_runbook_execution(execution_id: str) -> dict[str, Any] | None:
+    """One execution by its handle, or None."""
+    stmt = select(RunbookExecutionRow).where(RunbookExecutionRow.execution_id == execution_id)
+    with _session() as s:
+        row = s.exec(stmt).first()
+    return _runbook_execution_to_dict(row) if row else None
+
+
+def find_runbook_execution_by_key(idempotency_key: str) -> dict[str, Any] | None:
+    """The execution registered under this idempotency key, or None."""
+    stmt = select(RunbookExecutionRow).where(RunbookExecutionRow.idempotency_key == idempotency_key)
+    with _session() as s:
+        row = s.exec(stmt).first()
+    return _runbook_execution_to_dict(row) if row else None
+
+
+def update_runbook_execution(execution_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Patch one execution. Returns the updated row, or None when it is absent.
+
+    ``updated_at`` is always refreshed, so "when did this last move" is answerable
+    without diffing the step list.
+    """
+    unknown = set(fields) - _RUNBOOK_EXECUTION_FIELDS
+    if unknown:
+        raise ValueError(f"unknown runbook execution field(s): {sorted(unknown)}")
+    stmt = select(RunbookExecutionRow).where(RunbookExecutionRow.execution_id == execution_id)
+    with _session() as s:
+        row = s.exec(stmt).first()
+        if row is None:
+            return None
+        for key, value in fields.items():
+            setattr(row, key, value)
+        row.updated_at = datetime.now(UTC)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return _runbook_execution_to_dict(row)
+
+
+def list_runbook_executions(
+    *,
+    incident_id: str | None = None,
+    service: str | None = None,
+    runbook_id: str | None = None,
+    state: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Newest-first executions, optionally filtered. Plain dicts, JSON-safe."""
+    stmt = (
+        select(RunbookExecutionRow)
+        .order_by(RunbookExecutionRow.created_at.desc())  # type: ignore[attr-defined]
+        .limit(limit)
+    )
+    if incident_id:
+        stmt = stmt.where(RunbookExecutionRow.incident_id == incident_id)
+    if service:
+        stmt = stmt.where(RunbookExecutionRow.service == service)
+    if runbook_id:
+        stmt = stmt.where(RunbookExecutionRow.runbook_id == runbook_id)
+    if state:
+        stmt = stmt.where(RunbookExecutionRow.state == state)
+    with _session() as s:
+        rows = s.exec(stmt).all()
+    return [_runbook_execution_to_dict(r) for r in rows]
+
+
+def delete_all_runbook_executions() -> int:
+    """Wipe execution history. Test / reset hook, not a production path."""
+    with _session() as s:
+        rows = s.exec(select(RunbookExecutionRow)).all()
+        for row in rows:
+            s.delete(row)
+        s.commit()
+        return len(rows)
+
+
+def _runbook_execution_to_dict(row: RunbookExecutionRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "execution_id": row.execution_id,
+        "idempotency_key": row.idempotency_key,
+        "incident_id": row.incident_id,
+        "runbook_id": row.runbook_id,
+        "runbook_version": row.runbook_version,
+        "plan_hash": row.plan_hash,
+        "service": row.service,
+        "environment": row.environment,
+        "state": row.state,
+        "status": row.status,
+        "next_action": row.next_action,
+        "risk_level": row.risk_level,
+        "hitl_required": row.hitl_required,
+        "approval_id": row.approval_id,
+        "approver": row.approver,
+        "selected_by": row.selected_by,
+        "selection_reason": row.selection_reason,
+        "match_score": row.match_score,
+        "candidates": row.candidates,
+        "dry_run": row.dry_run,
+        "overrides": row.overrides,
+        "steps": row.steps,
+        "audit_events": row.audit_events,
+        "rollback_status": row.rollback_status,
+        "reason": row.reason,
+        "error": row.error,
+        "created_at": _aware(row.created_at).isoformat() if row.created_at else None,
+        "updated_at": _aware(row.updated_at).isoformat() if row.updated_at else None,
+        "started_at": _aware(row.started_at).isoformat() if row.started_at else None,
+        "completed_at": _aware(row.completed_at).isoformat() if row.completed_at else None,
+    }
+
+
+# ─── runbook concurrency leases (RA-004 §25) ───────────────────────────────
+
+
+def acquire_runbook_lease(
+    *,
+    resource_key: str,
+    execution_id: str,
+    ttl_seconds: int,
+    incident_id: str | None = None,
+    runbook_id: str = "",
+) -> tuple[bool, dict[str, Any] | None]:
+    """Take the lease on ``resource_key``, or report who holds it.
+
+    Returns ``(True, lease)`` when this execution holds it — including the re-entrant
+    case where it already did, so a resumed run does not deadlock against itself.
+    Returns ``(False, holder)`` when a *live* lease belongs to another execution.
+
+    An expired lease is stolen rather than respected: the alternative is a crashed
+    executor blocking every future remediation on that service until a human notices.
+    """
+    now = datetime.now(UTC)
+    expires = now + timedelta(seconds=max(1, int(ttl_seconds)))
+    stmt = select(RunbookLeaseRow).where(RunbookLeaseRow.resource_key == resource_key)
+    with _session() as s:
+        row = s.exec(stmt).first()
+        if row is not None:
+            held_by_other = row.execution_id != execution_id
+            still_live = _aware(row.expires_at) > now if row.expires_at else False
+            if held_by_other and still_live:
+                return False, _runbook_lease_to_dict(row)
+            row.execution_id = execution_id
+            row.incident_id = incident_id
+            row.runbook_id = runbook_id
+            row.acquired_at = now
+            row.expires_at = expires
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            return True, _runbook_lease_to_dict(row)
+        fresh = RunbookLeaseRow(
+            resource_key=resource_key,
+            execution_id=execution_id,
+            incident_id=incident_id,
+            runbook_id=runbook_id,
+            acquired_at=now,
+            expires_at=expires,
+        )
+        s.add(fresh)
+        try:
+            s.commit()
+        except IntegrityError:
+            # Another thread inserted between the SELECT and the INSERT. It won.
+            s.rollback()
+        else:
+            s.refresh(fresh)
+            return True, _runbook_lease_to_dict(fresh)
+    holder = get_runbook_lease(resource_key)
+    if holder and holder.get("execution_id") != execution_id:
+        return False, holder
+    return (True, holder) if holder else (False, None)
+
+
+def release_runbook_lease(*, resource_key: str, execution_id: str) -> bool:
+    """Release the lease if this execution holds it. True when it was released."""
+    stmt = select(RunbookLeaseRow).where(RunbookLeaseRow.resource_key == resource_key)
+    with _session() as s:
+        row = s.exec(stmt).first()
+        if row is None or row.execution_id != execution_id:
+            return False
+        s.delete(row)
+        s.commit()
+        return True
+
+
+def get_runbook_lease(resource_key: str) -> dict[str, Any] | None:
+    """Who holds this lease, or None."""
+    stmt = select(RunbookLeaseRow).where(RunbookLeaseRow.resource_key == resource_key)
+    with _session() as s:
+        row = s.exec(stmt).first()
+    return _runbook_lease_to_dict(row) if row else None
+
+
+def delete_all_runbook_leases() -> int:
+    """Drop every lease. Test / reset hook."""
+    with _session() as s:
+        rows = s.exec(select(RunbookLeaseRow)).all()
+        for row in rows:
+            s.delete(row)
+        s.commit()
+        return len(rows)
+
+
+def _runbook_lease_to_dict(row: RunbookLeaseRow) -> dict[str, Any]:
+    return {
+        "resource_key": row.resource_key,
+        "execution_id": row.execution_id,
+        "incident_id": row.incident_id,
+        "runbook_id": row.runbook_id,
+        "acquired_at": _aware(row.acquired_at).isoformat() if row.acquired_at else None,
+        "expires_at": _aware(row.expires_at).isoformat() if row.expires_at else None,
+    }
+
+
 __all__ = [
     "CLUSTER_INCIDENT_PREFIX",
+    "acquire_runbook_lease",
     "average_classification_confidence",
+    "claim_runbook_execution",
+    "claim_runbook_execution_state",
     "count_classifications",
     "count_historical_incidents",
     "count_kb_articles",
     "count_notifications",
+    "count_runbook_executions_for_plan",
     "delete_all_clusters",
     "delete_all_historical_incidents",
     "delete_all_kb_articles",
     "delete_all_rca_results",
+    "delete_all_runbook_executions",
+    "delete_all_runbook_leases",
     "delete_live_historical_incidents",
     "evict_expired_clusters",
     "find_active_cluster",
     "find_kb_by_incident_id",
+    "find_runbook_execution_by_key",
     "get_classification",
     "get_kb_article",
     "get_rca_result",
+    "get_runbook_execution",
+    "get_runbook_lease",
     "get_verdict",
     "list_active_clusters",
     "list_classifications",
     "list_kb_articles",
     "list_notifications",
     "list_rca_results",
+    "list_runbook_executions",
     "list_verdicts",
     "nearest_historical_incidents",
     "nearest_kb_articles",
+    "release_runbook_lease",
     "save_classification",
     "save_historical_incident",
     "save_kb_article",
@@ -1444,5 +1803,6 @@ __all__ = [
     "save_verdict",
     "tag_kb_article_source",
     "update_kb_status",
+    "update_runbook_execution",
     "upsert_cluster",
 ]

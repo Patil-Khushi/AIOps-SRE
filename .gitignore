@@ -37,6 +37,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+.env.bak*
 !.env.example
 
 # Local kube/helm artifacts
@@ -75,3 +76,6 @@ demo/audit/*
 
 # Temporary extraction outputs
 .tmp_*
+
+# Work-in-progress, not yet ready to commit — tracked separately
+infra/observability/ingress.yaml

@@ -23,6 +23,7 @@ import aiops.tools.mock_providers  # noqa: F401
 from agents.runbook_executor import (
     ExecutableRunbook,
     Incident,
+    RunbookStatus,
     RunbookStep,
     execute_runbook,
     load_runbooks,
@@ -122,6 +123,8 @@ def _destructive_pair_runbook() -> ExecutableRunbook:
         service="payment-service",
         severity="sev1",
         tags=["crash"],
+        status=RunbookStatus.ACTIVE,
+        approved_by="test",
         steps=[
             RunbookStep(
                 name="step-one",
@@ -226,6 +229,8 @@ def test_non_destructive_only_resolves_without_any_approver():
         id="rb-safe",
         title="Safe",
         service="order-service",
+        status=RunbookStatus.ACTIVE,
+        approved_by="test",
         steps=[
             RunbookStep(name="snapshot", action="snapshot_replicas", destructive=False),
             RunbookStep(name="healthcheck", action="healthcheck", destructive=False),
@@ -377,3 +382,48 @@ def test_preauthorization_requires_a_genuinely_approved_reference():
     res = approver("automation.runbook.execute", {"pre_authorized_by": "fwd-denied-rb"})
 
     assert res.approver is None  # not pre-authorized; fell through and expired
+
+
+# ─── two gated steps in one run (the approval-id collision) ──────────────────
+
+
+def test_two_destructive_steps_each_get_their_own_approval(faulty_providers):
+    """A run needing two approvals must not reuse one approval id.
+
+    ``ApprovalRegistry.create`` raises ``approval id collision`` on a duplicate request
+    id, and the second gated step reaches it only *after* the first has already changed
+    production — so the run died mid-way and had to roll back a change a human had just
+    approved. Each gated step now derives its own id from the caller's.
+    """
+    from aiops.policy.approvals import ApprovalRequester, get_approval_registry
+
+    registry = get_approval_registry()
+    approved: list[str] = []
+
+    def _approver(action, ctx):
+        # Mimic the real ApprovalRequester's contract: open a request under the id the
+        # caller supplied, then approve it.
+        request_id = str(ctx.get("approval_id") or "")
+        request = registry.create(action=action, request_id=request_id or None)
+        ctx["pending_approval_id"] = request.id
+        registry.decide(request.id, approved=True, approver="sre@test")
+        approved.append(request.id)
+        return ApproverResult(approver="sre@test")
+
+    get_gate().set_approver(_approver)
+    try:
+        out = run_plan(
+            Incident(service="payment-service"),
+            _destructive_pair_runbook(),
+            hitl_context={"approval_id": "APPROVE-RUN-1"},
+        )
+    finally:
+        get_gate().reset_approver()
+
+    assert out.status == "resolved", out.reason
+    assert len(approved) == 2, approved
+    assert approved[0] == "APPROVE-RUN-1"  # the id the caller pre-minted, for the UI poll
+    assert approved[1] == "APPROVE-RUN-1:step-two"  # derived, unique
+    # Each step records the approval that authorized it.
+    assert [s.approval_id for s in out.steps] == approved
+    assert ApprovalRequester  # imported to name the contract this fake stands in for

@@ -2,11 +2,53 @@
 title: order-service — payment call timing out
 service: order-service
 severity: sev2
+version: 1
+status: active
+owner: sre-platform
+approved_by: aiops-sre-review
 tags:
 - timeout
 - dependency
 - payment
 - gateway
+applicability:
+  environments:
+  - demo
+  - production
+  failure_category: dependency_timeout
+  alerts:
+  - EcommercePaymentTimeouts
+  required_signals:
+  - timeouts
+  - latency_high
+  allowed_services:
+  - mock-payment-gateway
+  - order-service
+  allowed_namespaces:
+  - ecommerce
+prerequisites:
+- id: incident_active
+  description: The incident is still open and within the configured max age.
+  mandatory: true
+  check: incident_active
+- id: target_in_scope
+  description: Every step targets a service/namespace this runbook declares.
+  mandatory: true
+  check: service_scope
+- id: alert_firing
+  description: EcommercePaymentTimeouts is still firing (advisory — skipped when Prometheus is unreachable).
+  mandatory: false
+  check: alert_firing
+- id: signal_timeouts
+  description: The timeouts signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: timeouts
+- id: signal_latency_high
+  description: The latency_high signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: latency_high
 steps:
 - name: clear-injected-fault
   action: clear_fault
@@ -14,7 +56,7 @@ steps:
   idempotent: true
   target: fault/order_service.payment_timeout
   namespace: ecommerce
-- name: verify-health
+- name: verify-gateway-health
   action: healthcheck
   destructive: false
   idempotent: true
@@ -94,7 +136,7 @@ FI_BACKEND=docker uv run --no-project python -m failure_injection recover order_
 
 Expect: The workload rolls; the fault toggle returns to its default.
 
-### Step 2. verify-health
+### Step 2. verify-gateway-health
 
 `healthcheck` &middot; read-only
 

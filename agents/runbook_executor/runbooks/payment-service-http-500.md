@@ -2,11 +2,46 @@
 title: payment-service — 5xx on charge
 service: payment-service
 severity: sev2
+version: 1
+status: active
+owner: sre-platform
+approved_by: aiops-sre-review
 tags:
 - error
 - 5xx
 - payments
 - application
+applicability:
+  environments:
+  - demo
+  - production
+  failure_category: application_error
+  alerts:
+  - EcommerceOrderErrorRateHigh
+  required_signals:
+  - error_rate_high
+  allowed_services:
+  - payment-service
+  allowed_namespaces:
+  - ecommerce
+prerequisites:
+- id: incident_active
+  description: The incident is still open and within the configured max age.
+  mandatory: true
+  check: incident_active
+- id: target_in_scope
+  description: Every step targets a service/namespace this runbook declares.
+  mandatory: true
+  check: service_scope
+- id: alert_firing
+  description: EcommerceOrderErrorRateHigh is still firing (advisory — skipped when Prometheus is unreachable).
+  mandatory: false
+  check: alert_firing
+- id: signal_error_rate_high
+  description: The error_rate_high signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: error_rate_high
 steps:
 - name: clear-injected-fault
   action: clear_fault

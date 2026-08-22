@@ -21,6 +21,7 @@ to capture and replay whatever the previous test left behind.
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
@@ -436,3 +437,43 @@ def _hermetic_rca_chat_sessions():
         yield
     finally:
         get_session_store()._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_runbook_executor_state(monkeypatch, tmp_path_factory):
+    """Reset RA-004's process-global state around every test.
+
+    Three stores, all module- or file-level by design:
+
+    - ``agents/runbook_executor/metrics.py`` — in-process counters. Without a reset, a
+      test asserting "one execution was blocked" would pass or fail depending on what
+      ran before it.
+    - ``runbook_leases`` — the concurrency leases (§25). A test that fails mid-execution
+      could otherwise leave a live lease on ``ecommerce/order-service`` and every later
+      test that tries to remediate that service would be refused, with a message that
+      looks like a real conflict rather than test pollution.
+
+    - ``data/verifier_state.json`` — the Resolution Verifier's state file. RA-004's
+      execute route hands off to the verifier (§29), so a test that executes a runbook
+      would otherwise write a verdict into the *developer's* data directory, and the
+      next test asking "has this incident been verified?" would read that stale PASS.
+      Pointed at a tmp file, with the stabilization windows collapsed so the handoff is
+      still exercised without a background thread outliving the test by five minutes.
+
+    The executions table itself is not wiped here: ``_hermetic_state_db`` already gives
+    each test a fresh database file, so rows cannot leak between tests.
+    """
+    from agents.runbook_executor import metrics as runbook_metrics
+
+    state_file = tmp_path_factory.mktemp("verifier") / "verifier_state.json"
+    monkeypatch.setenv("VERIFIER_STATE_FILE", str(state_file))
+    monkeypatch.setenv("VERIFIER_WINDOW_SECONDS", "0.01")
+    runbook_metrics.reset()
+    try:
+        yield
+    finally:
+        runbook_metrics.reset()
+        with contextlib.suppress(Exception):
+            from aiops.state import repository as _repo
+
+            _repo.delete_all_runbook_leases()

@@ -105,6 +105,9 @@ def _migrate_add_columns_if_missing() -> None:
         # Phase 3 historical memory: the join key. Added after rca_outcomes shipped with
         # only the incident-scoped selected_hypothesis_id.
         ("rca_outcomes", "selected_hypothesis_class", "VARCHAR"),
+        # RA-004: the parameter overrides a plan was authorized with. Added after
+        # runbook_executions shipped, so a table created before it needs the ALTER.
+        ("runbook_executions", "overrides", "JSON"),
     ]
 
     engine = get_engine()

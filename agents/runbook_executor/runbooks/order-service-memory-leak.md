@@ -2,12 +2,53 @@
 title: order-service — memory leak / OOMKilled
 service: order-service
 severity: sev1
+version: 1
+status: active
+owner: sre-platform
+approved_by: aiops-sre-review
 tags:
 - memory
 - oom
 - leak
 - restart
 - resource
+applicability:
+  environments:
+  - demo
+  - production
+  failure_category: resource_saturation_memory
+  alerts:
+  - EcommerceOrderServiceMemoryHigh
+  required_signals:
+  - memory_saturation
+  - pod_restarting
+  allowed_services:
+  - order-service
+  allowed_namespaces:
+  - ecommerce
+prerequisites:
+- id: incident_active
+  description: The incident is still open and within the configured max age.
+  mandatory: true
+  check: incident_active
+- id: target_in_scope
+  description: Every step targets a service/namespace this runbook declares.
+  mandatory: true
+  check: service_scope
+- id: alert_firing
+  description: EcommerceOrderServiceMemoryHigh is still firing (advisory — skipped when Prometheus is unreachable).
+  mandatory: false
+  check: alert_firing
+- id: signal_memory_saturation
+  description: The memory_saturation signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: memory_saturation
+- id: signal_pod_restarting
+  description: The pod_restarting signal is present on the incident (advisory).
+  mandatory: false
+  check: signal_present
+  signal: pod_restarting
 steps:
 - name: clear-injected-fault
   action: clear_fault
@@ -26,7 +67,7 @@ steps:
 
 | | |
 |---|---|
-| **Alert** | `EcommerceServiceDown` |
+| **Alert** | `EcommerceOrderServiceMemoryHigh` |
 | **Service** | `order-service` |
 | **Severity** | `sev1` |
 
